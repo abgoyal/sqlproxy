@@ -1,0 +1,173 @@
+# SQL Proxy Configuration
+# Environment variables can be used with ${VAR_NAME} syntax
+
+server:
+  host: "127.0.0.1"        # Listen address (use 0.0.0.0 for all interfaces)
+  port: 8081               # HTTP port
+  default_timeout_sec: 30  # Default query timeout (seconds)
+  max_timeout_sec: 300     # Maximum allowed timeout (caps _timeout param)
+
+database:
+  host: "${DB_HOST}"           # SQL Server host (can use env var)
+  port: 1433                   # SQL Server port
+  user: "${DB_USER}"           # Database user
+  password: "${DB_PASSWORD}"   # Database password
+  database: "${DB_NAME}"       # Database name
+
+# Logging Configuration
+# Structured JSON logs with automatic rotation
+logging:
+  level: "info"                              # debug, info, warn, error
+  file_path: "C:/Services/SQLProxy/logs/sql-proxy.log"  # Log file path
+  max_size_mb: 100                           # Max size before rotation (MB)
+  max_backups: 5                             # Number of old log files to keep
+  max_age_days: 30                           # Days to retain old log files
+  compress: true                             # Compress rotated files
+
+# Metrics Configuration
+# Periodic export of request statistics to JSON files
+metrics:
+  enabled: true
+  file_path: "C:/Services/SQLProxy/metrics/metrics.json"  # Metrics file
+  interval_sec: 300                          # Export interval (5 minutes)
+  retain_files: 288                          # Files to keep (24hrs at 5min intervals)
+
+# Query Definitions
+# Each query becomes an HTTP endpoint
+# Parameters use @paramName syntax in SQL and are bound from query string
+queries:
+  # Example: Get all machines
+  - name: "list_machines"
+    path: "/api/machines"
+    method: "GET"
+    description: "List all biometric machines"
+    sql: |
+      SELECT
+        MachineId,
+        MachineName,
+        MachineIP,
+        LastPingTime,
+        IsOnline
+      FROM Machines
+      ORDER BY MachineName
+
+  # Example: Get machine by ID
+  - name: "get_machine"
+    path: "/api/machines/details"
+    method: "GET"
+    description: "Get machine details by ID"
+    sql: |
+      SELECT
+        MachineId,
+        MachineName,
+        MachineIP,
+        LastPingTime,
+        IsOnline,
+        Location,
+        SerialNumber
+      FROM Machines
+      WHERE MachineId = @machineId
+    parameters:
+      - name: "machineId"
+        type: "int"
+        required: true
+
+  # Example: Get machine ping history
+  - name: "machine_ping_history"
+    path: "/api/machines/ping-history"
+    method: "GET"
+    description: "Get ping history for a machine"
+    sql: |
+      SELECT TOP (@limit)
+        PingTime,
+        Status,
+        ResponseTime
+      FROM MachinePingLog
+      WHERE MachineId = @machineId
+        AND PingTime >= @fromDate
+      ORDER BY PingTime DESC
+    parameters:
+      - name: "machineId"
+        type: "int"
+        required: true
+      - name: "fromDate"
+        type: "datetime"
+        required: false
+        default: "2024-01-01"
+      - name: "limit"
+        type: "int"
+        required: false
+        default: "100"
+
+  # Example: Get check-in/out logs
+  # This query has a custom timeout since it may scan large date ranges
+  - name: "checkin_logs"
+    path: "/api/checkins"
+    method: "GET"
+    description: "Get check-in/out logs for a date range"
+    timeout_sec: 60  # Query-specific default (overrides server default)
+    sql: |
+      SELECT TOP (@limit)
+        l.LogId,
+        l.EmployeeId,
+        l.MachineId,
+        l.PunchTime,
+        l.PunchType,
+        m.MachineName
+      FROM AttendanceLog l
+      INNER JOIN Machines m ON l.MachineId = m.MachineId
+      WHERE l.PunchTime BETWEEN @fromDate AND @toDate
+      ORDER BY l.PunchTime DESC
+    parameters:
+      - name: "fromDate"
+        type: "datetime"
+        required: true
+      - name: "toDate"
+        type: "datetime"
+        required: true
+      - name: "limit"
+        type: "int"
+        required: false
+        default: "1000"
+
+  # Example: Get check-ins for specific employee
+  - name: "employee_checkins"
+    path: "/api/checkins/employee"
+    method: "GET"
+    description: "Get check-in/out logs for a specific employee"
+    sql: |
+      SELECT
+        l.LogId,
+        l.PunchTime,
+        l.PunchType,
+        m.MachineName,
+        m.Location
+      FROM AttendanceLog l
+      INNER JOIN Machines m ON l.MachineId = m.MachineId
+      WHERE l.EmployeeId = @employeeId
+        AND l.PunchTime BETWEEN @fromDate AND @toDate
+      ORDER BY l.PunchTime DESC
+    parameters:
+      - name: "employeeId"
+        type: "string"
+        required: true
+      - name: "fromDate"
+        type: "datetime"
+        required: true
+      - name: "toDate"
+        type: "datetime"
+        required: true
+
+  # Example: Machine status summary
+  - name: "machine_status_summary"
+    path: "/api/machines/status-summary"
+    method: "GET"
+    description: "Get summary of machine online/offline status"
+    sql: |
+      SELECT
+        COUNT(*) AS TotalMachines,
+        SUM(CASE WHEN IsOnline = 1 THEN 1 ELSE 0 END) AS OnlineMachines,
+        SUM(CASE WHEN IsOnline = 0 THEN 1 ELSE 0 END) AS OfflineMachines,
+        MIN(LastPingTime) AS OldestPing,
+        MAX(LastPingTime) AS LatestPing
+      FROM Machines
