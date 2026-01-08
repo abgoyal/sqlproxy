@@ -129,14 +129,6 @@ func validateLogging(cfg *config.Config, result *Result) {
 	if !validLevels[strings.ToLower(cfg.Logging.Level)] {
 		result.AddError("Invalid log level: %s (must be debug, info, warn, or error)", cfg.Logging.Level)
 	}
-
-	if cfg.Logging.MaxSizeMB < 1 {
-		result.AddWarning("Log max size < 1MB may cause frequent rotation")
-	}
-
-	if cfg.Logging.MaxBackups < 1 {
-		result.AddWarning("Log max backups < 1 means no backup files will be kept")
-	}
 }
 
 func validateMetrics(cfg *config.Config, result *Result) {

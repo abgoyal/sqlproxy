@@ -76,10 +76,10 @@ DENY CREATE FUNCTION TO sqlproxy_reader;
 
 ```bash
 # From Linux/Mac
-GOOS=windows GOARCH=amd64 go build -o sql-proxy.exe .
+GOOS=windows GOARCH=amd64 go build -ldflags '-s -w' -o sql-proxy.exe .
 
 # From Windows
-go build -o sql-proxy.exe .
+go build -ldflags '-s -w' -o sql-proxy.exe .
 ```
 
 ## Configuration Validation
@@ -172,11 +172,10 @@ database:
 
 logging:
   level: "info"                # debug, info, warn, error
-  file_path: "C:/Services/SQLProxy/logs/sql-proxy.log"
+  file_path: "C:/Services/SQLProxy/logs/sql-proxy.log"  # Service mode only
   max_size_mb: 100             # Rotate at 100MB
   max_backups: 5               # Keep 5 old files
   max_age_days: 30             # Delete files older than 30 days
-  compress: true               # Gzip old files
 
 metrics:
   enabled: true
@@ -377,10 +376,16 @@ All query results are loaded into memory before JSON serialization. For large re
 
 ## Logging
 
-### Log Format (JSON, one line per entry)
+Uses Go's `log/slog` with JSON output. Rotation via lumberjack.
+
+**Output destination:**
+- Interactive mode (`sql-proxy.exe -config ...`): stdout
+- Service mode (Windows service): file only
+
+### Log Format (slog JSON, one line per entry)
 
 ```json
-{"ts":"2024-01-15T10:30:45.123Z","level":"INFO","msg":"request_completed","request_id":"a1b2c3d4","endpoint":"/api/machines","query_name":"list_machines","query_duration_ms":45,"row_count":150,"total_duration_ms":48}
+{"time":"2024-01-15T10:30:45.123Z","level":"INFO","msg":"request_completed","request_id":"a1b2c3d4","endpoint":"/api/machines","query_name":"list_machines","query_duration_ms":45,"row_count":150,"total_duration_ms":48}
 ```
 
 ### Log Levels

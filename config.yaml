@@ -15,14 +15,15 @@ database:
   database: "${DB_NAME}"       # Database name
 
 # Logging Configuration
-# Structured JSON logs with automatic rotation
+# JSON logs via slog, rotation via lumberjack
+# Note: In interactive mode, logs go to stdout (file_path ignored)
+#       In service mode, logs go to file only
 logging:
   level: "info"                              # debug, info, warn, error
-  file_path: "C:/Services/SQLProxy/logs/sql-proxy.log"  # Log file path
-  max_size_mb: 100                           # Max size before rotation (MB)
-  max_backups: 5                             # Number of old log files to keep
-  max_age_days: 30                           # Days to retain old log files
-  compress: true                             # Compress rotated files
+  file_path: "C:/Services/SQLProxy/logs/sql-proxy.log"  # Log file (service mode)
+  max_size_mb: 100                           # Rotate at this size (default 100)
+  max_backups: 5                             # Old files to keep (default 5)
+  max_age_days: 30                           # Delete after days (default 30)
 
 # Metrics Configuration
 # Periodic export of request statistics to JSON files

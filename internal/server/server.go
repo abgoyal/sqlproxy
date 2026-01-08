@@ -32,17 +32,13 @@ type Server struct {
 }
 
 func New(cfg *config.Config, interactive bool) (*Server, error) {
-	// Initialize logging first
-	logCfg := logging.Config{
-		Level:      cfg.Logging.Level,
-		FilePath:   cfg.Logging.FilePath,
-		MaxSizeMB:  cfg.Logging.MaxSizeMB,
-		MaxBackups: cfg.Logging.MaxBackups,
-		MaxAgeDays: cfg.Logging.MaxAgeDays,
-		Compress:   cfg.Logging.Compress,
-		AlsoStdout: interactive, // Only log to stdout when running interactively
+	// Initialize logging
+	// Interactive: stdout, Service: file
+	logFile := ""
+	if !interactive {
+		logFile = cfg.Logging.FilePath
 	}
-	if err := logging.Init(logCfg); err != nil {
+	if err := logging.Init(cfg.Logging.Level, logFile, cfg.Logging.MaxSizeMB, cfg.Logging.MaxBackups, cfg.Logging.MaxAgeDays); err != nil {
 		return nil, fmt.Errorf("failed to initialize logging: %w", err)
 	}
 
@@ -264,7 +260,7 @@ func (s *Server) logLevelHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		logging.SetLevel(logging.ParseLevel(level))
+		logging.SetLevel(level)
 		logging.Info("log_level_changed", map[string]any{
 			"new_level": level,
 		})

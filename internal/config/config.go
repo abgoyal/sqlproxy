@@ -17,11 +17,10 @@ type Config struct {
 
 type LoggingConfig struct {
 	Level      string `yaml:"level"`        // debug, info, warn, error
-	FilePath   string `yaml:"file_path"`    // Log file path (empty = stdout only)
-	MaxSizeMB  int    `yaml:"max_size_mb"`  // Max size before rotation (default 100)
-	MaxBackups int    `yaml:"max_backups"`  // Max old files to keep (default 5)
-	MaxAgeDays int    `yaml:"max_age_days"` // Max days to retain (default 30)
-	Compress   bool   `yaml:"compress"`     // Compress rotated files
+	FilePath   string `yaml:"file_path"`    // Log file path (used in service mode)
+	MaxSizeMB  int    `yaml:"max_size_mb"`  // Rotate at this size (default 100)
+	MaxBackups int    `yaml:"max_backups"`  // Old files to keep (default 5)
+	MaxAgeDays int    `yaml:"max_age_days"` // Delete after days (default 30)
 }
 
 type MetricsConfig struct {
