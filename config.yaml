@@ -26,12 +26,9 @@ logging:
   max_age_days: 30                           # Delete after days (default 30)
 
 # Metrics Configuration
-# Periodic export of request statistics to JSON files
+# Exposes metrics at /metrics endpoint
 metrics:
   enabled: true
-  file_path: "C:/Services/SQLProxy/metrics/metrics.json"  # Metrics file
-  interval_sec: 300                          # Export interval (5 minutes)
-  retain_files: 288                          # Files to keep (24hrs at 5min intervals)
 
 # Query Definitions
 # Each query becomes an HTTP endpoint

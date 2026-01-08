@@ -24,10 +24,7 @@ type LoggingConfig struct {
 }
 
 type MetricsConfig struct {
-	Enabled     bool   `yaml:"enabled"`
-	FilePath    string `yaml:"file_path"`    // Metrics output file
-	IntervalSec int    `yaml:"interval_sec"` // Export interval (default 300 = 5 min)
-	RetainFiles int    `yaml:"retain_files"` // Number of metric files to keep (default 288)
+	Enabled bool `yaml:"enabled"`
 }
 
 type ServerConfig struct {
@@ -107,13 +104,6 @@ func Load(path string) (*Config, error) {
 		cfg.Logging.MaxAgeDays = 30
 	}
 
-	// Metrics defaults
-	if cfg.Metrics.IntervalSec == 0 {
-		cfg.Metrics.IntervalSec = 300 // 5 minutes
-	}
-	if cfg.Metrics.RetainFiles == 0 {
-		cfg.Metrics.RetainFiles = 288 // 24 hours at 5-min intervals
-	}
 
 	// Validate
 	if err := cfg.validate(); err != nil {

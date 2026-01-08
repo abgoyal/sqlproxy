@@ -1,6 +1,8 @@
 package openapi
 
 import (
+	"strconv"
+
 	"sql-proxy/internal/config"
 )
 
@@ -120,7 +122,7 @@ func buildQueryPath(q config.QueryConfig, serverCfg config.ServerConfig) map[str
 			"name":        "_timeout",
 			"in":          "query",
 			"required":    false,
-			"description": "Query timeout in seconds (max: " + itoa(serverCfg.MaxTimeoutSec) + ")",
+			"description": "Query timeout in seconds (max: " + strconv.Itoa(serverCfg.MaxTimeoutSec) + ")",
 			"schema": map[string]any{
 				"type":    "integer",
 				"default": serverCfg.DefaultTimeoutSec,
@@ -148,7 +150,7 @@ func buildQueryPath(q config.QueryConfig, serverCfg config.ServerConfig) map[str
 	return map[string]any{
 		method: map[string]any{
 			"summary":     q.Name,
-			"description": q.Description + " (default timeout: " + itoa(effectiveTimeout) + "s)",
+			"description": q.Description + " (default timeout: " + strconv.Itoa(effectiveTimeout) + "s)",
 			"tags":        []string{"Queries"},
 			"operationId": q.Name,
 			"parameters":  params,
@@ -321,21 +323,3 @@ func buildComponents() map[string]any {
 	}
 }
 
-func itoa(i int) string {
-	if i == 0 {
-		return "0"
-	}
-	s := ""
-	neg := i < 0
-	if neg {
-		i = -i
-	}
-	for i > 0 {
-		s = string(rune('0'+i%10)) + s
-		i /= 10
-	}
-	if neg {
-		s = "-" + s
-	}
-	return s
-}

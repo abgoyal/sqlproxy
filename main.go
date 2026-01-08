@@ -17,7 +17,6 @@ var (
 	install      = flag.Bool("install", false, "Install as Windows service")
 	uninstall    = flag.Bool("uninstall", false, "Uninstall Windows service")
 	validateOnly = flag.Bool("validate", false, "Validate configuration and exit")
-	validateDB   = flag.Bool("validate-db", false, "Validate configuration including database connectivity")
 )
 
 func main() {
@@ -55,25 +54,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Handle validation modes
-	if *validateOnly || *validateDB {
-		runValidation(cfg, *validateDB)
-		return
-	}
-
-	// Configure logging for non-service mode
-	if service.IsWindowsService() {
-		// When running as a service, log to a file
-		logDir := filepath.Dir(*configPath)
-		logFile := filepath.Join(logDir, "sql-proxy.log")
-		f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err == nil {
-			log.SetOutput(f)
-			defer f.Close()
+	// Handle validation mode
+	if *validateOnly {
+		result := validate.Run(cfg)
+		printValidationResult(cfg, result)
+		if result.Valid {
+			os.Exit(0)
 		}
+		os.Exit(1)
 	}
-
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
 	fmt.Printf("SQL Proxy Service\n")
 	fmt.Printf("Loaded %d query endpoints\n", len(cfg.Queries))
@@ -84,37 +73,22 @@ func main() {
 	}
 }
 
-func runValidation(cfg *config.Config, testDB bool) {
+func printValidationResult(cfg *config.Config, result *validate.Result) {
 	fmt.Println("SQL Proxy Configuration Validator")
 	fmt.Println("==================================")
 	fmt.Printf("Config file: %s\n\n", *configPath)
 
-	var result *validate.Result
-	if testDB {
-		fmt.Println("Validating configuration and testing database connection...")
-		result = validate.ConfigWithDB(cfg)
-	} else {
-		fmt.Println("Validating configuration (use -validate-db to also test database)...")
-		result = validate.Config(cfg)
-	}
-
-	// Print summary
-	fmt.Printf("\nServer: %s:%d\n", cfg.Server.Host, cfg.Server.Port)
+	fmt.Printf("Server: %s:%d\n", cfg.Server.Host, cfg.Server.Port)
 	fmt.Printf("Database: %s@%s/%s\n", cfg.Database.User, cfg.Database.Host, cfg.Database.Database)
 	fmt.Printf("Queries: %d endpoints configured\n", len(cfg.Queries))
-	fmt.Printf("Logging: level=%s, file=%s\n", cfg.Logging.Level, cfg.Logging.FilePath)
-	fmt.Printf("Metrics: enabled=%v, interval=%ds\n", cfg.Metrics.Enabled, cfg.Metrics.IntervalSec)
 
-	// Print queries
 	if len(cfg.Queries) > 0 {
-		fmt.Println("\nConfigured endpoints:")
+		fmt.Println("\nEndpoints:")
 		for _, q := range cfg.Queries {
-			paramCount := len(q.Parameters)
-			fmt.Printf("  %s %s - %s (%d params)\n", q.Method, q.Path, q.Name, paramCount)
+			fmt.Printf("  %s %s - %s (%d params)\n", q.Method, q.Path, q.Name, len(q.Parameters))
 		}
 	}
 
-	// Print warnings
 	if len(result.Warnings) > 0 {
 		fmt.Println("\nWarnings:")
 		for _, w := range result.Warnings {
@@ -122,7 +96,6 @@ func runValidation(cfg *config.Config, testDB bool) {
 		}
 	}
 
-	// Print errors
 	if len(result.Errors) > 0 {
 		fmt.Println("\nErrors:")
 		for _, e := range result.Errors {
@@ -130,13 +103,10 @@ func runValidation(cfg *config.Config, testDB bool) {
 		}
 	}
 
-	// Final result
 	fmt.Println()
 	if result.Valid {
-		fmt.Println("✓ Configuration is valid")
-		os.Exit(0)
+		fmt.Println("✓ Configuration valid")
 	} else {
-		fmt.Println("✗ Configuration has errors")
-		os.Exit(1)
+		fmt.Println("✗ Configuration invalid")
 	}
 }

@@ -21,11 +21,11 @@ This service is designed for long-running, fire-and-forget operation:
 | Feature | Description |
 |---------|-------------|
 | **Log Rotation** | Automatic rotation by size, age retention, compression |
-| **Metrics Export** | Periodic JSON export with file retention policy |
+| **Metrics Endpoint** | `/metrics` endpoint for monitoring |
 | **DB Health Checks** | Every 30s, auto-reconnect after 3 failures |
 | **Panic Recovery** | Catches panics, logs them, returns 500 |
 | **Connection Recycling** | Pool connections expire after 5 minutes |
-| **Graceful Shutdown** | Exports final metrics, closes connections cleanly |
+| **Graceful Shutdown** | Closes connections cleanly |
 | **Service Auto-Restart** | Windows service restarts on crash (5s, 10s, 30s delays) |
 
 ## Safety Features (Read-Only Guarantees)
@@ -87,11 +87,8 @@ go build -ldflags '-s -w' -o sql-proxy.exe .
 Validate your config file without starting the service (like `caddy validate`):
 
 ```bash
-# Validate config syntax and structure
+# Validates config AND tests database connectivity
 sql-proxy.exe -validate -config config.yaml
-
-# Validate config AND test database connectivity
-sql-proxy.exe -validate-db -config config.yaml
 ```
 
 Example output:
@@ -100,20 +97,16 @@ SQL Proxy Configuration Validator
 ==================================
 Config file: config.yaml
 
-Validating configuration (use -validate-db to also test database)...
-
 Server: 127.0.0.1:8081
 Database: sqlproxy_reader@myserver.rds.amazonaws.com/mydb
 Queries: 6 endpoints configured
-Logging: level=info, file=C:/Services/SQLProxy/logs/sql-proxy.log
-Metrics: enabled=true, interval=300s
 
-Configured endpoints:
+Endpoints:
   GET /api/machines - list_machines (0 params)
   GET /api/machines/details - get_machine (1 params)
   GET /api/checkins - checkin_logs (3 params)
 
-✓ Configuration is valid
+✓ Configuration valid
 ```
 
 The validator checks:
@@ -129,10 +122,9 @@ The validator checks:
 
 1. Copy `sql-proxy.exe` and `config.yaml` to `C:\Services\SQLProxy\`
 
-2. Create log and metrics directories:
+2. Create log directory:
    ```cmd
    mkdir C:\Services\SQLProxy\logs
-   mkdir C:\Services\SQLProxy\metrics
    ```
 
 3. Edit `config.yaml` with your settings
@@ -178,10 +170,7 @@ logging:
   max_age_days: 30             # Delete files older than 30 days
 
 metrics:
-  enabled: true
-  file_path: "C:/Services/SQLProxy/metrics/metrics.json"
-  interval_sec: 300            # Export every 5 minutes
-  retain_files: 288            # Keep 24 hours of files
+  enabled: true                # Exposes /metrics endpoint
 
 queries:
   - name: "list_machines"
@@ -414,15 +403,16 @@ curl -X POST "http://localhost:8081/config/loglevel?level=info"
 
 ## Metrics
 
-### Metrics File Format
+Get metrics via the `/metrics` endpoint:
 
-Every `interval_sec` seconds, a JSON file is written:
+```bash
+curl http://localhost:8081/metrics
+```
 
+Response:
 ```json
 {
   "timestamp": "2024-01-15T10:35:00Z",
-  "period_start": "2024-01-15T10:30:00Z",
-  "period_end": "2024-01-15T10:35:00Z",
   "uptime_sec": 86400,
   "total_requests": 15234,
   "total_errors": 12,
@@ -439,11 +429,7 @@ Every `interval_sec` seconds, a JSON file is written:
       "avg_duration_ms": 45.2,
       "max_duration_ms": 234,
       "min_duration_ms": 12,
-      "p50_duration_ms": 42,
-      "p95_duration_ms": 89,
-      "p99_duration_ms": 156,
-      "avg_query_ms": 38.1,
-      "avg_rows_per_request": 150
+      "avg_query_ms": 38.1
     }
   },
   "runtime": {
@@ -478,14 +464,6 @@ Every `interval_sec` seconds, a JSON file is written:
 - `mem_alloc_bytes` growing unbounded → memory leak
 - `goroutines` growing unbounded → goroutine leak
 - `gc_last_pause_ns` > 10ms → GC pressure, may need tuning
-
-### Metrics Endpoint
-
-Get current metrics snapshot via HTTP:
-
-```bash
-curl http://localhost:8081/metrics
-```
 
 ## API Endpoints
 
@@ -615,14 +593,13 @@ your-domain.com {
 - Check credentials in config
 
 ### High latency
-- Check `/metrics` for `p95_duration_ms` and `p99_duration_ms`
+- Check `/metrics` for `avg_duration_ms` and `max_duration_ms`
 - Look for `slow_query` warnings in logs
 - Consider adding indexes on SQL Server side
 - Increase `timeout_sec` for known slow queries
 
 ### Disk filling up
 - Logs rotate automatically, but check `max_backups` setting
-- Metrics files are retained per `retain_files` setting
 - Compressed logs use `.gz` extension
 
 ### Changing configuration
@@ -660,40 +637,36 @@ net start SQLProxy
 Before deploying to production:
 
 ```bash
-# 1. Validate config syntax
+# 1. Validate config and test database connectivity
 sql-proxy.exe -validate -config config.yaml
 
-# 2. Test database connectivity
-sql-proxy.exe -validate-db -config config.yaml
-
-# 3. Create required directories
+# 2. Create required directories
 mkdir C:\Services\SQLProxy\logs
-mkdir C:\Services\SQLProxy\metrics
 
-# 4. Test interactively
+# 3. Test interactively
 sql-proxy.exe -config config.yaml
 # In another terminal:
 curl http://localhost:8081/health
 curl http://localhost:8081/
 
-# 5. Test each endpoint manually
+# 4. Test each endpoint manually
 curl "http://localhost:8081/api/your-endpoint?param=value"
 
-# 6. Install as service (run as Administrator)
+# 5. Install as service (run as Administrator)
 sql-proxy.exe -install -config C:\Services\SQLProxy\config.yaml
 
-# 7. Start and verify
+# 6. Start and verify
 net start SQLProxy
 curl http://localhost:8081/health
 
-# 8. Check Windows Event Viewer for any errors
-# 9. Monitor logs: C:\Services\SQLProxy\logs\sql-proxy.log
+# 7. Check Windows Event Viewer for any errors
+# 8. Monitor logs: C:\Services\SQLProxy\logs\sql-proxy.log
 ```
 
 ### Production Recommendations
 
 - **Caddy/nginx in front**: Don't expose sql-proxy directly to the internet
 - **Monitor `/health`**: Set up alerting on 503 responses
-- **Review metrics**: Check `/metrics` endpoint or metrics files for slow queries
+- **Review metrics**: Check `/metrics` endpoint for slow queries
 - **Log level**: Use `info` in production, `debug` only for troubleshooting
 - **Backup config**: Keep config.yaml in version control

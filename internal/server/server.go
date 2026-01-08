@@ -71,22 +71,9 @@ func New(cfg *config.Config, interactive bool) (*Server, error) {
 	s.dbHealthy.Store(true)
 
 	// Initialize metrics
-	metricsCfg := metrics.Config{
-		Enabled:     cfg.Metrics.Enabled,
-		FilePath:    cfg.Metrics.FilePath,
-		IntervalSec: cfg.Metrics.IntervalSec,
-		RetainFiles: cfg.Metrics.RetainFiles,
-	}
-	if err := metrics.Init(metricsCfg, s.checkDBHealth); err != nil {
-		logging.Warn("metrics_init_failed", map[string]any{
-			"error": err.Error(),
-		})
-		// Non-fatal - continue without metrics
-	} else if cfg.Metrics.Enabled {
-		logging.Info("metrics_initialized", map[string]any{
-			"file_path":    cfg.Metrics.FilePath,
-			"interval_sec": cfg.Metrics.IntervalSec,
-		})
+	if cfg.Metrics.Enabled {
+		metrics.Init(s.checkDBHealth)
+		logging.Info("metrics_initialized", nil)
 	}
 
 	// Start background health checker

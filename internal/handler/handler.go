@@ -70,10 +70,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Initialize metrics record
 	m := metrics.RequestMetrics{
-		RequestID:  requestID,
 		Endpoint:   h.queryConfig.Path,
 		QueryName:  h.queryConfig.Name,
-		StartTime:  startTime,
 		StatusCode: http.StatusOK,
 	}
 
@@ -116,7 +114,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	m.ParamCount = len(params)
 	logFields["param_count"] = len(params)
 	logFields["parse_duration_ms"] = parseDuration.Milliseconds()
 
@@ -124,7 +121,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve timeout
 	timeoutSec := h.resolveTimeout(r)
-	m.TimeoutUsed = timeoutSec
 	logFields["timeout_sec"] = timeoutSec
 
 	// Build query
