@@ -156,7 +156,8 @@ queries:
         type: "datetime"
         required: true
 
-  # Example: Machine status summary
+  # Example: Machine status summary (HTTP + scheduled)
+  # This query is both an HTTP endpoint AND runs on a schedule
   - name: "machine_status_summary"
     path: "/api/machines/status-summary"
     method: "GET"
@@ -169,3 +170,27 @@ queries:
         MIN(LastPingTime) AS OldestPing,
         MAX(LastPingTime) AS LatestPing
       FROM Machines
+    schedule:
+      cron: "*/5 * * * *"    # Run every 5 minutes
+      log_results: true      # Log the actual row data
+
+  # Example: Scheduled-only query (no HTTP endpoint)
+  # This query runs daily and logs yesterday's attendance count
+  # - name: "daily_attendance_count"
+  #   description: "Count yesterday's attendance records"
+  #   sql: |
+  #     SELECT
+  #       COUNT(*) AS TotalCheckins,
+  #       COUNT(DISTINCT EmployeeId) AS UniqueEmployees,
+  #       CAST(@reportDate AS DATE) AS ReportDate
+  #     FROM AttendanceLog
+  #     WHERE CAST(PunchTime AS DATE) = CAST(@reportDate AS DATE)
+  #   parameters:
+  #     - name: "reportDate"
+  #       type: "datetime"
+  #       required: true
+  #   schedule:
+  #     cron: "0 8 * * *"      # Run at 8 AM daily
+  #     params:
+  #       reportDate: "yesterday"  # Dynamic date: resolves to yesterday at runtime
+  #     log_results: true

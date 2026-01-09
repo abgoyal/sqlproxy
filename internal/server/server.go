@@ -18,6 +18,7 @@ import (
 	"sql-proxy/internal/logging"
 	"sql-proxy/internal/metrics"
 	"sql-proxy/internal/openapi"
+	"sql-proxy/internal/scheduler"
 )
 
 type Server struct {
@@ -29,6 +30,9 @@ type Server struct {
 	// Health tracking
 	dbHealthy     atomic.Bool
 	healthChecker context.CancelFunc
+
+	// Scheduled query execution
+	scheduler *scheduler.Scheduler
 }
 
 func New(cfg *config.Config, interactive bool) (*Server, error) {
@@ -74,6 +78,11 @@ func New(cfg *config.Config, interactive bool) (*Server, error) {
 	if cfg.Metrics.Enabled {
 		metrics.Init(s.checkDBHealth)
 		logging.Info("metrics_initialized", nil)
+	}
+
+	// Initialize scheduler if there are scheduled queries
+	if scheduler.HasScheduledQueries(cfg.Queries) {
+		s.scheduler = scheduler.New(database, cfg.Queries, cfg.Server)
 	}
 
 	// Start background health checker
@@ -176,8 +185,11 @@ func (s *Server) setupRoutes(mux *http.ServeMux) {
 	// List available endpoints
 	mux.HandleFunc("/", s.listEndpointsHandler)
 
-	// Register query endpoints
+	// Register query endpoints (only for queries with HTTP paths)
 	for _, q := range s.config.Queries {
+		if q.Path == "" {
+			continue // Schedule-only query, no HTTP endpoint
+		}
 		h := handler.New(s.db, q, s.config.Server)
 		mux.Handle(q.Path, h)
 		logging.Info("endpoint_registered", map[string]any{
@@ -185,6 +197,7 @@ func (s *Server) setupRoutes(mux *http.ServeMux) {
 			"path":        q.Path,
 			"name":        q.Name,
 			"description": q.Description,
+			"scheduled":   q.Schedule != nil,
 		})
 	}
 }
@@ -285,32 +298,65 @@ func (s *Server) listEndpointsHandler(w http.ResponseWriter, r *http.Request) {
 		Parameters  []config.ParamConfig `json:"parameters,omitempty"`
 		TimeoutSec  int                  `json:"timeout_sec"`
 		TimeoutNote string               `json:"timeout_note"`
+		Schedule    string               `json:"schedule,omitempty"`
 	}
 
-	endpoints := make([]endpointInfo, 0, len(s.config.Queries))
+	type scheduledInfo struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Cron        string `json:"cron"`
+		LogResults  bool   `json:"log_results"`
+	}
+
+	endpoints := make([]endpointInfo, 0)
+	scheduled := make([]scheduledInfo, 0)
+
 	for _, q := range s.config.Queries {
-		effectiveTimeout := s.config.Server.DefaultTimeoutSec
-		if q.TimeoutSec > 0 {
-			effectiveTimeout = q.TimeoutSec
+		// Add to HTTP endpoints list if it has a path
+		if q.Path != "" {
+			effectiveTimeout := s.config.Server.DefaultTimeoutSec
+			if q.TimeoutSec > 0 {
+				effectiveTimeout = q.TimeoutSec
+			}
+			ep := endpointInfo{
+				Name:        q.Name,
+				Path:        q.Path,
+				Method:      q.Method,
+				Description: q.Description,
+				Parameters:  q.Parameters,
+				TimeoutSec:  effectiveTimeout,
+				TimeoutNote: fmt.Sprintf("Override with _timeout param (max %d)", s.config.Server.MaxTimeoutSec),
+			}
+			if q.Schedule != nil {
+				ep.Schedule = q.Schedule.Cron
+			}
+			endpoints = append(endpoints, ep)
 		}
-		endpoints = append(endpoints, endpointInfo{
-			Name:        q.Name,
-			Path:        q.Path,
-			Method:      q.Method,
-			Description: q.Description,
-			Parameters:  q.Parameters,
-			TimeoutSec:  effectiveTimeout,
-			TimeoutNote: fmt.Sprintf("Override with _timeout param (max %d)", s.config.Server.MaxTimeoutSec),
-		})
+
+		// Add to scheduled list if it has a schedule
+		if q.Schedule != nil {
+			scheduled = append(scheduled, scheduledInfo{
+				Name:        q.Name,
+				Description: q.Description,
+				Cron:        q.Schedule.Cron,
+				LogResults:  q.Schedule.LogResults,
+			})
+		}
 	}
 
-	json.NewEncoder(w).Encode(map[string]any{
+	response := map[string]any{
 		"service":             "sql-proxy",
 		"default_timeout_sec": s.config.Server.DefaultTimeoutSec,
 		"max_timeout_sec":     s.config.Server.MaxTimeoutSec,
 		"db_healthy":          s.dbHealthy.Load(),
 		"endpoints":           endpoints,
-	})
+	}
+
+	if len(scheduled) > 0 {
+		response["scheduled_queries"] = scheduled
+	}
+
+	json.NewEncoder(w).Encode(response)
 }
 
 // recoveryMiddleware catches panics and logs them
@@ -379,8 +425,13 @@ func (s *Server) gzipMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// Start begins listening for HTTP requests
+// Start begins listening for HTTP requests and starts the scheduler
 func (s *Server) Start() error {
+	// Start scheduler if configured
+	if s.scheduler != nil {
+		s.scheduler.Start()
+	}
+
 	logging.Info("server_starting", map[string]any{
 		"addr": s.httpServer.Addr,
 	})
@@ -390,6 +441,11 @@ func (s *Server) Start() error {
 // Shutdown gracefully stops the server
 func (s *Server) Shutdown(ctx context.Context) error {
 	logging.Info("server_shutting_down", nil)
+
+	// Stop scheduler
+	if s.scheduler != nil {
+		s.scheduler.Stop()
+	}
 
 	// Stop health checker
 	if s.healthChecker != nil {

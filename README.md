@@ -7,8 +7,9 @@ A lightweight, production-grade Go service that exposes predefined SQL Server qu
 - **Windows Service** - Auto-start on boot, proper service lifecycle
 - **YAML Configuration** - Easy query management, no code changes
 - **Read-only Safety** - Zero interference with production database
+- **Scheduled Queries** - Run queries on cron schedule with retry
 - **Structured Logging** - JSON logs with automatic rotation
-- **Metrics Export** - Periodic stats to file for monitoring
+- **Metrics Endpoint** - `/metrics` for monitoring
 - **Request Tracing** - Wide events with request IDs
 - **Runtime Config** - Change log level without restart
 - **Auto-Recovery** - Automatic database reconnection
@@ -22,6 +23,7 @@ This service is designed for long-running, fire-and-forget operation:
 |---------|-------------|
 | **Log Rotation** | Automatic rotation by size, age retention, compression |
 | **Metrics Endpoint** | `/metrics` endpoint for monitoring |
+| **Scheduled Queries** | Cron-based execution with retry and backoff |
 | **DB Health Checks** | Every 30s, auto-reconnect after 3 failures |
 | **Panic Recovery** | Catches panics, logs them, returns 500 |
 | **Connection Recycling** | Pool connections expire after 5 minutes |
@@ -362,6 +364,94 @@ All query results are loaded into memory before JSON serialization. For large re
 - Always use `TOP @limit` or `OFFSET/FETCH` in queries
 - Set reasonable default limits (e.g., 100-1000 rows)
 - Monitor memory usage for queries returning large text/blob columns
+
+## Scheduled Queries
+
+Queries can run automatically on a cron schedule, independent of HTTP requests. This is useful for periodic data collection, health monitoring, or generating reports.
+
+### Basic Schedule
+
+Add a `schedule` block to any query:
+
+```yaml
+queries:
+  - name: "machine_status_check"
+    path: "/api/status"           # Optional - omit for schedule-only queries
+    method: "GET"
+    description: "Check machine status"
+    sql: |
+      SELECT COUNT(*) AS online FROM Machines WHERE IsOnline = 1
+    schedule:
+      cron: "*/5 * * * *"         # Every 5 minutes
+      log_results: false          # Just log row count (default)
+```
+
+### Schedule-Only Queries
+
+Omit `path` to create a query that only runs on schedule (no HTTP endpoint):
+
+```yaml
+  - name: "daily_attendance_report"
+    description: "Count yesterday's attendance"
+    sql: |
+      SELECT COUNT(*) AS total, COUNT(DISTINCT EmployeeId) AS unique_employees
+      FROM AttendanceLog
+      WHERE CAST(PunchTime AS DATE) = CAST(@reportDate AS DATE)
+    parameters:
+      - name: "reportDate"
+        type: "datetime"
+        required: true
+    schedule:
+      cron: "0 8 * * *"           # 8 AM daily
+      params:
+        reportDate: "yesterday"   # Dynamic date value
+      log_results: true           # Log first 10 rows
+```
+
+### Dynamic Date Values
+
+The following special values are resolved at execution time:
+
+| Value | Resolves To |
+|-------|-------------|
+| `now` | Current timestamp |
+| `today` | Start of today (00:00:00) |
+| `yesterday` | Start of yesterday |
+| `tomorrow` | Start of tomorrow |
+
+### Cron Expression Format
+
+Standard 5-field cron format: `minute hour day-of-month month day-of-week`
+
+| Expression | Description |
+|------------|-------------|
+| `*/5 * * * *` | Every 5 minutes |
+| `0 * * * *` | Every hour |
+| `0 8 * * *` | Daily at 8 AM |
+| `0 8 * * 1` | Mondays at 8 AM |
+| `0 0 1 * *` | First day of month at midnight |
+
+### Retry Behavior
+
+Scheduled queries automatically retry on failure:
+- 3 attempts total
+- Exponential backoff: 1s, 5s, 25s between retries
+- Logs error after all retries exhausted
+
+### Logging
+
+Scheduled query execution is logged:
+
+```json
+{"time":"...","level":"INFO","msg":"scheduled_query_started","query_name":"daily_report","cron":"0 8 * * *"}
+{"time":"...","level":"INFO","msg":"scheduled_query_completed","query_name":"daily_report","row_count":1,"duration_ms":45}
+```
+
+With `log_results: true`, the first 10 rows are included:
+
+```json
+{"time":"...","level":"INFO","msg":"scheduled_query_completed","query_name":"daily_report","row_count":1,"duration_ms":45,"sample_rows":"[{\"total\":1523,\"unique_employees\":342}]"}
+```
 
 ## Logging
 

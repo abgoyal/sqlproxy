@@ -43,13 +43,20 @@ type DatabaseConfig struct {
 }
 
 type QueryConfig struct {
-	Name        string        `yaml:"name"`
-	Path        string        `yaml:"path"`
-	Method      string        `yaml:"method"`
-	Description string        `yaml:"description"`
-	SQL         string        `yaml:"sql"`
-	Parameters  []ParamConfig `yaml:"parameters"`
-	TimeoutSec  int           `yaml:"timeout_sec"` // Query-specific default timeout (0 = use server default)
+	Name        string          `yaml:"name"`
+	Path        string          `yaml:"path"`   // Optional if Schedule is set
+	Method      string          `yaml:"method"` // GET or POST (for HTTP endpoint)
+	Description string          `yaml:"description"`
+	SQL         string          `yaml:"sql"`
+	Parameters  []ParamConfig   `yaml:"parameters"`
+	TimeoutSec  int             `yaml:"timeout_sec"` // Query-specific default timeout (0 = use server default)
+	Schedule    *ScheduleConfig `yaml:"schedule"`    // Optional scheduled execution
+}
+
+type ScheduleConfig struct {
+	Cron       string            `yaml:"cron"`        // Cron expression (e.g., "0 8 * * *" for 8 AM daily)
+	Params     map[string]string `yaml:"params"`      // Parameter values for scheduled runs
+	LogResults bool              `yaml:"log_results"` // Log first 10 result rows (default: false, just log count)
 }
 
 type ParamConfig struct {
@@ -128,13 +135,14 @@ func (c *Config) validate() error {
 		if q.Name == "" {
 			return fmt.Errorf("query %d: name is required", i)
 		}
-		if q.Path == "" {
-			return fmt.Errorf("query %s: path is required", q.Name)
+		// Path is required only if not a scheduled-only query
+		if q.Path == "" && q.Schedule == nil {
+			return fmt.Errorf("query %s: path is required (unless schedule is set)", q.Name)
 		}
 		if q.SQL == "" {
 			return fmt.Errorf("query %s: sql is required", q.Name)
 		}
-		if q.Method == "" {
+		if q.Path != "" && q.Method == "" {
 			c.Queries[i].Method = "GET"
 		}
 	}

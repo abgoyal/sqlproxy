@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/robfig/cron/v3"
+
 	"sql-proxy/internal/config"
 	"sql-proxy/internal/db"
 )
@@ -87,7 +89,7 @@ func validateLogging(cfg *config.Config, r *Result) {
 
 func validateQueries(cfg *config.Config, r *Result) {
 	if len(cfg.Queries) == 0 {
-		r.addWarning("No queries configured - service will have no query endpoints")
+		r.addWarning("No queries configured - service will have no endpoints")
 		return
 	}
 
@@ -102,17 +104,25 @@ func validateQueries(cfg *config.Config, r *Result) {
 		}
 		names[q.Name] = true
 
-		if existing, ok := paths[q.Path]; ok {
-			r.addError("%s: path '%s' already used by '%s'", prefix, q.Path, existing)
-		}
-		paths[q.Path] = q.Name
-
-		if !strings.HasPrefix(q.Path, "/") {
-			r.addError("%s: path must start with '/'", prefix)
+		// Warn if query has neither HTTP endpoint nor schedule
+		if q.Path == "" && q.Schedule == nil {
+			r.addWarning("%s: has neither path nor schedule - query is unreachable", prefix)
 		}
 
-		if q.Method != "GET" && q.Method != "POST" {
-			r.addError("%s: method must be GET or POST", prefix)
+		// Validate HTTP endpoint settings (only if path is set)
+		if q.Path != "" {
+			if existing, ok := paths[q.Path]; ok {
+				r.addError("%s: path '%s' already used by '%s'", prefix, q.Path, existing)
+			}
+			paths[q.Path] = q.Name
+
+			if !strings.HasPrefix(q.Path, "/") {
+				r.addError("%s: path must start with '/'", prefix)
+			}
+
+			if q.Method != "GET" && q.Method != "POST" {
+				r.addError("%s: method must be GET or POST", prefix)
+			}
 		}
 
 		if strings.TrimSpace(q.SQL) == "" {
@@ -129,6 +139,11 @@ func validateQueries(cfg *config.Config, r *Result) {
 
 		// Check SQL params match config params
 		validateParams(q, prefix, r)
+
+		// Validate schedule if present
+		if q.Schedule != nil {
+			validateSchedule(q, prefix, r)
+		}
 	}
 }
 
@@ -160,6 +175,52 @@ func validateParams(q config.QueryConfig, prefix string, r *Result) {
 	for name := range configParams {
 		if !sqlParams[name] {
 			r.addWarning("%s: parameter '%s' defined but not used in SQL", prefix, name)
+		}
+	}
+}
+
+func validateSchedule(q config.QueryConfig, prefix string, r *Result) {
+	sched := q.Schedule
+
+	// Validate cron expression
+	if sched.Cron == "" {
+		r.addError("%s: schedule.cron is required", prefix)
+	} else {
+		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+		if _, err := parser.Parse(sched.Cron); err != nil {
+			r.addError("%s: invalid cron expression '%s': %v", prefix, sched.Cron, err)
+		}
+	}
+
+	// Check that required params have values in schedule.params
+	for _, p := range q.Parameters {
+		if p.Required {
+			if _, ok := sched.Params[p.Name]; !ok {
+				// Check if there's a default value
+				if p.Default == "" {
+					r.addError("%s: required parameter '%s' must have a value in schedule.params", prefix, p.Name)
+				}
+			}
+		}
+	}
+
+	// Validate dynamic date values
+	validDynamicDates := map[string]bool{
+		"now": true, "today": true, "yesterday": true, "tomorrow": true,
+	}
+	for name, value := range sched.Params {
+		// Check if it looks like a dynamic date but is misspelled
+		lower := strings.ToLower(value)
+		if strings.HasPrefix(lower, "to") || strings.HasPrefix(lower, "yes") || lower == "now" {
+			if !validDynamicDates[lower] && validDynamicDates[strings.ToLower(value)] == false {
+				// It might be a typo - only warn if it's close to a valid value
+				for valid := range validDynamicDates {
+					if strings.HasPrefix(lower, valid[:2]) && lower != valid {
+						r.addWarning("%s: schedule.params.%s value '%s' looks like a typo for '%s'", prefix, name, value, valid)
+						break
+					}
+				}
+			}
 		}
 	}
 }
