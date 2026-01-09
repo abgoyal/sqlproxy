@@ -8,19 +8,19 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig   `yaml:"server"`
-	Database DatabaseConfig `yaml:"database"`
-	Logging  LoggingConfig  `yaml:"logging"`
-	Metrics  MetricsConfig  `yaml:"metrics"`
-	Queries  []QueryConfig  `yaml:"queries"`
+	Server    ServerConfig     `yaml:"server"`
+	Databases []DatabaseConfig `yaml:"databases"`
+	Logging   LoggingConfig    `yaml:"logging"`
+	Metrics   MetricsConfig    `yaml:"metrics"`
+	Queries   []QueryConfig    `yaml:"queries"`
 }
 
 type LoggingConfig struct {
 	Level      string `yaml:"level"`        // debug, info, warn, error
 	FilePath   string `yaml:"file_path"`    // Log file path (used in service mode)
-	MaxSizeMB  int    `yaml:"max_size_mb"`  // Rotate at this size (default 100)
-	MaxBackups int    `yaml:"max_backups"`  // Old files to keep (default 5)
-	MaxAgeDays int    `yaml:"max_age_days"` // Delete after days (default 30)
+	MaxSizeMB  int    `yaml:"max_size_mb"`  // Rotate at this size (MB)
+	MaxBackups int    `yaml:"max_backups"`  // Old files to keep
+	MaxAgeDays int    `yaml:"max_age_days"` // Delete after days
 }
 
 type MetricsConfig struct {
@@ -35,21 +35,32 @@ type ServerConfig struct {
 }
 
 type DatabaseConfig struct {
+	Name     string `yaml:"name"`     // Connection name (required)
 	Host     string `yaml:"host"`
 	Port     int    `yaml:"port"`
 	User     string `yaml:"user"`
 	Password string `yaml:"password"`
 	Database string `yaml:"database"`
+	ReadOnly *bool  `yaml:"readonly"` // nil defaults to true for safety
+}
+
+// IsReadOnly returns whether this connection is read-only (defaults to true)
+func (d *DatabaseConfig) IsReadOnly() bool {
+	if d.ReadOnly == nil {
+		return true // Default to read-only for safety
+	}
+	return *d.ReadOnly
 }
 
 type QueryConfig struct {
 	Name        string          `yaml:"name"`
-	Path        string          `yaml:"path"`   // Optional if Schedule is set
-	Method      string          `yaml:"method"` // GET or POST (for HTTP endpoint)
+	Database    string          `yaml:"database"` // Connection name (required)
+	Path        string          `yaml:"path"`     // HTTP path (required unless schedule-only)
+	Method      string          `yaml:"method"`   // GET or POST (required when path is set)
 	Description string          `yaml:"description"`
 	SQL         string          `yaml:"sql"`
 	Parameters  []ParamConfig   `yaml:"parameters"`
-	TimeoutSec  int             `yaml:"timeout_sec"` // Query-specific default timeout (0 = use server default)
+	TimeoutSec  int             `yaml:"timeout_sec"` // Query-specific timeout (0 = use server default)
 	Schedule    *ScheduleConfig `yaml:"schedule"`    // Optional scheduled execution
 }
 
@@ -80,38 +91,6 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	// Set defaults
-	if cfg.Server.Port == 0 {
-		cfg.Server.Port = 8080
-	}
-	if cfg.Server.Host == "" {
-		cfg.Server.Host = "127.0.0.1"
-	}
-	if cfg.Server.DefaultTimeoutSec == 0 {
-		cfg.Server.DefaultTimeoutSec = 30
-	}
-	if cfg.Server.MaxTimeoutSec == 0 {
-		cfg.Server.MaxTimeoutSec = 300 // 5 minutes max
-	}
-	if cfg.Database.Port == 0 {
-		cfg.Database.Port = 1433
-	}
-
-	// Logging defaults
-	if cfg.Logging.Level == "" {
-		cfg.Logging.Level = "info"
-	}
-	if cfg.Logging.MaxSizeMB == 0 {
-		cfg.Logging.MaxSizeMB = 100
-	}
-	if cfg.Logging.MaxBackups == 0 {
-		cfg.Logging.MaxBackups = 5
-	}
-	if cfg.Logging.MaxAgeDays == 0 {
-		cfg.Logging.MaxAgeDays = 30
-	}
-
-
 	// Validate
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -121,29 +100,98 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) validate() error {
-	if c.Database.Host == "" {
-		return fmt.Errorf("database host is required")
+	// Validate server config
+	if c.Server.Host == "" {
+		return fmt.Errorf("server.host is required")
 	}
-	if c.Database.User == "" {
-		return fmt.Errorf("database user is required")
+	if c.Server.Port == 0 {
+		return fmt.Errorf("server.port is required")
 	}
-	if c.Database.Database == "" {
-		return fmt.Errorf("database name is required")
+	if c.Server.Port < 1 || c.Server.Port > 65535 {
+		return fmt.Errorf("server.port must be 1-65535")
+	}
+	if c.Server.DefaultTimeoutSec == 0 {
+		return fmt.Errorf("server.default_timeout_sec is required")
+	}
+	if c.Server.MaxTimeoutSec == 0 {
+		return fmt.Errorf("server.max_timeout_sec is required")
+	}
+	if c.Server.MaxTimeoutSec < c.Server.DefaultTimeoutSec {
+		return fmt.Errorf("server.max_timeout_sec must be >= server.default_timeout_sec")
+	}
+
+	// Validate logging config
+	if c.Logging.Level == "" {
+		return fmt.Errorf("logging.level is required")
+	}
+	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
+	if !validLevels[c.Logging.Level] {
+		return fmt.Errorf("logging.level must be debug, info, warn, or error")
+	}
+	if c.Logging.MaxSizeMB == 0 {
+		return fmt.Errorf("logging.max_size_mb is required")
+	}
+	if c.Logging.MaxBackups == 0 {
+		return fmt.Errorf("logging.max_backups is required")
+	}
+	if c.Logging.MaxAgeDays == 0 {
+		return fmt.Errorf("logging.max_age_days is required")
+	}
+
+	// Validate database configs
+	if len(c.Databases) == 0 {
+		return fmt.Errorf("at least one database connection is required in 'databases'")
+	}
+
+	dbNames := make(map[string]bool)
+	for i, db := range c.Databases {
+		if db.Name == "" {
+			return fmt.Errorf("databases[%d].name is required", i)
+		}
+		if dbNames[db.Name] {
+			return fmt.Errorf("duplicate database name: %s", db.Name)
+		}
+		dbNames[db.Name] = true
+
+		if db.Host == "" {
+			return fmt.Errorf("databases[%d] (%s): host is required", i, db.Name)
+		}
+		if db.Port == 0 {
+			return fmt.Errorf("databases[%d] (%s): port is required", i, db.Name)
+		}
+		if db.User == "" {
+			return fmt.Errorf("databases[%d] (%s): user is required", i, db.Name)
+		}
+		if db.Password == "" {
+			return fmt.Errorf("databases[%d] (%s): password is required", i, db.Name)
+		}
+		if db.Database == "" {
+			return fmt.Errorf("databases[%d] (%s): database is required", i, db.Name)
+		}
 	}
 
 	for i, q := range c.Queries {
 		if q.Name == "" {
-			return fmt.Errorf("query %d: name is required", i)
+			return fmt.Errorf("queries[%d]: name is required", i)
+		}
+		if q.Database == "" {
+			return fmt.Errorf("queries[%d] (%s): database is required", i, q.Name)
+		}
+		if !dbNames[q.Database] {
+			return fmt.Errorf("queries[%d] (%s): unknown database '%s'", i, q.Name, q.Database)
 		}
 		// Path is required only if not a scheduled-only query
 		if q.Path == "" && q.Schedule == nil {
-			return fmt.Errorf("query %s: path is required (unless schedule is set)", q.Name)
+			return fmt.Errorf("queries[%d] (%s): path is required (unless schedule is set)", i, q.Name)
 		}
 		if q.SQL == "" {
-			return fmt.Errorf("query %s: sql is required", q.Name)
+			return fmt.Errorf("queries[%d] (%s): sql is required", i, q.Name)
 		}
 		if q.Path != "" && q.Method == "" {
-			c.Queries[i].Method = "GET"
+			return fmt.Errorf("queries[%d] (%s): method is required when path is set", i, q.Name)
+		}
+		if q.Path != "" && q.Method != "GET" && q.Method != "POST" {
+			return fmt.Errorf("queries[%d] (%s): method must be GET or POST", i, q.Name)
 		}
 	}
 

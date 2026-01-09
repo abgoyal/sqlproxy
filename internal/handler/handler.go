@@ -20,7 +20,8 @@ import (
 )
 
 type Handler struct {
-	db                *db.DB
+	dbManager         *db.Manager
+	dbName            string // Which connection to use
 	queryConfig       config.QueryConfig
 	defaultTimeoutSec int
 	maxTimeoutSec     int
@@ -35,9 +36,10 @@ type Response struct {
 	RequestID  string `json:"request_id,omitempty"`
 }
 
-func New(database *db.DB, queryCfg config.QueryConfig, serverCfg config.ServerConfig) *Handler {
+func New(dbManager *db.Manager, queryCfg config.QueryConfig, serverCfg config.ServerConfig) *Handler {
 	return &Handler{
-		db:                database,
+		dbManager:         dbManager,
+		dbName:            queryCfg.Database,
 		queryConfig:       queryCfg,
 		defaultTimeoutSec: serverCfg.DefaultTimeoutSec,
 		maxTimeoutSec:     serverCfg.MaxTimeoutSec,
@@ -77,10 +79,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Common log fields for wide events
 	logFields := map[string]any{
-		"request_id": requestID,
-		"endpoint":   h.queryConfig.Path,
-		"query_name": h.queryConfig.Name,
-		"method":     r.Method,
+		"request_id":  requestID,
+		"endpoint":    h.queryConfig.Path,
+		"query_name":  h.queryConfig.Name,
+		"database":    h.dbName,
+		"method":      r.Method,
 		"remote_addr": r.RemoteAddr,
 	}
 
@@ -134,6 +137,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get database connection
+	database, err := h.dbManager.Get(h.dbName)
+	if err != nil {
+		m.StatusCode = http.StatusInternalServerError
+		m.Error = err.Error()
+		m.TotalDuration = time.Since(startTime)
+		logFields["error"] = err.Error()
+		h.finishRequest(w, m, logFields, http.StatusInternalServerError, "database connection unavailable", requestID, timeoutSec)
+		return
+	}
+
 	// Execute query
 	logging.Debug("query_starting", logFields)
 	queryStart := time.Now()
@@ -141,7 +155,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
-	results, err := h.db.Query(ctx, query, args...)
+	results, err := database.Query(ctx, query, args...)
 	queryDuration := time.Since(queryStart)
 	m.QueryDuration = queryDuration
 

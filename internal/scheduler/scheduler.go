@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -24,15 +25,15 @@ const (
 // Scheduler manages scheduled query execution
 type Scheduler struct {
 	cron      *cron.Cron
-	db        *db.DB
+	dbManager *db.Manager
 	serverCfg config.ServerConfig
 }
 
 // New creates a new scheduler for the given queries
-func New(database *db.DB, queries []config.QueryConfig, serverCfg config.ServerConfig) *Scheduler {
+func New(dbManager *db.Manager, queries []config.QueryConfig, serverCfg config.ServerConfig) *Scheduler {
 	s := &Scheduler{
 		cron:      cron.New(),
-		db:        database,
+		dbManager: dbManager,
 		serverCfg: serverCfg,
 	}
 
@@ -67,6 +68,7 @@ func (s *Scheduler) addJob(q config.QueryConfig) {
 	if err != nil {
 		logging.Error("scheduler_add_job_failed", map[string]any{
 			"query_name": q.Name,
+			"database":   q.Database,
 			"cron":       q.Schedule.Cron,
 			"error":      err.Error(),
 		})
@@ -75,6 +77,7 @@ func (s *Scheduler) addJob(q config.QueryConfig) {
 
 	logging.Info("scheduler_job_added", map[string]any{
 		"query_name": q.Name,
+		"database":   q.Database,
 		"cron":       q.Schedule.Cron,
 	})
 }
@@ -82,6 +85,7 @@ func (s *Scheduler) addJob(q config.QueryConfig) {
 func (s *Scheduler) executeJob(q config.QueryConfig) {
 	logging.Info("scheduled_query_started", map[string]any{
 		"query_name": q.Name,
+		"database":   q.Database,
 		"cron":       q.Schedule.Cron,
 	})
 
@@ -97,6 +101,7 @@ func (s *Scheduler) executeJob(q config.QueryConfig) {
 			time.Sleep(backoffs[attempt-1])
 			logging.Debug("scheduled_query_retry", map[string]any{
 				"query_name": q.Name,
+				"database":   q.Database,
 				"attempt":    attempt,
 			})
 		}
@@ -108,6 +113,7 @@ func (s *Scheduler) executeJob(q config.QueryConfig) {
 
 		logging.Warn("scheduled_query_attempt_failed", map[string]any{
 			"query_name": q.Name,
+			"database":   q.Database,
 			"attempt":    attempt,
 			"error":      lastErr.Error(),
 		})
@@ -118,6 +124,7 @@ func (s *Scheduler) executeJob(q config.QueryConfig) {
 	if lastErr != nil {
 		logging.Error("scheduled_query_failed", map[string]any{
 			"query_name":  q.Name,
+			"database":    q.Database,
 			"error":       lastErr.Error(),
 			"attempts":    maxRetries,
 			"duration_ms": duration.Milliseconds(),
@@ -128,6 +135,7 @@ func (s *Scheduler) executeJob(q config.QueryConfig) {
 	// Success - log results
 	logFields := map[string]any{
 		"query_name":  q.Name,
+		"database":    q.Database,
 		"row_count":   len(results),
 		"duration_ms": duration.Milliseconds(),
 	}
@@ -148,6 +156,12 @@ func (s *Scheduler) executeJob(q config.QueryConfig) {
 }
 
 func (s *Scheduler) runQuery(q config.QueryConfig) ([]map[string]any, error) {
+	// Get database connection
+	database, err := s.dbManager.Get(q.Database)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get database connection %s: %w", q.Database, err)
+	}
+
 	// Resolve timeout
 	timeout := queryTimeout
 	if q.TimeoutSec > 0 {
@@ -165,7 +179,7 @@ func (s *Scheduler) runQuery(q config.QueryConfig) ([]map[string]any, error) {
 		return nil, err
 	}
 
-	return s.db.Query(ctx, q.SQL, args...)
+	return database.Query(ctx, q.SQL, args...)
 }
 
 func (s *Scheduler) buildArgs(q config.QueryConfig) ([]any, error) {

@@ -102,9 +102,11 @@ func buildPaths(cfg *config.Config) map[string]any {
 		},
 	}
 
-	// Add query endpoints
+	// Add query endpoints (skip schedule-only queries without HTTP paths)
 	for _, q := range cfg.Queries {
-		paths[q.Path] = buildQueryPath(q, cfg.Server)
+		if q.Path != "" {
+			paths[q.Path] = buildQueryPath(q, cfg.Server)
+		}
 	}
 
 	return paths

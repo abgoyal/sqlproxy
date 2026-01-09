@@ -148,6 +148,8 @@ The validator checks:
 
 ## Configuration
 
+All configuration fields are **required** - no defaults are assumed. This ensures explicit, predictable behavior.
+
 ### Complete Example
 
 ```yaml
@@ -157,25 +159,28 @@ server:
   default_timeout_sec: 30
   max_timeout_sec: 300
 
-database:
-  host: "your-server.rds.amazonaws.com"
-  port: 1433
-  user: "sqlproxy_reader"
-  password: "${DB_PASSWORD}"  # Use env var
-  database: "YourDB"
+databases:
+  - name: "primary"
+    host: "your-server.rds.amazonaws.com"
+    port: 1433
+    user: "sqlproxy_reader"
+    password: "${DB_PASSWORD}"
+    database: "YourDB"
+    readonly: true
 
 logging:
-  level: "info"                # debug, info, warn, error
-  file_path: "C:/Services/SQLProxy/logs/sql-proxy.log"  # Service mode only
-  max_size_mb: 100             # Rotate at 100MB
-  max_backups: 5               # Keep 5 old files
-  max_age_days: 30             # Delete files older than 30 days
+  level: "info"
+  file_path: "C:/Services/SQLProxy/logs/sql-proxy.log"
+  max_size_mb: 100
+  max_backups: 5
+  max_age_days: 30
 
 metrics:
-  enabled: true                # Exposes /metrics endpoint
+  enabled: true
 
 queries:
   - name: "list_machines"
+    database: "primary"
     path: "/api/machines"
     method: "GET"
     description: "List all biometric machines"
@@ -184,6 +189,57 @@ queries:
       FROM Machines
       ORDER BY MachineName
 ```
+
+### Multiple Database Connections
+
+```yaml
+databases:
+  - name: "primary"
+    host: "server1.example.com"
+    port: 1433
+    user: "reader"
+    password: "${PRIMARY_DB_PASSWORD}"
+    database: "MainDB"
+    readonly: true               # Full safety measures
+
+  - name: "reporting"
+    host: "server2.example.com"
+    port: 1433
+    user: "writer"
+    password: "${REPORTING_DB_PASSWORD}"
+    database: "ReportingDB"
+    readonly: false              # Allows writes
+
+queries:
+  - name: "get_machines"
+    database: "primary"
+    path: "/api/machines"
+    method: "GET"
+    sql: "SELECT * FROM Machines"
+
+  - name: "insert_report"
+    database: "reporting"
+    path: "/api/reports"
+    method: "POST"
+    sql: "INSERT INTO Reports (Date, Data) VALUES (@date, @data)"
+```
+
+### Connection Mode Settings
+
+| Setting | `readonly: true` | `readonly: false` |
+|---------|------------------|-------------------|
+| `READ UNCOMMITTED` | Yes | No |
+| `LOCK_TIMEOUT 5000` | Yes | Yes |
+| `DEADLOCK_PRIORITY LOW` | Yes | Yes |
+| `ApplicationIntent=ReadOnly` | Yes | No |
+
+### Validation
+
+Config validation enforces:
+- All required fields present (no defaults)
+- Queries with INSERT/UPDATE/DELETE on read-only connections → **error**
+- Unknown database references → **error**
+- Unused database connections → **warning**
 
 ### Timeout Configuration
 

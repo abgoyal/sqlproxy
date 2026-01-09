@@ -79,13 +79,22 @@ func printValidationResult(cfg *config.Config, result *validate.Result) {
 	fmt.Printf("Config file: %s\n\n", *configPath)
 
 	fmt.Printf("Server: %s:%d\n", cfg.Server.Host, cfg.Server.Port)
-	fmt.Printf("Database: %s@%s/%s\n", cfg.Database.User, cfg.Database.Host, cfg.Database.Database)
-	fmt.Printf("Queries: %d endpoints configured\n", len(cfg.Queries))
+	fmt.Printf("Databases: %d configured\n", len(cfg.Databases))
+	for _, db := range cfg.Databases {
+		mode := "read-only"
+		if !db.IsReadOnly() {
+			mode = "read-write"
+		}
+		fmt.Printf("  - %s: %s@%s/%s (%s)\n", db.Name, db.User, db.Host, db.Database, mode)
+	}
+	fmt.Printf("Queries: %d configured\n", len(cfg.Queries))
 
 	if len(cfg.Queries) > 0 {
 		fmt.Println("\nEndpoints:")
 		for _, q := range cfg.Queries {
-			fmt.Printf("  %s %s - %s (%d params)\n", q.Method, q.Path, q.Name, len(q.Parameters))
+			if q.Path != "" {
+				fmt.Printf("  %s %s - %s [%s] (%d params)\n", q.Method, q.Path, q.Name, q.Database, len(q.Parameters))
+			}
 		}
 	}
 

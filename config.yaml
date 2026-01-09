@@ -1,5 +1,6 @@
 # SQL Proxy Configuration
 # Environment variables can be used with ${VAR_NAME} syntax
+# All fields are required - no defaults are assumed
 
 server:
   host: "127.0.0.1"        # Listen address (use 0.0.0.0 for all interfaces)
@@ -7,35 +8,35 @@ server:
   default_timeout_sec: 30  # Default query timeout (seconds)
   max_timeout_sec: 300     # Maximum allowed timeout (caps _timeout param)
 
-database:
-  host: "${DB_HOST}"           # SQL Server host (can use env var)
-  port: 1433                   # SQL Server port
-  user: "${DB_USER}"           # Database user
-  password: "${DB_PASSWORD}"   # Database password
-  database: "${DB_NAME}"       # Database name
+# Database connections - all fields required
+databases:
+  - name: "primary"                # Connection name (referenced by queries)
+    host: "${DB_HOST}"             # SQL Server host
+    port: 1433                     # SQL Server port (typically 1433)
+    user: "${DB_USER}"             # Database user
+    password: "${DB_PASSWORD}"     # Database password
+    database: "${DB_NAME}"         # Database name
+    readonly: true                 # true: full safety (READ UNCOMMITTED, etc.)
+                                   # false: allows writes, default isolation
 
-# Logging Configuration
-# JSON logs via slog, rotation via lumberjack
-# Note: In interactive mode, logs go to stdout (file_path ignored)
-#       In service mode, logs go to file only
+# Logging Configuration - all fields required
 logging:
   level: "info"                              # debug, info, warn, error
   file_path: "C:/Services/SQLProxy/logs/sql-proxy.log"  # Log file (service mode)
-  max_size_mb: 100                           # Rotate at this size (default 100)
-  max_backups: 5                             # Old files to keep (default 5)
-  max_age_days: 30                           # Delete after days (default 30)
+  max_size_mb: 100                           # Rotate at this size
+  max_backups: 5                             # Old files to keep
+  max_age_days: 30                           # Delete after days
 
 # Metrics Configuration
-# Exposes metrics at /metrics endpoint
 metrics:
   enabled: true
 
-# Query Definitions
-# Each query becomes an HTTP endpoint
-# Parameters use @paramName syntax in SQL and are bound from query string
+# Query Definitions - each query requires: name, database, sql
+# HTTP endpoints also require: path, method
 queries:
   # Example: Get all machines
   - name: "list_machines"
+    database: "primary"
     path: "/api/machines"
     method: "GET"
     description: "List all biometric machines"
@@ -51,6 +52,7 @@ queries:
 
   # Example: Get machine by ID
   - name: "get_machine"
+    database: "primary"
     path: "/api/machines/details"
     method: "GET"
     description: "Get machine details by ID"
@@ -72,6 +74,7 @@ queries:
 
   # Example: Get machine ping history
   - name: "machine_ping_history"
+    database: "primary"
     path: "/api/machines/ping-history"
     method: "GET"
     description: "Get ping history for a machine"
@@ -100,10 +103,11 @@ queries:
   # Example: Get check-in/out logs
   # This query has a custom timeout since it may scan large date ranges
   - name: "checkin_logs"
+    database: "primary"
     path: "/api/checkins"
     method: "GET"
     description: "Get check-in/out logs for a date range"
-    timeout_sec: 60  # Query-specific default (overrides server default)
+    timeout_sec: 60  # Query-specific timeout (overrides server default)
     sql: |
       SELECT TOP (@limit)
         l.LogId,
@@ -130,6 +134,7 @@ queries:
 
   # Example: Get check-ins for specific employee
   - name: "employee_checkins"
+    database: "primary"
     path: "/api/checkins/employee"
     method: "GET"
     description: "Get check-in/out logs for a specific employee"
@@ -159,6 +164,7 @@ queries:
   # Example: Machine status summary (HTTP + scheduled)
   # This query is both an HTTP endpoint AND runs on a schedule
   - name: "machine_status_summary"
+    database: "primary"
     path: "/api/machines/status-summary"
     method: "GET"
     description: "Get summary of machine online/offline status"
@@ -177,6 +183,7 @@ queries:
   # Example: Scheduled-only query (no HTTP endpoint)
   # This query runs daily and logs yesterday's attendance count
   # - name: "daily_attendance_count"
+  #   database: "primary"
   #   description: "Count yesterday's attendance records"
   #   sql: |
   #     SELECT

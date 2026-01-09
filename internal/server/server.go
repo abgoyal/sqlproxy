@@ -23,11 +23,11 @@ import (
 
 type Server struct {
 	httpServer *http.Server
-	db         *db.DB
+	dbManager  *db.Manager
 	config     *config.Config
 	createdAt  time.Time
 
-	// Health tracking
+	// Health tracking (all DBs healthy)
 	dbHealthy     atomic.Bool
 	healthChecker context.CancelFunc
 
@@ -47,28 +47,32 @@ func New(cfg *config.Config, interactive bool) (*Server, error) {
 	}
 
 	logging.Info("service_starting", map[string]any{
-		"version":    "1.0.0",
-		"log_level":  cfg.Logging.Level,
-		"queries":    len(cfg.Queries),
+		"version":   "1.0.0",
+		"log_level": cfg.Logging.Level,
+		"queries":   len(cfg.Queries),
+		"databases": len(cfg.Databases),
 	})
 
-	// Connect to database
-	database, err := db.New(cfg.Database)
+	// Connect to all databases
+	dbManager, err := db.NewManager(cfg.Databases)
 	if err != nil {
 		logging.Error("database_connection_failed", map[string]any{
 			"error": err.Error(),
-			"host":  cfg.Database.Host,
 		})
-		return nil, fmt.Errorf("failed to connect to database: %w", err)
+		return nil, fmt.Errorf("failed to connect to databases: %w", err)
 	}
 
-	logging.Info("database_connected", map[string]any{
-		"host":     cfg.Database.Host,
-		"database": cfg.Database.Database,
-	})
+	for _, dbCfg := range cfg.Databases {
+		logging.Info("database_connected", map[string]any{
+			"name":     dbCfg.Name,
+			"host":     dbCfg.Host,
+			"database": dbCfg.Database,
+			"readonly": dbCfg.IsReadOnly(),
+		})
+	}
 
 	s := &Server{
-		db:        database,
+		dbManager: dbManager,
 		config:    cfg,
 		createdAt: time.Now(),
 	}
@@ -82,7 +86,7 @@ func New(cfg *config.Config, interactive bool) (*Server, error) {
 
 	// Initialize scheduler if there are scheduled queries
 	if scheduler.HasScheduledQueries(cfg.Queries) {
-		s.scheduler = scheduler.New(database, cfg.Queries, cfg.Server)
+		s.scheduler = scheduler.New(dbManager, cfg.Queries, cfg.Server)
 	}
 
 	// Start background health checker
@@ -111,12 +115,13 @@ func New(cfg *config.Config, interactive bool) (*Server, error) {
 	return s, nil
 }
 
-// runHealthChecker periodically checks database connectivity
+// runHealthChecker periodically checks database connectivity for all connections
 func (s *Server) runHealthChecker(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
-	consecutiveFailures := 0
+	// Track consecutive failures per database
+	consecutiveFailures := make(map[string]int)
 
 	for {
 		select {
@@ -124,41 +129,55 @@ func (s *Server) runHealthChecker(ctx context.Context) {
 			return
 		case <-ticker.C:
 			pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			err := s.db.Ping(pingCtx)
+			results := s.dbManager.Ping(pingCtx)
 			cancel()
 
 			wasHealthy := s.dbHealthy.Load()
+			allHealthy := true
 
-			if err != nil {
-				consecutiveFailures++
-				s.dbHealthy.Store(false)
+			for name, err := range results {
+				if err != nil {
+					allHealthy = false
+					consecutiveFailures[name]++
 
-				logging.Warn("health_check_failed", map[string]any{
-					"error":                err.Error(),
-					"consecutive_failures": consecutiveFailures,
-				})
-
-				// After 3 consecutive failures, try to reconnect
-				if consecutiveFailures >= 3 {
-					logging.Info("attempting_reconnect", nil)
-					if err := s.db.Reconnect(); err != nil {
-						logging.Error("reconnect_failed", map[string]any{
-							"error": err.Error(),
-						})
-					} else {
-						logging.Info("reconnect_successful", nil)
-						s.dbHealthy.Store(true)
-						consecutiveFailures = 0
-					}
-				}
-			} else {
-				if !wasHealthy {
-					logging.Info("health_restored", map[string]any{
-						"after_failures": consecutiveFailures,
+					logging.Warn("health_check_failed", map[string]any{
+						"database":             name,
+						"error":                err.Error(),
+						"consecutive_failures": consecutiveFailures[name],
 					})
+
+					// After 3 consecutive failures, try to reconnect
+					if consecutiveFailures[name] >= 3 {
+						logging.Info("attempting_reconnect", map[string]any{
+							"database": name,
+						})
+						if err := s.dbManager.Reconnect(name); err != nil {
+							logging.Error("reconnect_failed", map[string]any{
+								"database": name,
+								"error":    err.Error(),
+							})
+						} else {
+							logging.Info("reconnect_successful", map[string]any{
+								"database": name,
+							})
+							consecutiveFailures[name] = 0
+						}
+					}
+				} else {
+					if consecutiveFailures[name] > 0 {
+						logging.Info("health_restored", map[string]any{
+							"database":       name,
+							"after_failures": consecutiveFailures[name],
+						})
+					}
+					consecutiveFailures[name] = 0
 				}
-				s.dbHealthy.Store(true)
-				consecutiveFailures = 0
+			}
+
+			s.dbHealthy.Store(allHealthy)
+
+			if allHealthy && !wasHealthy {
+				logging.Info("all_databases_healthy", nil)
 			}
 		}
 	}
@@ -190,12 +209,14 @@ func (s *Server) setupRoutes(mux *http.ServeMux) {
 		if q.Path == "" {
 			continue // Schedule-only query, no HTTP endpoint
 		}
-		h := handler.New(s.db, q, s.config.Server)
+		h := handler.New(s.dbManager, q, s.config.Server)
 		mux.Handle(q.Path, h)
+
 		logging.Info("endpoint_registered", map[string]any{
 			"method":      q.Method,
 			"path":        q.Path,
 			"name":        q.Name,
+			"database":    q.Database,
 			"description": q.Description,
 			"scheduled":   q.Schedule != nil,
 		})
@@ -294,6 +315,7 @@ func (s *Server) listEndpointsHandler(w http.ResponseWriter, r *http.Request) {
 		Name        string               `json:"name"`
 		Path        string               `json:"path"`
 		Method      string               `json:"method"`
+		Database    string               `json:"database"`
 		Description string               `json:"description"`
 		Parameters  []config.ParamConfig `json:"parameters,omitempty"`
 		TimeoutSec  int                  `json:"timeout_sec"`
@@ -303,6 +325,7 @@ func (s *Server) listEndpointsHandler(w http.ResponseWriter, r *http.Request) {
 
 	type scheduledInfo struct {
 		Name        string `json:"name"`
+		Database    string `json:"database"`
 		Description string `json:"description"`
 		Cron        string `json:"cron"`
 		LogResults  bool   `json:"log_results"`
@@ -322,6 +345,7 @@ func (s *Server) listEndpointsHandler(w http.ResponseWriter, r *http.Request) {
 				Name:        q.Name,
 				Path:        q.Path,
 				Method:      q.Method,
+				Database:    q.Database,
 				Description: q.Description,
 				Parameters:  q.Parameters,
 				TimeoutSec:  effectiveTimeout,
@@ -337,6 +361,7 @@ func (s *Server) listEndpointsHandler(w http.ResponseWriter, r *http.Request) {
 		if q.Schedule != nil {
 			scheduled = append(scheduled, scheduledInfo{
 				Name:        q.Name,
+				Database:    q.Database,
 				Description: q.Description,
 				Cron:        q.Schedule.Cron,
 				LogResults:  q.Schedule.LogResults,
@@ -348,6 +373,7 @@ func (s *Server) listEndpointsHandler(w http.ResponseWriter, r *http.Request) {
 		"service":             "sql-proxy",
 		"default_timeout_sec": s.config.Server.DefaultTimeoutSec,
 		"max_timeout_sec":     s.config.Server.MaxTimeoutSec,
+		"databases":           s.dbManager.Names(),
 		"db_healthy":          s.dbHealthy.Load(),
 		"endpoints":           endpoints,
 	}
@@ -467,8 +493,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		})
 	}
 
-	// Close database
-	if err := s.db.Close(); err != nil {
+	// Close database connections
+	if err := s.dbManager.Close(); err != nil {
 		logging.Error("database_close_error", map[string]any{
 			"error": err.Error(),
 		})
