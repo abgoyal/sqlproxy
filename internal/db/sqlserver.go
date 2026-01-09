@@ -4,35 +4,23 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"time"
 
 	_ "github.com/microsoft/go-mssqldb"
 	"sql-proxy/internal/config"
 )
 
-type DB struct {
+// SQLServerDriver implements Driver for Microsoft SQL Server
+type SQLServerDriver struct {
 	conn     *sql.DB
 	connStr  string
 	cfg      config.DatabaseConfig
 	readOnly bool
 }
 
-// Name returns the connection name
-func (d *DB) Name() string {
-	return d.cfg.Name
-}
-
-// IsReadOnly returns whether this connection is read-only
-func (d *DB) IsReadOnly() bool {
-	return d.readOnly
-}
-
-// Config returns the database configuration (for session config resolution)
-func (d *DB) Config() config.DatabaseConfig {
-	return d.cfg
-}
-
-func New(cfg config.DatabaseConfig) (*DB, error) {
+// NewSQLServerDriver creates a new SQL Server driver
+func NewSQLServerDriver(cfg config.DatabaseConfig) (*SQLServerDriver, error) {
 	readOnly := cfg.IsReadOnly()
 
 	// Build connection string
@@ -59,7 +47,7 @@ func New(cfg config.DatabaseConfig) (*DB, error) {
 	}
 
 	// Conservative connection pool to minimize footprint on SQL Server
-	configurePool(conn)
+	configureSQLServerPool(conn)
 
 	// Test connection
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -70,18 +58,38 @@ func New(cfg config.DatabaseConfig) (*DB, error) {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	return &DB{conn: conn, connStr: connStr, cfg: cfg, readOnly: readOnly}, nil
+	return &SQLServerDriver{conn: conn, connStr: connStr, cfg: cfg, readOnly: readOnly}, nil
 }
 
-func configurePool(conn *sql.DB) {
+func configureSQLServerPool(conn *sql.DB) {
 	conn.SetMaxOpenConns(5)                   // Low max connections - we're just a read proxy
 	conn.SetMaxIdleConns(2)                   // Keep few idle connections
 	conn.SetConnMaxLifetime(5 * time.Minute)  // Recycle connections regularly
 	conn.SetConnMaxIdleTime(2 * time.Minute)  // Don't hold idle connections long
 }
 
+// Name returns the connection name
+func (d *SQLServerDriver) Name() string {
+	return d.cfg.Name
+}
+
+// Type returns the database type
+func (d *SQLServerDriver) Type() string {
+	return "sqlserver"
+}
+
+// IsReadOnly returns whether this connection is read-only
+func (d *SQLServerDriver) IsReadOnly() bool {
+	return d.readOnly
+}
+
+// Config returns the database configuration
+func (d *SQLServerDriver) Config() config.DatabaseConfig {
+	return d.cfg
+}
+
 // Reconnect attempts to re-establish the database connection
-func (d *DB) Reconnect() error {
+func (d *SQLServerDriver) Reconnect() error {
 	// Close existing connection (ignore errors)
 	if d.conn != nil {
 		d.conn.Close()
@@ -92,7 +100,7 @@ func (d *DB) Reconnect() error {
 		return fmt.Errorf("failed to open database connection: %w", err)
 	}
 
-	configurePool(conn)
+	configureSQLServerPool(conn)
 
 	// Test connection
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -107,18 +115,13 @@ func (d *DB) Reconnect() error {
 	return nil
 }
 
-func (d *DB) Close() error {
+func (d *SQLServerDriver) Close() error {
 	return d.conn.Close()
 }
 
 // configureSession sets SQL Server session options based on the provided session config.
-// This is called at the start of each query to ensure the session is configured
-// correctly (connection pooling may give us a recycled connection).
-func (d *DB) configureSession(ctx context.Context, conn *sql.Conn, sessCfg config.SessionConfig) error {
-	// Map isolation level to SQL Server syntax
+func (d *SQLServerDriver) configureSession(ctx context.Context, conn *sql.Conn, sessCfg config.SessionConfig) error {
 	isolationSQL := isolationToSQL(sessCfg.Isolation)
-
-	// Map deadlock priority to SQL Server syntax
 	deadlockSQL := deadlockPriorityToSQL(sessCfg.DeadlockPriority)
 
 	sessionSQL := fmt.Sprintf(`
@@ -167,8 +170,9 @@ func deadlockPriorityToSQL(priority string) string {
 }
 
 // Query executes a SQL query and returns results as a slice of maps.
-// Session is configured based on the provided SessionConfig.
-func (d *DB) Query(ctx context.Context, sessCfg config.SessionConfig, query string, args ...any) ([]map[string]any, error) {
+// SQL uses @param syntax which is native to SQL Server.
+// params is a map of parameter name -> value.
+func (d *SQLServerDriver) Query(ctx context.Context, sessCfg config.SessionConfig, query string, params map[string]any) ([]map[string]any, error) {
 	// Get a dedicated connection from the pool
 	conn, err := d.conn.Conn(ctx)
 	if err != nil {
@@ -181,6 +185,10 @@ func (d *DB) Query(ctx context.Context, sessCfg config.SessionConfig, query stri
 		return nil, fmt.Errorf("failed to configure session: %w", err)
 	}
 
+	// Build args from params map using sql.Named
+	// Find @params in SQL to maintain order
+	args := d.buildArgs(query, params)
+
 	// Execute the query
 	rows, err := conn.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -188,6 +196,35 @@ func (d *DB) Query(ctx context.Context, sessCfg config.SessionConfig, query stri
 	}
 	defer rows.Close()
 
+	return scanRows(rows)
+}
+
+// buildArgs builds sql.Named arguments from the params map.
+// SQL Server uses @param syntax natively, so we just need to convert
+// the map to sql.Named arguments.
+func (d *SQLServerDriver) buildArgs(query string, params map[string]any) []any {
+	re := regexp.MustCompile(`@(\w+)`)
+	matches := re.FindAllStringSubmatch(query, -1)
+
+	addedParams := make(map[string]bool)
+	var args []any
+
+	for _, match := range matches {
+		paramName := match[1]
+		if addedParams[paramName] {
+			continue
+		}
+
+		value := params[paramName] // nil if not present
+		args = append(args, sql.Named(paramName, value))
+		addedParams[paramName] = true
+	}
+
+	return args
+}
+
+// scanRows converts sql.Rows to []map[string]any
+func scanRows(rows *sql.Rows) ([]map[string]any, error) {
 	columns, err := rows.Columns()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get columns: %w", err)
@@ -196,7 +233,6 @@ func (d *DB) Query(ctx context.Context, sessCfg config.SessionConfig, query stri
 	var results []map[string]any
 
 	for rows.Next() {
-		// Create a slice of interface{} to hold the values
 		values := make([]any, len(columns))
 		valuePtrs := make([]any, len(columns))
 		for i := range values {
@@ -207,11 +243,9 @@ func (d *DB) Query(ctx context.Context, sessCfg config.SessionConfig, query stri
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
 
-		// Convert to map
 		row := make(map[string]any)
 		for i, col := range columns {
 			val := values[i]
-			// Handle specific types for JSON serialization
 			switch v := val.(type) {
 			case []byte:
 				row[col] = string(v)
@@ -232,6 +266,6 @@ func (d *DB) Query(ctx context.Context, sessCfg config.SessionConfig, query stri
 }
 
 // Ping checks database connectivity
-func (d *DB) Ping(ctx context.Context) error {
+func (d *SQLServerDriver) Ping(ctx context.Context) error {
 	return d.conn.PingContext(ctx)
 }

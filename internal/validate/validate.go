@@ -80,39 +80,66 @@ func validateDatabase(cfg *config.Config, r *Result) {
 		}
 		names[dbCfg.Name] = true
 
-		if dbCfg.Host == "" {
-			r.addError("%s: host is required", prefix)
+		// Validate database type (default to sqlserver)
+		dbType := dbCfg.Type
+		if dbType == "" {
+			dbType = "sqlserver"
 		}
-		if dbCfg.Port == 0 {
-			r.addError("%s: port is required", prefix)
-		}
-		if dbCfg.User == "" {
-			r.addError("%s: user is required", prefix)
-		}
-		if dbCfg.Password == "" {
-			r.addError("%s: password is required", prefix)
-		}
-		if dbCfg.Database == "" {
-			r.addError("%s: database is required", prefix)
+		if !config.ValidDatabaseTypes[dbType] {
+			r.addError("%s: invalid type '%s' (must be sqlserver or sqlite)", prefix, dbCfg.Type)
+			continue
 		}
 
-		// Check for unresolved env vars
-		if strings.HasPrefix(dbCfg.Host, "${") {
-			r.addWarning("%s: host appears to be an unresolved env var: %s", prefix, dbCfg.Host)
-		}
-		if strings.HasPrefix(dbCfg.Password, "${") {
-			r.addWarning("%s: password appears to be an unresolved env var", prefix)
-		}
+		// Type-specific validation
+		switch dbType {
+		case "sqlserver":
+			if dbCfg.Host == "" {
+				r.addError("%s: host is required for sqlserver", prefix)
+			}
+			if dbCfg.Port == 0 {
+				r.addError("%s: port is required for sqlserver", prefix)
+			}
+			if dbCfg.User == "" {
+				r.addError("%s: user is required for sqlserver", prefix)
+			}
+			if dbCfg.Password == "" {
+				r.addError("%s: password is required for sqlserver", prefix)
+			}
+			if dbCfg.Database == "" {
+				r.addError("%s: database is required for sqlserver", prefix)
+			}
 
-		// Validate session settings if specified
-		if dbCfg.Isolation != "" && !config.ValidIsolationLevels[dbCfg.Isolation] {
-			r.addError("%s: invalid isolation level '%s' (must be read_uncommitted, read_committed, repeatable_read, serializable, or snapshot)", prefix, dbCfg.Isolation)
-		}
-		if dbCfg.DeadlockPriority != "" && !config.ValidDeadlockPriorities[dbCfg.DeadlockPriority] {
-			r.addError("%s: invalid deadlock_priority '%s' (must be low, normal, or high)", prefix, dbCfg.DeadlockPriority)
-		}
-		if dbCfg.LockTimeoutMs != nil && *dbCfg.LockTimeoutMs < 0 {
-			r.addError("%s: lock_timeout_ms cannot be negative", prefix)
+			// Check for unresolved env vars
+			if strings.HasPrefix(dbCfg.Host, "${") {
+				r.addWarning("%s: host appears to be an unresolved env var: %s", prefix, dbCfg.Host)
+			}
+			if strings.HasPrefix(dbCfg.Password, "${") {
+				r.addWarning("%s: password appears to be an unresolved env var", prefix)
+			}
+
+			// Validate SQL Server session settings
+			if dbCfg.Isolation != "" && !config.ValidIsolationLevels[dbCfg.Isolation] {
+				r.addError("%s: invalid isolation level '%s' (must be read_uncommitted, read_committed, repeatable_read, serializable, or snapshot)", prefix, dbCfg.Isolation)
+			}
+			if dbCfg.DeadlockPriority != "" && !config.ValidDeadlockPriorities[dbCfg.DeadlockPriority] {
+				r.addError("%s: invalid deadlock_priority '%s' (must be low, normal, or high)", prefix, dbCfg.DeadlockPriority)
+			}
+			if dbCfg.LockTimeoutMs != nil && *dbCfg.LockTimeoutMs < 0 {
+				r.addError("%s: lock_timeout_ms cannot be negative", prefix)
+			}
+
+		case "sqlite":
+			if dbCfg.Path == "" {
+				r.addError("%s: path is required for sqlite", prefix)
+			}
+
+			// Validate SQLite session settings
+			if dbCfg.JournalMode != "" && !config.ValidJournalModes[dbCfg.JournalMode] {
+				r.addError("%s: invalid journal_mode '%s' (must be wal, delete, truncate, memory, or off)", prefix, dbCfg.JournalMode)
+			}
+			if dbCfg.BusyTimeoutMs != nil && *dbCfg.BusyTimeoutMs < 0 {
+				r.addError("%s: busy_timeout_ms cannot be negative", prefix)
+			}
 		}
 	}
 }
@@ -319,24 +346,32 @@ func validateSchedule(q config.QueryConfig, prefix string, r *Result) {
 
 func testDBConnections(cfg *config.Config, r *Result) {
 	for _, dbCfg := range cfg.Databases {
-		// Skip if config incomplete (unresolved env vars)
-		if strings.HasPrefix(dbCfg.Host, "${") {
-			continue
-		}
-		if strings.HasPrefix(dbCfg.Password, "${") {
-			continue
+		// Determine database type (default to sqlserver)
+		dbType := dbCfg.Type
+		if dbType == "" {
+			dbType = "sqlserver"
 		}
 
-		database, err := db.New(dbCfg)
+		// Skip if config incomplete (unresolved env vars) - only for sqlserver
+		if dbType == "sqlserver" {
+			if strings.HasPrefix(dbCfg.Host, "${") {
+				continue
+			}
+			if strings.HasPrefix(dbCfg.Password, "${") {
+				continue
+			}
+		}
+
+		driver, err := db.NewDriver(dbCfg)
 		if err != nil {
 			r.addError("databases[%s]: connection failed: %v", dbCfg.Name, err)
 			continue
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		err = database.Ping(ctx)
+		err = driver.Ping(ctx)
 		cancel()
-		database.Close()
+		driver.Close()
 
 		if err != nil {
 			r.addError("databases[%s]: ping failed: %v", dbCfg.Name, err)

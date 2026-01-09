@@ -2,10 +2,8 @@ package scheduler
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
@@ -176,48 +174,33 @@ func (s *Scheduler) runQuery(q config.QueryConfig) ([]map[string]any, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	// Build query args from schedule params
-	args, err := s.buildArgs(q)
-	if err != nil {
-		return nil, err
-	}
+	// Build query params from schedule params
+	params := s.buildParams(q)
 
-	return database.Query(ctx, sessionCfg, q.SQL, args...)
+	return database.Query(ctx, sessionCfg, q.SQL, params)
 }
 
-func (s *Scheduler) buildArgs(q config.QueryConfig) ([]any, error) {
-	// Find @params in SQL
-	re := regexp.MustCompile(`@(\w+)`)
-	matches := re.FindAllStringSubmatch(q.SQL, -1)
+// buildParams builds the parameter map for a scheduled query
+func (s *Scheduler) buildParams(q config.QueryConfig) map[string]any {
+	params := make(map[string]any)
 
-	addedParams := make(map[string]bool)
-	var args []any
-
-	for _, match := range matches {
-		paramName := match[1]
-		if addedParams[paramName] {
-			continue
-		}
-
-		// Get value from schedule params or parameter default
+	// Process each defined parameter
+	for _, p := range q.Parameters {
 		var value any
-		if strVal, ok := q.Schedule.Params[paramName]; ok {
-			value = s.resolveValue(strVal, paramName, q.Parameters)
-		} else {
-			// Check for default in parameter config
-			for _, p := range q.Parameters {
-				if p.Name == paramName && p.Default != "" {
-					value = s.resolveValue(p.Default, paramName, q.Parameters)
-					break
-				}
-			}
-		}
 
-		args = append(args, sql.Named(paramName, value))
-		addedParams[paramName] = true
+		// Get value from schedule params first
+		if strVal, ok := q.Schedule.Params[p.Name]; ok {
+			value = s.resolveValue(strVal, p.Name, q.Parameters)
+		} else if p.Default != "" {
+			// Fall back to default value
+			value = s.resolveValue(p.Default, p.Name, q.Parameters)
+		}
+		// If still nil, the driver will handle it (pass NULL)
+
+		params[p.Name] = value
 	}
 
-	return args, nil
+	return params
 }
 
 func (s *Scheduler) resolveValue(strVal, paramName string, params []config.ParamConfig) any {

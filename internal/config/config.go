@@ -35,18 +35,32 @@ type ServerConfig struct {
 }
 
 type DatabaseConfig struct {
-	Name     string `yaml:"name"`     // Connection name (required)
+	Name string `yaml:"name"` // Connection name (required)
+	Type string `yaml:"type"` // Database type: sqlserver, sqlite (default: sqlserver)
+
+	// Connection settings (SQL Server, MySQL, PostgreSQL)
 	Host     string `yaml:"host"`
 	Port     int    `yaml:"port"`
 	User     string `yaml:"user"`
 	Password string `yaml:"password"`
 	Database string `yaml:"database"`
-	ReadOnly *bool  `yaml:"readonly"` // Connection routing: ApplicationIntent=ReadOnly (nil defaults to true)
+
+	// Connection settings (SQLite)
+	Path string `yaml:"path"` // File path or :memory: for in-memory database
+
+	// Common settings
+	ReadOnly *bool `yaml:"readonly"` // Connection routing: ApplicationIntent=ReadOnly (nil defaults to true)
 
 	// Session defaults for queries using this connection (override implicit defaults)
+	// SQL Server: isolation, lock_timeout_ms, deadlock_priority
+	// SQLite: busy_timeout_ms, journal_mode
 	Isolation        string `yaml:"isolation"`          // read_uncommitted, read_committed, repeatable_read, serializable, snapshot
 	LockTimeoutMs    *int   `yaml:"lock_timeout_ms"`    // Lock wait timeout in ms (default: 5000)
 	DeadlockPriority string `yaml:"deadlock_priority"`  // low, normal, high (default: low)
+
+	// SQLite-specific settings
+	BusyTimeoutMs *int   `yaml:"busy_timeout_ms"` // SQLite busy timeout in ms (default: 5000)
+	JournalMode   string `yaml:"journal_mode"`    // wal, delete, truncate, memory, off (default: wal)
 }
 
 // IsReadOnly returns whether this connection is read-only (defaults to true)
@@ -108,6 +122,22 @@ var ValidDeadlockPriorities = map[string]bool{
 	"low":    true,
 	"normal": true,
 	"high":   true,
+}
+
+// Valid SQLite journal modes
+var ValidJournalModes = map[string]bool{
+	"wal":      true,
+	"delete":   true,
+	"truncate": true,
+	"memory":   true,
+	"off":      true,
+}
+
+// Valid database types
+var ValidDatabaseTypes = map[string]bool{
+	"sqlserver": true,
+	"sqlite":    true,
+	// Future: "mysql", "postgres"
 }
 
 // DefaultSessionConfig returns implicit defaults based on readonly flag
@@ -231,31 +261,55 @@ func (c *Config) validate() error {
 		}
 		dbNames[db.Name] = true
 
-		if db.Host == "" {
-			return fmt.Errorf("databases[%d] (%s): host is required", i, db.Name)
+		// Validate database type (default to sqlserver)
+		dbType := db.Type
+		if dbType == "" {
+			dbType = "sqlserver"
 		}
-		if db.Port == 0 {
-			return fmt.Errorf("databases[%d] (%s): port is required", i, db.Name)
-		}
-		if db.User == "" {
-			return fmt.Errorf("databases[%d] (%s): user is required", i, db.Name)
-		}
-		if db.Password == "" {
-			return fmt.Errorf("databases[%d] (%s): password is required", i, db.Name)
-		}
-		if db.Database == "" {
-			return fmt.Errorf("databases[%d] (%s): database is required", i, db.Name)
+		if !ValidDatabaseTypes[dbType] {
+			return fmt.Errorf("databases[%d] (%s): invalid type '%s'", i, db.Name, db.Type)
 		}
 
-		// Validate session settings if specified
-		if db.Isolation != "" && !ValidIsolationLevels[db.Isolation] {
-			return fmt.Errorf("databases[%d] (%s): invalid isolation level '%s'", i, db.Name, db.Isolation)
-		}
-		if db.DeadlockPriority != "" && !ValidDeadlockPriorities[db.DeadlockPriority] {
-			return fmt.Errorf("databases[%d] (%s): invalid deadlock_priority '%s'", i, db.Name, db.DeadlockPriority)
-		}
-		if db.LockTimeoutMs != nil && *db.LockTimeoutMs < 0 {
-			return fmt.Errorf("databases[%d] (%s): lock_timeout_ms cannot be negative", i, db.Name)
+		// Type-specific validation
+		switch dbType {
+		case "sqlserver":
+			if db.Host == "" {
+				return fmt.Errorf("databases[%d] (%s): host is required for sqlserver", i, db.Name)
+			}
+			if db.Port == 0 {
+				return fmt.Errorf("databases[%d] (%s): port is required for sqlserver", i, db.Name)
+			}
+			if db.User == "" {
+				return fmt.Errorf("databases[%d] (%s): user is required for sqlserver", i, db.Name)
+			}
+			if db.Password == "" {
+				return fmt.Errorf("databases[%d] (%s): password is required for sqlserver", i, db.Name)
+			}
+			if db.Database == "" {
+				return fmt.Errorf("databases[%d] (%s): database is required for sqlserver", i, db.Name)
+			}
+			// Validate SQL Server session settings
+			if db.Isolation != "" && !ValidIsolationLevels[db.Isolation] {
+				return fmt.Errorf("databases[%d] (%s): invalid isolation level '%s'", i, db.Name, db.Isolation)
+			}
+			if db.DeadlockPriority != "" && !ValidDeadlockPriorities[db.DeadlockPriority] {
+				return fmt.Errorf("databases[%d] (%s): invalid deadlock_priority '%s'", i, db.Name, db.DeadlockPriority)
+			}
+			if db.LockTimeoutMs != nil && *db.LockTimeoutMs < 0 {
+				return fmt.Errorf("databases[%d] (%s): lock_timeout_ms cannot be negative", i, db.Name)
+			}
+
+		case "sqlite":
+			if db.Path == "" {
+				return fmt.Errorf("databases[%d] (%s): path is required for sqlite", i, db.Name)
+			}
+			// Validate SQLite session settings
+			if db.JournalMode != "" && !ValidJournalModes[db.JournalMode] {
+				return fmt.Errorf("databases[%d] (%s): invalid journal_mode '%s'", i, db.Name, db.JournalMode)
+			}
+			if db.BusyTimeoutMs != nil && *db.BusyTimeoutMs < 0 {
+				return fmt.Errorf("databases[%d] (%s): busy_timeout_ms cannot be negative", i, db.Name)
+			}
 		}
 	}
 

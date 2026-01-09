@@ -3,12 +3,10 @@ package handler
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -126,16 +124,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	timeoutSec := h.resolveTimeout(r)
 	logFields["timeout_sec"] = timeoutSec
 
-	// Build query
-	query, args, err := h.buildQuery(params)
-	if err != nil {
-		m.StatusCode = http.StatusInternalServerError
-		m.Error = err.Error()
-		m.TotalDuration = time.Since(startTime)
-		logFields["error"] = err.Error()
-		h.finishRequest(w, m, logFields, http.StatusInternalServerError, err.Error(), requestID, timeoutSec)
-		return
-	}
+	// Build query params
+	queryParams := h.buildQueryParams(params)
+
+	query := h.queryConfig.SQL
 
 	// Get database connection
 	database, err := h.dbManager.Get(h.dbName)
@@ -159,7 +151,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
-	results, err := database.Query(ctx, sessionCfg, query, args...)
+	results, err := database.Query(ctx, sessionCfg, query, queryParams)
 	queryDuration := time.Since(queryStart)
 	m.QueryDuration = queryDuration
 
@@ -299,51 +291,13 @@ func convertValue(value, typeName string) (any, error) {
 	}
 }
 
-func (h *Handler) buildQuery(params map[string]any) (string, []any, error) {
-	query := h.queryConfig.SQL
-	var args []any
-
-	re := regexp.MustCompile(`@(\w+)`)
-	matches := re.FindAllStringSubmatch(query, -1)
-
-	// Track which params we've already added (SQL may reference same param multiple times)
-	addedParams := make(map[string]bool)
-
-	for _, match := range matches {
-		paramName := match[1]
-
-		// Skip if we've already added this parameter
-		if addedParams[paramName] {
-			continue
-		}
-
-		value, ok := params[paramName]
-		if !ok {
-			// Check if this is a required parameter
-			isRequired := false
-			for _, p := range h.queryConfig.Parameters {
-				if p.Name == paramName && p.Required {
-					isRequired = true
-					break
-				}
-			}
-			if isRequired {
-				return "", nil, fmt.Errorf("missing parameter: %s", paramName)
-			}
-			// For optional params not provided, pass NULL so SQL doesn't fail
-			// with "must declare scalar variable" error
-			args = append(args, sql.Named(paramName, nil))
-			addedParams[paramName] = true
-			continue
-		}
-
-		// Use sql.Named for go-mssqldb named parameter binding
-		// This maps @paramName in SQL to the actual value
-		args = append(args, sql.Named(paramName, value))
-		addedParams[paramName] = true
-	}
-
-	return query, args, nil
+// buildQueryParams builds the parameter map for the query.
+// The driver handles parameter translation to its native syntax.
+func (h *Handler) buildQueryParams(params map[string]any) map[string]any {
+	// The params map from parseParameters already has all provided values.
+	// For optional params not provided, the driver will pass nil.
+	// We just return what was parsed.
+	return params
 }
 
 func (h *Handler) writeSuccess(w http.ResponseWriter, data []map[string]any, timeoutSec int, requestID string) {

@@ -1,9 +1,10 @@
 # SQL Proxy Service
 
-A lightweight, production-grade Go service that exposes predefined SQL Server queries as HTTP endpoints. Designed to run as a Windows service with **zero impact on the source database** and **zero maintenance** requirements.
+A lightweight, production-grade Go service that exposes predefined SQL queries as HTTP endpoints. Supports **SQL Server** and **SQLite** databases. Designed to run as a Windows service with **zero impact on the source database** and **zero maintenance** requirements.
 
 ## Features
 
+- **Multi-Database Support** - SQL Server and SQLite (same query syntax)
 - **Windows Service** - Auto-start on boot, proper service lifecycle
 - **YAML Configuration** - Easy query management, no code changes
 - **Read-only Safety** - Zero interference with production database
@@ -32,20 +33,29 @@ This service is designed for long-running, fire-and-forget operation:
 
 ## Safety Features (Read-Only Guarantees)
 
-This service is designed to safely read from a production SQL Server without interfering with existing applications:
+This service is designed to safely read from production databases without interfering with existing applications.
 
-### Connection Level
-- **`ApplicationIntent=ReadOnly`** - Signals read-only intent to SQL Server
-- **Conservative connection pool** - Max 5 connections, short lifetimes
+### SQL Server Safety
 
-### Session Level (set on every query)
-- **`READ UNCOMMITTED` isolation** - No shared locks acquired, never blocks writers
-- **`LOCK_TIMEOUT 5000`** - Fails fast (5s) if any lock needed
-- **`DEADLOCK_PRIORITY LOW`** - If in deadlock, this connection is the victim
-- **`IMPLICIT_TRANSACTIONS OFF`** - No accidental open transactions
+| Level | Setting | Purpose |
+|-------|---------|---------|
+| Connection | `ApplicationIntent=ReadOnly` | Signals read-only intent, enables AG routing |
+| Connection | Max 5 connections, 5min lifetime | Conservative pool footprint |
+| Session | `READ UNCOMMITTED` isolation | No shared locks, never blocks writers |
+| Session | `LOCK_TIMEOUT 5000` | Fails fast (5s) if any lock needed |
+| Session | `DEADLOCK_PRIORITY LOW` | If in deadlock, this connection is the victim |
+| Session | `IMPLICIT_TRANSACTIONS OFF` | No accidental open transactions |
+| Database | Read-only SQL user | Database enforces no writes possible |
 
-### Database Level (you configure this)
-- **Read-only SQL user** - Database enforces no writes possible
+### SQLite Safety
+
+| Level | Setting | Purpose |
+|-------|---------|---------|
+| Connection | `mode=ro` (for readonly) | Prevents any writes at driver level |
+| Connection | `_txlock=immediate` (for writes) | Prevents write deadlocks |
+| Session | `journal_mode=WAL` | Concurrent reads during writes |
+| Session | `busy_timeout=5000` | Waits 5s instead of failing immediately on lock |
+| Session | `synchronous=NORMAL` | Safe for WAL mode, better performance |
 
 ## SQL Server User Setup (REQUIRED)
 
@@ -161,6 +171,7 @@ server:
 
 databases:
   - name: "primary"
+    type: "sqlserver"             # sqlserver (default), sqlite
     host: "your-server.rds.amazonaws.com"
     port: 1433
     user: "sqlproxy_reader"
@@ -195,6 +206,7 @@ queries:
 ```yaml
 databases:
   - name: "primary"
+    type: "sqlserver"
     host: "server1.example.com"
     port: 1433
     user: "reader"
@@ -203,6 +215,7 @@ databases:
     readonly: true               # Full safety measures
 
   - name: "reporting"
+    type: "sqlserver"
     host: "server2.example.com"
     port: 1433
     user: "writer"
@@ -224,11 +237,104 @@ queries:
     sql: "INSERT INTO Reports (Date, Data) VALUES (@date, @data)"
 ```
 
+### SQLite Support
+
+SQLite databases are supported for testing and lightweight deployments. Use `type: "sqlite"` with a `path` instead of host/port/user/password:
+
+```yaml
+databases:
+  - name: "test_db"
+    type: "sqlite"
+    path: ":memory:"             # In-memory database (useful for testing)
+    # Or use a file path:
+    # path: "/data/app.db"
+
+    # SQLite-specific settings (optional)
+    journal_mode: "wal"          # wal (default), delete, truncate, memory, off
+    busy_timeout_ms: 5000        # Wait time for locked database (default: 5000)
+
+queries:
+  - name: "list_items"
+    database: "test_db"
+    path: "/api/items"
+    method: "GET"
+    sql: "SELECT * FROM items ORDER BY name"
+```
+
+#### SQLite Configuration Options
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `path` | (required) | File path or `:memory:` for in-memory database |
+| `readonly` | `true` | Opens database in read-only mode |
+| `journal_mode` | `wal` | WAL mode enables concurrent reads during writes |
+| `busy_timeout_ms` | `5000` | How long to wait when database is locked (ms) |
+
+#### SQLite Automatic Pragmas
+
+The driver automatically configures SQLite for optimal concurrent performance:
+
+| Pragma | Value | Purpose |
+|--------|-------|---------|
+| `busy_timeout` | 5000ms | **Critical**: Wait instead of failing on lock |
+| `journal_mode` | WAL | Readers don't block writers |
+| `synchronous` | NORMAL | Safe for WAL, faster than FULL |
+| `foreign_keys` | ON | Enable referential integrity |
+| `temp_store` | MEMORY | Faster temp table operations |
+| `cache_size` | 64MB | Larger cache for concurrent reads |
+| `mmap_size` | 256MB | Memory-mapped I/O for faster reads |
+| `wal_autocheckpoint` | 1000 | Prevents WAL file from growing too large |
+
+#### SQLite Operational Considerations
+
+**Concurrency Model:**
+- WAL mode allows **unlimited concurrent readers** with **one writer**
+- Writers don't block readers; readers don't block writers
+- Multiple simultaneous write attempts will queue (up to `busy_timeout`)
+- After `busy_timeout`, write returns "database is locked" error
+
+**When to use SQLite:**
+- Testing and development (`:memory:` for fast unit tests)
+- Single-server deployments with moderate write load
+- Read-heavy workloads with occasional writes
+- Embedded/edge deployments
+
+**When NOT to use SQLite:**
+- High write concurrency (multiple writers)
+- Multi-server deployments (no network access)
+- Very large databases (>100GB)
+
+**File vs In-Memory:**
+
+| Mode | Path | Persistence | Use Case |
+|------|------|-------------|----------|
+| File | `/data/app.db` | Survives restart | Production |
+| In-memory | `:memory:` | Lost on restart | Testing |
+
+**Query Syntax:**
+- All queries use `@param` syntax (driver translates to `$param` for SQLite)
+- Use `LIMIT` instead of `TOP` for pagination:
+  ```sql
+  -- SQL Server style (works on SQL Server)
+  SELECT TOP (@limit) * FROM items
+
+  -- SQLite style (works on SQLite)
+  SELECT * FROM items LIMIT @limit
+  ```
+
 ### Session Configuration
 
-Session settings control SQL Server isolation level, lock behavior, and deadlock handling. They can be set at the connection level (as defaults) and overridden per-query.
+Session settings control database behavior at query execution time. Settings can be defined at connection level (defaults) and overridden per-query.
 
-**Implicit defaults based on `readonly` flag:**
+**Database-Specific Behavior:**
+
+| Setting | SQL Server | SQLite |
+|---------|------------|--------|
+| `isolation` | Sets transaction isolation level | Ignored (SQLite has limited isolation) |
+| `lock_timeout_ms` | `SET LOCK_TIMEOUT` | Maps to `busy_timeout` pragma |
+| `deadlock_priority` | `SET DEADLOCK_PRIORITY` | Ignored (SQLite handles differently) |
+
+**SQL Server Implicit Defaults (based on `readonly` flag):**
 
 | Setting | `readonly: true` | `readonly: false` |
 |---------|------------------|-------------------|
@@ -297,9 +403,11 @@ curl "http://localhost:8081/api/checkins?_timeout=120"
 
 ### Pagination and Row Limits
 
-Pagination is handled at the query level using SQL Server syntax. This is more efficient than service-level truncation because SQL Server stops scanning once the limit is reached.
+Pagination is handled at the query level using database-native syntax. This is more efficient than service-level truncation because the database stops scanning once the limit is reached.
 
-#### Simple Limit (TOP)
+> **Note:** SQL Server uses `TOP`, SQLite uses `LIMIT`. Write queries for your specific database type.
+
+#### Simple Limit (SQL Server: TOP, SQLite: LIMIT)
 
 For queries that just need a max row count:
 
@@ -757,14 +865,24 @@ your-domain.com {
 
 ## Security Checklist
 
-1. **Read-only SQL user** - `db_datareader` role only, explicit DENYs
-2. **No arbitrary SQL** - Only predefined queries executable
-3. **Parameterized queries** - SQL injection safe
-4. **HTTPS via Caddy** - Encrypt all traffic
-5. **Non-blocking reads** - `READ UNCOMMITTED` isolation
-6. **Configurable timeouts** - Caller-controlled with server max
+**All Databases:**
+1. **No arbitrary SQL** - Only predefined queries executable
+2. **Parameterized queries** - SQL injection safe (uses named parameters)
+3. **HTTPS via Caddy** - Encrypt all traffic
+4. **Configurable timeouts** - Caller-controlled with server max
+
+**SQL Server Specific:**
+5. **Read-only SQL user** - `db_datareader` role only, explicit DENYs
+6. **Non-blocking reads** - `READ UNCOMMITTED` isolation
 7. **Lock timeout (5s)** - Fails fast if lock needed
 8. **Low deadlock priority** - Always yields to production app
+9. **ApplicationIntent=ReadOnly** - Enables AG read routing
+
+**SQLite Specific:**
+5. **Read-only mode** - `readonly: true` opens DB in read-only mode
+6. **File permissions** - Ensure appropriate filesystem permissions
+7. **WAL mode** - Better concurrency, readers don't block writers
+8. **Busy timeout** - Prevents immediate failure on lock contention
 
 ## Troubleshooting
 
@@ -773,11 +891,35 @@ your-domain.com {
 2. Run interactively to see errors: `sql-proxy.exe -config config.yaml`
 3. Verify config.yaml syntax with a YAML validator
 
-### Database connection issues
+### Database connection issues (SQL Server)
 - Check `/health` endpoint for status
 - Look for `health_check_failed` in logs
 - Verify security group allows port 1433
 - Check credentials in config
+
+### Database issues (SQLite)
+
+**"database is locked" errors:**
+- Increase `busy_timeout_ms` (default 5000ms may not be enough for high contention)
+- Check if another process has the database open exclusively
+- Ensure WAL mode is enabled (`journal_mode: "wal"`)
+- Reduce write concurrency if possible
+
+**"unable to open database file":**
+- Check file path is correct and accessible
+- Verify directory exists and has write permissions
+- For in-memory (`:memory:`), no path issues should occur
+
+**WAL file growing large:**
+- WAL checkpoints automatically every 1000 pages
+- Manually checkpoint: `PRAGMA wal_checkpoint(TRUNCATE)`
+- Check for long-running read transactions blocking checkpoints
+
+**Performance issues:**
+- Ensure WAL mode is enabled for concurrent reads
+- Check `cache_size` pragma (default: 64MB)
+- Consider `mmap_size` for large databases
+- Add indexes for frequently-queried columns
 
 ### High latency
 - Check `/metrics` for `avg_duration_ms` and `max_duration_ms`

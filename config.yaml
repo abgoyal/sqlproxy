@@ -8,9 +8,10 @@ server:
   default_timeout_sec: 30  # Default query timeout (seconds)
   max_timeout_sec: 300     # Maximum allowed timeout (caps _timeout param)
 
-# Database connections - all fields required
+# Database connections - type-specific fields required
 databases:
   - name: "primary"                # Connection name (referenced by queries)
+    type: "sqlserver"              # Database type: sqlserver, sqlite (default: sqlserver)
     host: "${DB_HOST}"             # SQL Server host
     port: 1433                     # SQL Server port (typically 1433)
     user: "${DB_USER}"             # Database user
@@ -21,6 +22,14 @@ databases:
     # isolation: "read_uncommitted"   # read_uncommitted, read_committed, repeatable_read, serializable, snapshot
     # lock_timeout_ms: 5000           # Lock wait timeout in milliseconds
     # deadlock_priority: "low"        # low, normal, high
+
+  # Example: SQLite database (useful for testing)
+  # - name: "test_db"
+  #   type: "sqlite"
+  #   path: ":memory:"              # File path or :memory: for in-memory database
+  #   # SQLite session settings (optional)
+  #   # journal_mode: "wal"         # wal, delete, truncate, memory, off (default: wal)
+  #   # busy_timeout_ms: 5000       # Busy timeout in milliseconds (default: 5000)
 
 # Logging Configuration - all fields required
 logging:
