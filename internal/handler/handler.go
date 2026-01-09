@@ -148,6 +148,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve session config (query overrides > connection defaults > implicit defaults)
+	sessionCfg := config.ResolveSessionConfig(database.Config(), h.queryConfig)
+	logFields["isolation"] = sessionCfg.Isolation
+
 	// Execute query
 	logging.Debug("query_starting", logFields)
 	queryStart := time.Now()
@@ -155,7 +159,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
-	results, err := database.Query(ctx, query, args...)
+	results, err := database.Query(ctx, sessionCfg, query, args...)
 	queryDuration := time.Since(queryStart)
 	m.QueryDuration = queryDuration
 

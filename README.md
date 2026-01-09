@@ -224,14 +224,54 @@ queries:
     sql: "INSERT INTO Reports (Date, Data) VALUES (@date, @data)"
 ```
 
-### Connection Mode Settings
+### Session Configuration
+
+Session settings control SQL Server isolation level, lock behavior, and deadlock handling. They can be set at the connection level (as defaults) and overridden per-query.
+
+**Implicit defaults based on `readonly` flag:**
 
 | Setting | `readonly: true` | `readonly: false` |
 |---------|------------------|-------------------|
-| `READ UNCOMMITTED` | Yes | No |
-| `LOCK_TIMEOUT 5000` | Yes | Yes |
-| `DEADLOCK_PRIORITY LOW` | Yes | Yes |
-| `ApplicationIntent=ReadOnly` | Yes | No |
+| `isolation` | `read_uncommitted` | `read_committed` |
+| `lock_timeout_ms` | `5000` | `5000` |
+| `deadlock_priority` | `low` | `low` |
+| `ApplicationIntent` | `ReadOnly` | (none) |
+
+**Override at connection level:**
+
+```yaml
+databases:
+  - name: "primary"
+    readonly: true
+    # Override implicit defaults for all queries on this connection
+    isolation: "read_committed"      # Need consistent reads
+    lock_timeout_ms: 10000           # Wait longer for locks
+    deadlock_priority: "normal"      # Don't always be the victim
+```
+
+**Override at query level:**
+
+```yaml
+queries:
+  - name: "critical_read"
+    database: "primary"
+    path: "/api/balance"
+    method: "GET"
+    # Override for this specific query
+    isolation: "repeatable_read"     # Need stable reads within query
+    lock_timeout_ms: 30000           # Important query, wait longer
+    sql: "SELECT Balance FROM Accounts WHERE Id = @id"
+```
+
+**Available values:**
+
+| Setting | Values |
+|---------|--------|
+| `isolation` | `read_uncommitted`, `read_committed`, `repeatable_read`, `serializable`, `snapshot` |
+| `lock_timeout_ms` | Any non-negative integer (milliseconds) |
+| `deadlock_priority` | `low`, `normal`, `high` |
+
+**Resolution order:** Query settings → Connection settings → Implicit defaults (based on `readonly`)
 
 ### Validation
 
@@ -239,6 +279,7 @@ Config validation enforces:
 - All required fields present (no defaults)
 - Queries with INSERT/UPDATE/DELETE on read-only connections → **error**
 - Unknown database references → **error**
+- Invalid isolation level or deadlock priority → **error**
 - Unused database connections → **warning**
 
 ### Timeout Configuration

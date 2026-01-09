@@ -41,7 +41,12 @@ type DatabaseConfig struct {
 	User     string `yaml:"user"`
 	Password string `yaml:"password"`
 	Database string `yaml:"database"`
-	ReadOnly *bool  `yaml:"readonly"` // nil defaults to true for safety
+	ReadOnly *bool  `yaml:"readonly"` // Connection routing: ApplicationIntent=ReadOnly (nil defaults to true)
+
+	// Session defaults for queries using this connection (override implicit defaults)
+	Isolation        string `yaml:"isolation"`          // read_uncommitted, read_committed, repeatable_read, serializable, snapshot
+	LockTimeoutMs    *int   `yaml:"lock_timeout_ms"`    // Lock wait timeout in ms (default: 5000)
+	DeadlockPriority string `yaml:"deadlock_priority"`  // low, normal, high (default: low)
 }
 
 // IsReadOnly returns whether this connection is read-only (defaults to true)
@@ -62,6 +67,11 @@ type QueryConfig struct {
 	Parameters  []ParamConfig   `yaml:"parameters"`
 	TimeoutSec  int             `yaml:"timeout_sec"` // Query-specific timeout (0 = use server default)
 	Schedule    *ScheduleConfig `yaml:"schedule"`    // Optional scheduled execution
+
+	// Session overrides (empty = use connection default)
+	Isolation        string `yaml:"isolation"`          // Override isolation level for this query
+	LockTimeoutMs    *int   `yaml:"lock_timeout_ms"`    // Override lock timeout for this query
+	DeadlockPriority string `yaml:"deadlock_priority"`  // Override deadlock priority for this query
 }
 
 type ScheduleConfig struct {
@@ -75,6 +85,74 @@ type ParamConfig struct {
 	Type     string `yaml:"type"` // string, int, datetime, bool
 	Required bool   `yaml:"required"`
 	Default  string `yaml:"default"`
+}
+
+// SessionConfig holds resolved SQL Server session-level settings
+type SessionConfig struct {
+	Isolation        string // read_uncommitted, read_committed, repeatable_read, serializable, snapshot
+	LockTimeoutMs    int    // Lock wait timeout in milliseconds
+	DeadlockPriority string // low, normal, high
+}
+
+// Valid isolation levels for SQL Server
+var ValidIsolationLevels = map[string]bool{
+	"read_uncommitted": true,
+	"read_committed":   true,
+	"repeatable_read":  true,
+	"serializable":     true,
+	"snapshot":         true,
+}
+
+// Valid deadlock priorities
+var ValidDeadlockPriorities = map[string]bool{
+	"low":    true,
+	"normal": true,
+	"high":   true,
+}
+
+// DefaultSessionConfig returns implicit defaults based on readonly flag
+func (d *DatabaseConfig) DefaultSessionConfig() SessionConfig {
+	cfg := SessionConfig{
+		LockTimeoutMs:    5000,
+		DeadlockPriority: "low",
+	}
+	if d.IsReadOnly() {
+		cfg.Isolation = "read_uncommitted"
+	} else {
+		cfg.Isolation = "read_committed"
+	}
+	return cfg
+}
+
+// ResolveSessionConfig returns the effective session config for a query
+// Priority: query settings > database settings > implicit defaults
+func ResolveSessionConfig(dbCfg DatabaseConfig, queryCfg QueryConfig) SessionConfig {
+	// Start with implicit defaults based on readonly
+	cfg := dbCfg.DefaultSessionConfig()
+
+	// Apply database-level overrides
+	if dbCfg.Isolation != "" {
+		cfg.Isolation = dbCfg.Isolation
+	}
+	if dbCfg.LockTimeoutMs != nil {
+		cfg.LockTimeoutMs = *dbCfg.LockTimeoutMs
+	}
+	if dbCfg.DeadlockPriority != "" {
+		cfg.DeadlockPriority = dbCfg.DeadlockPriority
+	}
+
+	// Apply query-level overrides
+	if queryCfg.Isolation != "" {
+		cfg.Isolation = queryCfg.Isolation
+	}
+	if queryCfg.LockTimeoutMs != nil {
+		cfg.LockTimeoutMs = *queryCfg.LockTimeoutMs
+	}
+	if queryCfg.DeadlockPriority != "" {
+		cfg.DeadlockPriority = queryCfg.DeadlockPriority
+	}
+
+	return cfg
 }
 
 func Load(path string) (*Config, error) {
@@ -168,6 +246,17 @@ func (c *Config) validate() error {
 		if db.Database == "" {
 			return fmt.Errorf("databases[%d] (%s): database is required", i, db.Name)
 		}
+
+		// Validate session settings if specified
+		if db.Isolation != "" && !ValidIsolationLevels[db.Isolation] {
+			return fmt.Errorf("databases[%d] (%s): invalid isolation level '%s'", i, db.Name, db.Isolation)
+		}
+		if db.DeadlockPriority != "" && !ValidDeadlockPriorities[db.DeadlockPriority] {
+			return fmt.Errorf("databases[%d] (%s): invalid deadlock_priority '%s'", i, db.Name, db.DeadlockPriority)
+		}
+		if db.LockTimeoutMs != nil && *db.LockTimeoutMs < 0 {
+			return fmt.Errorf("databases[%d] (%s): lock_timeout_ms cannot be negative", i, db.Name)
+		}
 	}
 
 	for i, q := range c.Queries {
@@ -192,6 +281,17 @@ func (c *Config) validate() error {
 		}
 		if q.Path != "" && q.Method != "GET" && q.Method != "POST" {
 			return fmt.Errorf("queries[%d] (%s): method must be GET or POST", i, q.Name)
+		}
+
+		// Validate session settings if specified
+		if q.Isolation != "" && !ValidIsolationLevels[q.Isolation] {
+			return fmt.Errorf("queries[%d] (%s): invalid isolation level '%s'", i, q.Name, q.Isolation)
+		}
+		if q.DeadlockPriority != "" && !ValidDeadlockPriorities[q.DeadlockPriority] {
+			return fmt.Errorf("queries[%d] (%s): invalid deadlock_priority '%s'", i, q.Name, q.DeadlockPriority)
+		}
+		if q.LockTimeoutMs != nil && *q.LockTimeoutMs < 0 {
+			return fmt.Errorf("queries[%d] (%s): lock_timeout_ms cannot be negative", i, q.Name)
 		}
 	}
 

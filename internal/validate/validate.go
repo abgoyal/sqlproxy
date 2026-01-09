@@ -103,6 +103,17 @@ func validateDatabase(cfg *config.Config, r *Result) {
 		if strings.HasPrefix(dbCfg.Password, "${") {
 			r.addWarning("%s: password appears to be an unresolved env var", prefix)
 		}
+
+		// Validate session settings if specified
+		if dbCfg.Isolation != "" && !config.ValidIsolationLevels[dbCfg.Isolation] {
+			r.addError("%s: invalid isolation level '%s' (must be read_uncommitted, read_committed, repeatable_read, serializable, or snapshot)", prefix, dbCfg.Isolation)
+		}
+		if dbCfg.DeadlockPriority != "" && !config.ValidDeadlockPriorities[dbCfg.DeadlockPriority] {
+			r.addError("%s: invalid deadlock_priority '%s' (must be low, normal, or high)", prefix, dbCfg.DeadlockPriority)
+		}
+		if dbCfg.LockTimeoutMs != nil && *dbCfg.LockTimeoutMs < 0 {
+			r.addError("%s: lock_timeout_ms cannot be negative", prefix)
+		}
 	}
 }
 
@@ -202,6 +213,17 @@ func validateQueries(cfg *config.Config, r *Result) {
 
 		// Check SQL params match config params
 		validateParams(q, prefix, r)
+
+		// Validate session settings if specified
+		if q.Isolation != "" && !config.ValidIsolationLevels[q.Isolation] {
+			r.addError("%s: invalid isolation level '%s'", prefix, q.Isolation)
+		}
+		if q.DeadlockPriority != "" && !config.ValidDeadlockPriorities[q.DeadlockPriority] {
+			r.addError("%s: invalid deadlock_priority '%s'", prefix, q.DeadlockPriority)
+		}
+		if q.LockTimeoutMs != nil && *q.LockTimeoutMs < 0 {
+			r.addError("%s: lock_timeout_ms cannot be negative", prefix)
+		}
 
 		// Validate schedule if present
 		if q.Schedule != nil {

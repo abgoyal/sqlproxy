@@ -162,6 +162,9 @@ func (s *Scheduler) runQuery(q config.QueryConfig) ([]map[string]any, error) {
 		return nil, fmt.Errorf("failed to get database connection %s: %w", q.Database, err)
 	}
 
+	// Resolve session config (query overrides > connection defaults > implicit defaults)
+	sessionCfg := config.ResolveSessionConfig(database.Config(), q)
+
 	// Resolve timeout
 	timeout := queryTimeout
 	if q.TimeoutSec > 0 {
@@ -179,7 +182,7 @@ func (s *Scheduler) runQuery(q config.QueryConfig) ([]map[string]any, error) {
 		return nil, err
 	}
 
-	return database.Query(ctx, q.SQL, args...)
+	return database.Query(ctx, sessionCfg, q.SQL, args...)
 }
 
 func (s *Scheduler) buildArgs(q config.QueryConfig) ([]any, error) {

@@ -27,6 +27,11 @@ func (d *DB) IsReadOnly() bool {
 	return d.readOnly
 }
 
+// Config returns the database configuration (for session config resolution)
+func (d *DB) Config() config.DatabaseConfig {
+	return d.cfg
+}
+
 func New(cfg config.DatabaseConfig) (*DB, error) {
 	readOnly := cfg.IsReadOnly()
 
@@ -106,80 +111,64 @@ func (d *DB) Close() error {
 	return d.conn.Close()
 }
 
-// configureSession sets SQL Server session options for safe database access.
+// configureSession sets SQL Server session options based on the provided session config.
 // This is called at the start of each query to ensure the session is configured
 // correctly (connection pooling may give us a recycled connection).
-//
-// For read-only connections:
-//   - READ UNCOMMITTED isolation (no shared locks, won't block writers)
-//   - All other safety measures
-//
-// For write-enabled connections:
-//   - Default isolation level (READ COMMITTED)
-//   - Still keeps timeouts and deadlock priority for safety
-func (d *DB) configureSession(ctx context.Context, conn *sql.Conn) error {
-	var sessionConfig string
+func (d *DB) configureSession(ctx context.Context, conn *sql.Conn, sessCfg config.SessionConfig) error {
+	// Map isolation level to SQL Server syntax
+	isolationSQL := isolationToSQL(sessCfg.Isolation)
 
-	if d.readOnly {
-		// Full safety for read-only connections:
-		//
-		// READ UNCOMMITTED (NOLOCK equivalent at session level):
-		//   - No shared locks acquired on reads
-		//   - Won't block writers, writers won't block us
-		//   - May read uncommitted data (dirty reads) - acceptable for monitoring
-		//
-		// LOCK_TIMEOUT 5000 (5 seconds):
-		//   - If we somehow need a lock, fail fast instead of waiting
-		//   - Prevents us from contributing to blocking chains
-		//
-		// DEADLOCK_PRIORITY LOW:
-		//   - If somehow in a deadlock, we volunteer to be the victim
-		//   - Protects the production application's transactions
-		//
-		// NOCOUNT ON:
-		//   - Suppresses "N rows affected" messages
-		//   - Reduces network traffic
-		//
-		// IMPLICIT_TRANSACTIONS OFF:
-		//   - Ensures no implicit transaction starts
-		//   - Each query is auto-committed (for reads, this is a no-op)
-		//
-		// ARITHABORT ON:
-		//   - Standard setting, required for indexed view access
-		//
-		sessionConfig = `
-			SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
-			SET LOCK_TIMEOUT 5000;
-			SET DEADLOCK_PRIORITY LOW;
-			SET NOCOUNT ON;
-			SET IMPLICIT_TRANSACTIONS OFF;
-			SET ARITHABORT ON;
-		`
-	} else {
-		// Write-enabled: Use default isolation (READ COMMITTED) but keep safety measures
-		//
-		// LOCK_TIMEOUT 5000: Fail fast instead of blocking
-		// DEADLOCK_PRIORITY LOW: Yield to production app in deadlocks
-		// NOCOUNT ON: Reduce network traffic
-		// IMPLICIT_TRANSACTIONS OFF: No accidental open transactions
-		// ARITHABORT ON: Required for indexed views
-		//
-		sessionConfig = `
-			SET LOCK_TIMEOUT 5000;
-			SET DEADLOCK_PRIORITY LOW;
-			SET NOCOUNT ON;
-			SET IMPLICIT_TRANSACTIONS OFF;
-			SET ARITHABORT ON;
-		`
-	}
+	// Map deadlock priority to SQL Server syntax
+	deadlockSQL := deadlockPriorityToSQL(sessCfg.DeadlockPriority)
 
-	_, err := conn.ExecContext(ctx, sessionConfig)
+	sessionSQL := fmt.Sprintf(`
+		SET TRANSACTION ISOLATION LEVEL %s;
+		SET LOCK_TIMEOUT %d;
+		SET DEADLOCK_PRIORITY %s;
+		SET NOCOUNT ON;
+		SET IMPLICIT_TRANSACTIONS OFF;
+		SET ARITHABORT ON;
+	`, isolationSQL, sessCfg.LockTimeoutMs, deadlockSQL)
+
+	_, err := conn.ExecContext(ctx, sessionSQL)
 	return err
 }
 
+// isolationToSQL converts config isolation level to SQL Server syntax
+func isolationToSQL(isolation string) string {
+	switch isolation {
+	case "read_uncommitted":
+		return "READ UNCOMMITTED"
+	case "read_committed":
+		return "READ COMMITTED"
+	case "repeatable_read":
+		return "REPEATABLE READ"
+	case "serializable":
+		return "SERIALIZABLE"
+	case "snapshot":
+		return "SNAPSHOT"
+	default:
+		return "READ COMMITTED"
+	}
+}
+
+// deadlockPriorityToSQL converts config deadlock priority to SQL Server syntax
+func deadlockPriorityToSQL(priority string) string {
+	switch priority {
+	case "low":
+		return "LOW"
+	case "normal":
+		return "NORMAL"
+	case "high":
+		return "HIGH"
+	default:
+		return "LOW"
+	}
+}
+
 // Query executes a SQL query and returns results as a slice of maps.
-// Session is configured based on connection's read-only mode.
-func (d *DB) Query(ctx context.Context, query string, args ...any) ([]map[string]any, error) {
+// Session is configured based on the provided SessionConfig.
+func (d *DB) Query(ctx context.Context, sessCfg config.SessionConfig, query string, args ...any) ([]map[string]any, error) {
 	// Get a dedicated connection from the pool
 	conn, err := d.conn.Conn(ctx)
 	if err != nil {
@@ -187,8 +176,8 @@ func (d *DB) Query(ctx context.Context, query string, args ...any) ([]map[string
 	}
 	defer conn.Close() // Returns to pool
 
-	// Configure session for safe read-only access
-	if err := d.configureSession(ctx, conn); err != nil {
+	// Configure session with the provided settings
+	if err := d.configureSession(ctx, conn, sessCfg); err != nil {
 		return nil, fmt.Errorf("failed to configure session: %w", err)
 	}
 
