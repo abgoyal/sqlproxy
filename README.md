@@ -1,11 +1,11 @@
 # SQL Proxy Service
 
-A lightweight, production-grade Go service that exposes predefined SQL queries as HTTP endpoints. Supports **SQL Server** and **SQLite** databases. Designed to run as a Windows service with **zero impact on the source database** and **zero maintenance** requirements.
+A lightweight, production-grade Go service that exposes predefined SQL queries as HTTP endpoints. Supports **SQL Server** and **SQLite** databases. Runs as a system service on **Windows**, **Linux**, and **macOS** with **zero impact on the source database** and **zero maintenance** requirements.
 
 ## Features
 
 - **Multi-Database Support** - SQL Server and SQLite (same query syntax)
-- **Windows Service** - Auto-start on boot, proper service lifecycle
+- **Cross-Platform Service** - Windows Service, Linux systemd, macOS launchd
 - **YAML Configuration** - Easy query management, no code changes
 - **Read-only Safety** - Zero interference with production database
 - **Scheduled Queries** - Run queries on cron schedule with retry
@@ -29,7 +29,7 @@ This service is designed for long-running, fire-and-forget operation:
 | **Panic Recovery** | Catches panics, logs them, returns 500 |
 | **Connection Recycling** | Pool connections expire after 5 minutes |
 | **Graceful Shutdown** | Closes connections cleanly |
-| **Service Auto-Restart** | Windows service restarts on crash (5s, 10s, 30s delays) |
+| **Service Auto-Restart** | Automatic restart on crash (Windows/Linux/macOS) |
 
 ## Safety Features (Read-Only Guarantees)
 
@@ -87,11 +87,20 @@ DENY CREATE FUNCTION TO sqlproxy_reader;
 ## Building
 
 ```bash
-# From Linux/Mac
+# Build for current platform
+go build -ldflags '-s -w' -o sql-proxy .
+
+# Cross-compile for Windows
 GOOS=windows GOARCH=amd64 go build -ldflags '-s -w' -o sql-proxy.exe .
 
-# From Windows
-go build -ldflags '-s -w' -o sql-proxy.exe .
+# Cross-compile for Linux
+GOOS=linux GOARCH=amd64 go build -ldflags '-s -w' -o sql-proxy .
+
+# Cross-compile for macOS (Intel)
+GOOS=darwin GOARCH=amd64 go build -ldflags '-s -w' -o sql-proxy .
+
+# Cross-compile for macOS (Apple Silicon)
+GOOS=darwin GOARCH=arm64 go build -ldflags '-s -w' -o sql-proxy .
 ```
 
 ## Configuration Validation
@@ -132,6 +141,8 @@ The validator checks:
 
 ## Installation
 
+### Windows
+
 1. Copy `sql-proxy.exe` and `config.yaml` to `C:\Services\SQLProxy\`
 
 2. Create log directory:
@@ -151,14 +162,91 @@ The validator checks:
    sql-proxy.exe -install -config C:\Services\SQLProxy\config.yaml
    ```
 
-6. Start the service:
+6. Manage the service:
    ```cmd
-   net start SQLProxy
+   sql-proxy.exe -start      # Start the service
+   sql-proxy.exe -stop       # Stop the service
+   sql-proxy.exe -restart    # Restart the service
+   sql-proxy.exe -status     # Check service status
+   sql-proxy.exe -uninstall  # Remove the service
+   ```
+
+### Linux (systemd)
+
+1. Copy files to installation directory:
+   ```bash
+   sudo mkdir -p /opt/sql-proxy
+   sudo mkdir -p /var/log/sql-proxy
+   sudo cp sql-proxy /opt/sql-proxy/
+   sudo cp config.yaml /opt/sql-proxy/
+   sudo chmod +x /opt/sql-proxy/sql-proxy
+   ```
+
+2. Create service user:
+   ```bash
+   sudo useradd -r -s /bin/false sqlproxy
+   sudo chown -R sqlproxy:sqlproxy /opt/sql-proxy
+   sudo chown -R sqlproxy:sqlproxy /var/log/sql-proxy
+   ```
+
+3. Install systemd unit:
+   ```bash
+   sudo cp sql-proxy.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   ```
+
+4. Edit the unit file if needed:
+   ```bash
+   sudo systemctl edit --full sql-proxy
+   ```
+
+5. Manage the service:
+   ```bash
+   sudo systemctl enable sql-proxy   # Enable auto-start
+   sudo systemctl start sql-proxy    # Start the service
+   sudo systemctl stop sql-proxy     # Stop the service
+   sudo systemctl restart sql-proxy  # Restart the service
+   sudo systemctl status sql-proxy   # Check status
+   journalctl -u sql-proxy -f        # View logs
+   ```
+
+### macOS (launchd)
+
+1. Copy files to installation directory:
+   ```bash
+   sudo mkdir -p /usr/local/etc/sql-proxy
+   sudo mkdir -p /usr/local/var/log/sql-proxy
+   sudo cp sql-proxy /usr/local/bin/
+   sudo cp config.yaml /usr/local/etc/sql-proxy/
+   sudo chmod +x /usr/local/bin/sql-proxy
+   ```
+
+2. Create service user (optional):
+   ```bash
+   sudo dscl . -create /Users/_sqlproxy
+   sudo dscl . -create /Users/_sqlproxy UserShell /usr/bin/false
+   sudo dscl . -create /Users/_sqlproxy RealName "SQL Proxy Service"
+   sudo dscl . -create /Users/_sqlproxy UniqueID 299
+   sudo dscl . -create /Users/_sqlproxy PrimaryGroupID 299
+   ```
+
+3. Install launchd plist:
+   ```bash
+   sudo cp com.sqlproxy.plist /Library/LaunchDaemons/
+   sudo chown root:wheel /Library/LaunchDaemons/com.sqlproxy.plist
+   ```
+
+4. Manage the service:
+   ```bash
+   sudo launchctl load /Library/LaunchDaemons/com.sqlproxy.plist     # Start
+   sudo launchctl unload /Library/LaunchDaemons/com.sqlproxy.plist   # Stop
+   sudo launchctl list | grep sqlproxy                                # Status
+   tail -f /usr/local/var/log/sql-proxy/sql-proxy.log                # View logs
    ```
 
 ## Configuration
 
-All configuration fields are **required** - no defaults are assumed. This ensures explicit, predictable behavior.
+All configuration fields are **required** unless noted otherwise. This ensures explicit, predictable behavior.
 
 ### Complete Example
 
@@ -181,7 +269,7 @@ databases:
 
 logging:
   level: "info"
-  file_path: "C:/Services/SQLProxy/logs/sql-proxy.log"
+  file_path: "./logs/sql-proxy.log"  # Empty string = log to stdout (interactive mode)
   max_size_mb: 100
   max_backups: 5
   max_age_days: 30
@@ -662,9 +750,9 @@ With `log_results: true`, the first 10 rows are included:
 
 Uses Go's `log/slog` with JSON output. Rotation via lumberjack.
 
-**Output destination:**
-- Interactive mode (`sql-proxy.exe -config ...`): stdout
-- Service mode (Windows service): file only
+**Output destination (controlled by `file_path`):**
+- `file_path: ""` (empty): logs to stdout (default for interactive mode)
+- `file_path: "/path/to/file.log"`: logs to file with rotation (recommended for service mode)
 
 ### Log Format (slog JSON, one line per entry)
 
@@ -767,7 +855,7 @@ Response:
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/` | GET | List all query endpoints with parameters |
-| `/health` | GET | Health check (returns 503 if DB disconnected) |
+| `/health` | GET | Health check with per-database status (returns 503 if any DB disconnected) |
 | `/metrics` | GET | Current metrics snapshot |
 | `/openapi.json` | GET | OpenAPI 3.0 specification |
 | `/config/loglevel` | GET/POST | View/change log level |
@@ -887,9 +975,23 @@ your-domain.com {
 ## Troubleshooting
 
 ### Service won't start
-1. Check Windows Event Viewer > Application logs
-2. Run interactively to see errors: `sql-proxy.exe -config config.yaml`
-3. Verify config.yaml syntax with a YAML validator
+
+**Windows:**
+1. Check log file: `C:\Services\SQLProxy\logs\sql-proxy.log`
+2. Run interactively: `sql-proxy.exe -config config.yaml`
+
+**Linux:**
+1. Check journal: `journalctl -u sql-proxy -n 50`
+2. Check log file: `tail -50 /var/log/sql-proxy/sql-proxy.log`
+3. Run interactively: `./sql-proxy -config config.yaml`
+
+**macOS:**
+1. Check logs: `tail -100 /usr/local/var/log/sql-proxy/sql-proxy.err`
+2. Run interactively: `./sql-proxy -config config.yaml`
+
+**All platforms:**
+- Verify config.yaml syntax with a YAML validator
+- Check file permissions on config and log directories
 
 ### Database connection issues (SQL Server)
 - Check `/health` endpoint for status
@@ -937,60 +1039,85 @@ your-domain.com {
 
 ### Updating the service
 
-To deploy a new version:
-
+**Windows:**
 ```cmd
-# 1. Stop the service
-net stop SQLProxy
-
-# 2. Replace the executable
+sql-proxy.exe -stop
 copy /Y sql-proxy-new.exe C:\Services\SQLProxy\sql-proxy.exe
-
-# 3. Start the service
-net start SQLProxy
-
-# 4. Verify
+sql-proxy.exe -start
 curl http://localhost:8081/health
 ```
 
-For config changes only (no exe update):
-
-```cmd
-net stop SQLProxy
-# Edit config.yaml
-net start SQLProxy
+**Linux:**
+```bash
+sudo systemctl stop sql-proxy
+sudo cp sql-proxy-new /opt/sql-proxy/sql-proxy
+sudo chown sqlproxy:sqlproxy /opt/sql-proxy/sql-proxy
+sudo systemctl start sql-proxy
+curl http://localhost:8081/health
 ```
+
+**macOS:**
+```bash
+sudo launchctl unload /Library/LaunchDaemons/com.sqlproxy.plist
+sudo cp sql-proxy-new /usr/local/bin/sql-proxy
+sudo launchctl load /Library/LaunchDaemons/com.sqlproxy.plist
+curl http://localhost:8081/health
+```
+
+For config changes only, just restart the service (no binary replacement needed).
 
 ## Pre-Deployment Checklist
 
 Before deploying to production:
 
+### 1. Validate configuration
 ```bash
-# 1. Validate config and test database connectivity
-sql-proxy.exe -validate -config config.yaml
+./sql-proxy -validate -config config.yaml
+```
 
-# 2. Create required directories
-mkdir C:\Services\SQLProxy\logs
-
-# 3. Test interactively
-sql-proxy.exe -config config.yaml
+### 2. Test interactively
+```bash
+./sql-proxy -config config.yaml
 # In another terminal:
 curl http://localhost:8081/health
 curl http://localhost:8081/
-
-# 4. Test each endpoint manually
 curl "http://localhost:8081/api/your-endpoint?param=value"
-
-# 5. Install as service (run as Administrator)
-sql-proxy.exe -install -config C:\Services\SQLProxy\config.yaml
-
-# 6. Start and verify
-net start SQLProxy
-curl http://localhost:8081/health
-
-# 7. Check Windows Event Viewer for any errors
-# 8. Monitor logs: C:\Services\SQLProxy\logs\sql-proxy.log
 ```
+
+### 3. Install as service
+
+**Windows (as Administrator):**
+```cmd
+sql-proxy.exe -install -config C:\Services\SQLProxy\config.yaml
+sql-proxy.exe -start
+sql-proxy.exe -status
+```
+
+**Linux:**
+```bash
+sudo cp sql-proxy.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable sql-proxy
+sudo systemctl start sql-proxy
+sudo systemctl status sql-proxy
+```
+
+**macOS:**
+```bash
+sudo cp com.sqlproxy.plist /Library/LaunchDaemons/
+sudo launchctl load /Library/LaunchDaemons/com.sqlproxy.plist
+```
+
+### 4. Verify and monitor
+```bash
+curl http://localhost:8081/health
+curl http://localhost:8081/metrics
+```
+
+Check logs:
+- **Windows:** `type C:\Services\SQLProxy\logs\sql-proxy.log`
+- **Linux:** `journalctl -u sql-proxy -f` or `tail -f /var/log/sql-proxy/sql-proxy.log`
+- **macOS:** `tail -f /usr/local/var/log/sql-proxy/sql-proxy.log`
 
 ### Production Recommendations
 

@@ -31,10 +31,15 @@ databases:
   #   # journal_mode: "wal"         # wal, delete, truncate, memory, off (default: wal)
   #   # busy_timeout_ms: 5000       # Busy timeout in milliseconds (default: 5000)
 
-# Logging Configuration - all fields required
+# Logging Configuration
 logging:
   level: "info"                              # debug, info, warn, error
-  file_path: "C:/Services/SQLProxy/logs/sql-proxy.log"  # Log file (service mode)
+  # file_path: empty string = stdout, non-empty = file with rotation
+  # Platform-specific paths for service mode:
+  # Windows: C:/Services/SQLProxy/logs/sql-proxy.log
+  # Linux:   /var/log/sql-proxy/sql-proxy.log
+  # macOS:   /usr/local/var/log/sql-proxy/sql-proxy.log
+  file_path: "./logs/sql-proxy.log"          # Empty string for stdout
   max_size_mb: 100                           # Rotate at this size
   max_backups: 5                             # Old files to keep
   max_age_days: 30                           # Delete after days

@@ -12,7 +12,7 @@ func Spec(cfg *config.Config) map[string]any {
 		"openapi": "3.0.3",
 		"info": map[string]any{
 			"title":       "SQL Proxy API",
-			"description": "Auto-generated API for SQL Server query endpoints",
+			"description": "Auto-generated API for database query endpoints (SQL Server, SQLite)",
 			"version":     "1.0.0",
 		},
 		"servers": []map[string]any{
@@ -286,9 +286,13 @@ func buildComponents() map[string]any {
 						"type": "string",
 						"enum": []string{"healthy", "degraded"},
 					},
-					"database": map[string]any{
-						"type": "string",
-						"enum": []string{"connected", "disconnected"},
+					"databases": map[string]any{
+						"type":        "object",
+						"description": "Per-database connection status (connected/disconnected)",
+						"additionalProperties": map[string]any{
+							"type": "string",
+							"enum": []string{"connected", "disconnected"},
+						},
 					},
 					"uptime": map[string]any{
 						"type":        "string",

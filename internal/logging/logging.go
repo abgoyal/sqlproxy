@@ -50,6 +50,20 @@ func SetLevel(level string) {
 	levelVar.Set(parseLevel(level))
 }
 
+// GetLevel returns the current log level as a string
+func GetLevel() string {
+	switch levelVar.Level() {
+	case slog.LevelDebug:
+		return "debug"
+	case slog.LevelWarn:
+		return "warn"
+	case slog.LevelError:
+		return "error"
+	default:
+		return "info"
+	}
+}
+
 // Close closes the log file if any
 func Close() error {
 	if closer != nil {

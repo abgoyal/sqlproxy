@@ -14,8 +14,12 @@ import (
 
 var (
 	configPath   = flag.String("config", "config.yaml", "Path to configuration file")
-	install      = flag.Bool("install", false, "Install as Windows service")
-	uninstall    = flag.Bool("uninstall", false, "Uninstall Windows service")
+	install      = flag.Bool("install", false, "Install as system service")
+	uninstall    = flag.Bool("uninstall", false, "Uninstall system service")
+	start        = flag.Bool("start", false, "Start the system service")
+	stop         = flag.Bool("stop", false, "Stop the system service")
+	restart      = flag.Bool("restart", false, "Restart the system service")
+	status       = flag.Bool("status", false, "Show system service status")
 	validateOnly = flag.Bool("validate", false, "Validate configuration and exit")
 )
 
@@ -44,6 +48,36 @@ func main() {
 		if err := service.Uninstall(); err != nil {
 			log.Fatalf("Failed to uninstall service: %v", err)
 		}
+		return
+	}
+
+	if *start {
+		if err := service.Start(); err != nil {
+			log.Fatalf("Failed to start service: %v", err)
+		}
+		return
+	}
+
+	if *stop {
+		if err := service.Stop(); err != nil {
+			log.Fatalf("Failed to stop service: %v", err)
+		}
+		return
+	}
+
+	if *restart {
+		if err := service.Restart(); err != nil {
+			log.Fatalf("Failed to restart service: %v", err)
+		}
+		return
+	}
+
+	if *status {
+		st, err := service.Status()
+		if err != nil {
+			log.Fatalf("Failed to get service status: %v", err)
+		}
+		fmt.Printf("Service %s: %s\n", service.ServiceName(), st)
 		return
 	}
 

@@ -241,6 +241,11 @@ func validateQueries(cfg *config.Config, r *Result) {
 		// Check SQL params match config params
 		validateParams(q, prefix, r)
 
+		// Validate timeout
+		if q.TimeoutSec < 0 {
+			r.addError("%s: timeout_sec cannot be negative", prefix)
+		}
+
 		// Validate session settings if specified
 		if q.Isolation != "" && !config.ValidIsolationLevels[q.Isolation] {
 			r.addError("%s: invalid isolation level '%s'", prefix, q.Isolation)

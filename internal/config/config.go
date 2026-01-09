@@ -337,6 +337,11 @@ func (c *Config) validate() error {
 			return fmt.Errorf("queries[%d] (%s): method must be GET or POST", i, q.Name)
 		}
 
+		// Validate timeout
+		if q.TimeoutSec < 0 {
+			return fmt.Errorf("queries[%d] (%s): timeout_sec cannot be negative", i, q.Name)
+		}
+
 		// Validate session settings if specified
 		if q.Isolation != "" && !ValidIsolationLevels[q.Isolation] {
 			return fmt.Errorf("queries[%d] (%s): invalid isolation level '%s'", i, q.Name, q.Isolation)

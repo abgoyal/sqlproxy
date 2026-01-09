@@ -63,12 +63,18 @@ func New(cfg *config.Config, interactive bool) (*Server, error) {
 	}
 
 	for _, dbCfg := range cfg.Databases {
-		logging.Info("database_connected", map[string]any{
+		logFields := map[string]any{
 			"name":     dbCfg.Name,
-			"host":     dbCfg.Host,
-			"database": dbCfg.Database,
+			"type":     dbCfg.Type,
 			"readonly": dbCfg.IsReadOnly(),
-		})
+		}
+		if dbCfg.Type == "sqlite" {
+			logFields["path"] = dbCfg.Path
+		} else {
+			logFields["host"] = dbCfg.Host
+			logFields["database"] = dbCfg.Database
+		}
+		logging.Info("database_connected", logFields)
 	}
 
 	s := &Server{
@@ -226,23 +232,36 @@ func (s *Server) setupRoutes(mux *http.ServeMux) {
 func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	dbHealthy := s.dbHealthy.Load()
+	// Check each database individually
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	dbResults := s.dbManager.Ping(ctx)
+
+	// Build per-database status
+	databases := make(map[string]string)
+	allHealthy := true
+	for name, err := range dbResults {
+		if err != nil {
+			databases[name] = "disconnected"
+			allHealthy = false
+		} else {
+			databases[name] = "connected"
+		}
+	}
 
 	status := "healthy"
 	httpStatus := http.StatusOK
-	dbStatus := "connected"
 
-	if !dbHealthy {
+	if !allHealthy {
 		status = "degraded"
 		httpStatus = http.StatusServiceUnavailable
-		dbStatus = "disconnected"
 	}
 
 	w.WriteHeader(httpStatus)
 	json.NewEncoder(w).Encode(map[string]any{
-		"status":   status,
-		"database": dbStatus,
-		"uptime":   time.Since(s.startTime()).String(),
+		"status":    status,
+		"databases": databases,
+		"uptime":    time.Since(s.startTime()).String(),
 	})
 }
 
@@ -294,7 +313,7 @@ func (s *Server) logLevelHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(map[string]string{
-		"current_level": s.config.Logging.Level,
+		"current_level": logging.GetLevel(),
 		"usage":         "POST /config/loglevel?level=debug|info|warn|error",
 	})
 }

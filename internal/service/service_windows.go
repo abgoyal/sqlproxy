@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
 	"time"
 
 	"golang.org/x/sys/windows/svc"
@@ -17,7 +19,7 @@ import (
 )
 
 const serviceName = "SQLProxy"
-const serviceDesc = "SQL Server Proxy Service for querying SQL Server via HTTP"
+const serviceDesc = "SQL Proxy Service - HTTP endpoints for SQL Server and SQLite databases"
 
 type windowsService struct {
 	server *server.Server
@@ -87,8 +89,22 @@ func Run(cfg *config.Config) error {
 		return svc.Run(serviceName, ws)
 	}
 
-	// Running interactively - just start the HTTP server directly
-	return srv.Start()
+	// Running interactively - handle Ctrl+C for graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt)
+
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- srv.Start()
+	}()
+
+	select {
+	case err := <-errChan:
+		return err
+	case <-sigChan:
+		log.Println("Received interrupt, shutting down...")
+		return srv.Shutdown(context.Background())
+	}
 }
 
 // Install installs the service
@@ -169,8 +185,120 @@ func Uninstall() error {
 	return nil
 }
 
+// Start starts the Windows service
+func Start() error {
+	m, err := mgr.Connect()
+	if err != nil {
+		return fmt.Errorf("failed to connect to service manager: %w", err)
+	}
+	defer m.Disconnect()
+
+	s, err := m.OpenService(serviceName)
+	if err != nil {
+		return fmt.Errorf("service %s not found: %w", serviceName, err)
+	}
+	defer s.Close()
+
+	err = s.Start()
+	if err != nil {
+		return fmt.Errorf("failed to start service: %w", err)
+	}
+
+	log.Printf("Service %s started successfully", serviceName)
+	return nil
+}
+
+// Stop stops the Windows service
+func Stop() error {
+	m, err := mgr.Connect()
+	if err != nil {
+		return fmt.Errorf("failed to connect to service manager: %w", err)
+	}
+	defer m.Disconnect()
+
+	s, err := m.OpenService(serviceName)
+	if err != nil {
+		return fmt.Errorf("service %s not found: %w", serviceName, err)
+	}
+	defer s.Close()
+
+	status, err := s.Control(svc.Stop)
+	if err != nil {
+		return fmt.Errorf("failed to stop service: %w", err)
+	}
+
+	// Wait for the service to stop
+	timeout := time.Now().Add(30 * time.Second)
+	for status.State != svc.Stopped {
+		if time.Now().After(timeout) {
+			return fmt.Errorf("timeout waiting for service to stop")
+		}
+		time.Sleep(500 * time.Millisecond)
+		status, err = s.Query()
+		if err != nil {
+			return fmt.Errorf("failed to query service status: %w", err)
+		}
+	}
+
+	log.Printf("Service %s stopped successfully", serviceName)
+	return nil
+}
+
+// Restart restarts the Windows service
+func Restart() error {
+	if err := Stop(); err != nil {
+		// If stop fails because service isn't running, that's OK
+		log.Printf("Note: %v", err)
+	}
+	return Start()
+}
+
+// Status returns the current service status
+func Status() (string, error) {
+	m, err := mgr.Connect()
+	if err != nil {
+		return "", fmt.Errorf("failed to connect to service manager: %w", err)
+	}
+	defer m.Disconnect()
+
+	s, err := m.OpenService(serviceName)
+	if err != nil {
+		return "not installed", nil
+	}
+	defer s.Close()
+
+	status, err := s.Query()
+	if err != nil {
+		return "", fmt.Errorf("failed to query service status: %w", err)
+	}
+
+	switch status.State {
+	case svc.Stopped:
+		return "stopped", nil
+	case svc.StartPending:
+		return "starting", nil
+	case svc.StopPending:
+		return "stopping", nil
+	case svc.Running:
+		return "running", nil
+	case svc.ContinuePending:
+		return "resuming", nil
+	case svc.PausePending:
+		return "pausing", nil
+	case svc.Paused:
+		return "paused", nil
+	default:
+		return "unknown", nil
+	}
+}
+
 // IsWindowsService returns true if running as a Windows service
 func IsWindowsService() bool {
 	isService, _ := svc.IsWindowsService()
 	return isService
+}
+
+// ServiceName returns the service name
+func ServiceName() string {
+	return serviceName
 }
