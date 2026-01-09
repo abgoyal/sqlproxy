@@ -299,17 +299,16 @@ func (d *SQLiteDriver) Query(ctx context.Context, sessCfg config.SessionConfig, 
 	return scanRows(rows)
 }
 
-// translateQuery converts @param syntax to $param for SQLite and builds args.
-// SQLite supports named parameters with $, :, or @ prefix.
-// We use $ for clarity and to avoid potential conflicts.
+// translateQuery keeps @param syntax for SQLite and builds args.
+// modernc.org/sqlite supports named parameters with @name syntax using sql.Named().
 func (d *SQLiteDriver) translateQuery(query string, params map[string]any) (string, []any) {
 	re := regexp.MustCompile(`@(\w+)`)
 	matches := re.FindAllStringSubmatch(query, -1)
 
-	// Translate @param to $param
-	translatedQuery := re.ReplaceAllString(query, `$$1`)
+	// Keep @param syntax - SQLite driver supports it directly with sql.Named()
+	// No translation needed
 
-	// Build args in order of appearance (using sql.Named for SQLite)
+	// Build args using sql.Named for each unique parameter
 	addedParams := make(map[string]bool)
 	var args []any
 
@@ -324,7 +323,7 @@ func (d *SQLiteDriver) translateQuery(query string, params map[string]any) (stri
 		addedParams[paramName] = true
 	}
 
-	return translatedQuery, args
+	return query, args
 }
 
 // Ping checks database connectivity

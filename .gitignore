@@ -2,3 +2,4 @@ sql-proxy
 sql-proxy.exe
 build/
 .claude
+coverage/

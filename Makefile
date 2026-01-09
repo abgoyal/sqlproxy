@@ -6,6 +6,9 @@ LDFLAGS := -ldflags '-s -w'
 # Build output directory
 BUILD_DIR := build
 
+# Coverage output directory
+COVERAGE_DIR := coverage
+
 # Go parameters
 GOCMD := go
 GOBUILD := $(GOCMD) build
@@ -13,9 +16,24 @@ GOTEST := $(GOCMD) test
 GOGET := $(GOCMD) get
 GOMOD := $(GOCMD) mod
 
+# Test packages
+PKG_CONFIG := ./internal/config/...
+PKG_DB := ./internal/db/...
+PKG_HANDLER := ./internal/handler/...
+PKG_SCHEDULER := ./internal/scheduler/...
+PKG_VALIDATE := ./internal/validate/...
+PKG_SERVER := ./internal/server/...
+PKG_LOGGING := ./internal/logging/...
+PKG_METRICS := ./internal/metrics/...
+PKG_OPENAPI := ./internal/openapi/...
+
 .PHONY: all build clean test validate run install deps tidy \
         build-linux build-windows build-darwin build-all \
-        build-linux-arm64 build-darwin-arm64
+        build-linux-arm64 build-darwin-arm64 \
+        test-config test-db test-handler test-scheduler test-validate \
+        test-server test-logging test-metrics test-openapi \
+        test-unit test-bench test-cover test-cover-html test-cover-report \
+        test-docs
 
 # Default target
 all: build
@@ -24,9 +42,109 @@ all: build
 build:
 	$(GOBUILD) $(LDFLAGS) -o $(BINARY_NAME) .
 
-# Run tests
+# ============================================================================
+# Testing targets
+# ============================================================================
+
+# Run all tests
 test:
 	$(GOTEST) -v ./...
+
+# Run all tests (short output)
+test-short:
+	$(GOTEST) ./...
+
+# Run tests for individual packages
+test-config:
+	$(GOTEST) -v $(PKG_CONFIG)
+
+test-db:
+	$(GOTEST) -v $(PKG_DB)
+
+test-handler:
+	$(GOTEST) -v $(PKG_HANDLER)
+
+test-scheduler:
+	$(GOTEST) -v $(PKG_SCHEDULER)
+
+test-validate:
+	$(GOTEST) -v $(PKG_VALIDATE)
+
+test-server:
+	$(GOTEST) -v $(PKG_SERVER)
+
+test-logging:
+	$(GOTEST) -v $(PKG_LOGGING)
+
+test-metrics:
+	$(GOTEST) -v $(PKG_METRICS)
+
+test-openapi:
+	$(GOTEST) -v $(PKG_OPENAPI)
+
+# Run unit tests only (exclude benchmarks)
+test-unit:
+	$(GOTEST) -v -run "^Test" ./...
+
+# Run benchmarks
+test-bench:
+	$(GOTEST) -bench=. -benchmem ./...
+
+# Run benchmarks with short time (quick check)
+test-bench-short:
+	$(GOTEST) -bench=. -benchtime=100ms ./...
+
+# ============================================================================
+# Coverage targets
+# ============================================================================
+
+# Run tests with coverage summary
+test-cover:
+	$(GOTEST) -cover ./...
+
+# Generate coverage report (text)
+test-cover-report:
+	@mkdir -p $(COVERAGE_DIR)
+	$(GOTEST) -coverprofile=$(COVERAGE_DIR)/coverage.out ./...
+	$(GOCMD) tool cover -func=$(COVERAGE_DIR)/coverage.out
+	@echo ""
+	@echo "Coverage report saved to $(COVERAGE_DIR)/coverage.out"
+
+# Generate HTML coverage report
+test-cover-html:
+	@mkdir -p $(COVERAGE_DIR)
+	$(GOTEST) -coverprofile=$(COVERAGE_DIR)/coverage.out ./...
+	$(GOCMD) tool cover -html=$(COVERAGE_DIR)/coverage.out -o $(COVERAGE_DIR)/coverage.html
+	@echo "HTML coverage report: $(COVERAGE_DIR)/coverage.html"
+
+# Generate per-package coverage reports
+test-cover-packages:
+	@mkdir -p $(COVERAGE_DIR)
+	@echo "Generating per-package coverage..."
+	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/config.out $(PKG_CONFIG)
+	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/db.out $(PKG_DB)
+	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/handler.out $(PKG_HANDLER)
+	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/scheduler.out $(PKG_SCHEDULER)
+	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/validate.out $(PKG_VALIDATE)
+	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/server.out $(PKG_SERVER)
+	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/logging.out $(PKG_LOGGING)
+	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/metrics.out $(PKG_METRICS)
+	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/openapi.out $(PKG_OPENAPI)
+	@echo ""
+	@echo "Per-package coverage reports saved to $(COVERAGE_DIR)/"
+
+# Generate test documentation
+test-docs:
+	@./scripts/generate-test-docs.sh
+
+# ============================================================================
+# CI/CD targets
+# ============================================================================
+
+# Run full CI check (test + coverage threshold)
+ci: test-cover-report
+	@echo "Checking coverage thresholds..."
+	@./scripts/check-coverage.sh $(COVERAGE_DIR)/coverage.out 70
 
 # Validate config
 validate: build
@@ -40,6 +158,7 @@ run: build
 clean:
 	rm -f $(BINARY_NAME) $(BINARY_NAME).exe
 	rm -rf $(BUILD_DIR)
+	rm -rf $(COVERAGE_DIR)
 
 # Download dependencies
 deps:
@@ -93,12 +212,40 @@ help:
 	@echo "Usage:"
 	@echo "  make              Build for current platform"
 	@echo "  make build        Build for current platform"
-	@echo "  make test         Run tests"
+	@echo "  make test         Run all tests (verbose)"
+	@echo "  make test-short   Run all tests (summary only)"
 	@echo "  make validate     Validate config.yaml"
 	@echo "  make run          Build and run interactively"
-	@echo "  make clean        Remove build artifacts"
+	@echo "  make clean        Remove build artifacts and coverage"
 	@echo "  make deps         Download dependencies"
 	@echo "  make tidy         Tidy go.mod"
+	@echo ""
+	@echo "Testing by package:"
+	@echo "  make test-config     Run config package tests"
+	@echo "  make test-db         Run db package tests"
+	@echo "  make test-handler    Run handler package tests"
+	@echo "  make test-scheduler  Run scheduler package tests"
+	@echo "  make test-validate   Run validate package tests"
+	@echo "  make test-server     Run server package tests"
+	@echo "  make test-logging    Run logging package tests"
+	@echo "  make test-metrics    Run metrics package tests"
+	@echo "  make test-openapi    Run openapi package tests"
+	@echo ""
+	@echo "Benchmarks:"
+	@echo "  make test-bench        Run all benchmarks"
+	@echo "  make test-bench-short  Run benchmarks (quick)"
+	@echo ""
+	@echo "Coverage:"
+	@echo "  make test-cover          Summary coverage for all packages"
+	@echo "  make test-cover-report   Detailed coverage report (text)"
+	@echo "  make test-cover-html     HTML coverage report"
+	@echo "  make test-cover-packages Per-package coverage files"
+	@echo ""
+	@echo "Documentation:"
+	@echo "  make test-docs    Generate test documentation"
+	@echo ""
+	@echo "CI/CD:"
+	@echo "  make ci           Run tests with coverage threshold check"
 	@echo ""
 	@echo "Cross-compilation:"
 	@echo "  make build-linux        Linux amd64"

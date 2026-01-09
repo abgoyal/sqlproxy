@@ -1126,3 +1126,46 @@ Check logs:
 - **Review metrics**: Check `/metrics` endpoint for slow queries
 - **Log level**: Use `info` in production, `debug` only for troubleshooting
 - **Backup config**: Keep config.yaml in version control
+
+## Testing
+
+The project includes comprehensive tests using SQLite in-memory databases to avoid external dependencies.
+
+### Running Tests
+
+```bash
+# Run all tests
+make test
+
+# Run tests for a specific package
+make test-db
+make test-handler
+make test-config
+make test-server
+
+# Run with coverage
+make test-cover
+make test-cover-html
+
+# Run benchmarks
+make test-bench
+```
+
+### Test Documentation
+
+See [TESTS.md](TESTS.md) for a complete list of all tests with descriptions.
+
+To regenerate test documentation after adding/modifying tests:
+
+```bash
+make test-docs
+```
+
+### Test Organization
+
+| Type | Description |
+|------|-------------|
+| Unit tests | Test individual functions and methods |
+| Integration tests | Test component interactions (e.g., handler + db) |
+| E2E tests | Test full HTTP request/response cycles |
+| Benchmarks | Performance tests (prefixed with `Benchmark`) |
