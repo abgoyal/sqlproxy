@@ -26,8 +26,9 @@ type ExecutionContext struct {
 	Error      string            `json:"error"`       // Error message if failed
 }
 
-// funcMap provides custom template functions
-var funcMap = template.FuncMap{
+// TemplateFuncMap provides custom template functions for webhook templates.
+// Exported so validate package can use the same functions for validation.
+var TemplateFuncMap = template.FuncMap{
 	"add": func(a, b int) int { return a + b },
 	"mod": func(a, b int) int { return a % b },
 	"json": func(v any) string {
@@ -163,7 +164,7 @@ func buildBody(bodyCfg *config.WebhookBodyConfig, execCtx *ExecutionContext) (st
 
 // executeTemplate executes a template with the execution context
 func executeTemplate(name, tmpl string, data any) (string, error) {
-	t, err := template.New(name).Funcs(funcMap).Parse(tmpl)
+	t, err := template.New(name).Funcs(TemplateFuncMap).Parse(tmpl)
 	if err != nil {
 		return "", err
 	}

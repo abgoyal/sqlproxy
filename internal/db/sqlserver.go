@@ -11,6 +11,29 @@ import (
 	"sql-proxy/internal/config"
 )
 
+// sqlParamRegex matches @param style named parameters in SQL queries
+var sqlParamRegex = regexp.MustCompile(`@(\w+)`)
+
+const (
+	// sqlserverMaxOpenConns is the max open connections
+	sqlserverMaxOpenConns = 5
+
+	// sqlserverMaxIdleConns is the max idle connections to keep
+	sqlserverMaxIdleConns = 2
+
+	// sqlserverConnMaxLifetime is how long connections can be reused
+	sqlserverConnMaxLifetime = 5 * time.Minute
+
+	// sqlserverConnMaxIdleTime is how long idle connections are kept
+	sqlserverConnMaxIdleTime = 2 * time.Minute
+
+	// sqlserverConnectionTimeout is the timeout for connection establishment (seconds)
+	sqlserverConnectionTimeout = 10
+
+	// sqlserverPingTimeout is the timeout for ping operations
+	sqlserverPingTimeout = 10 * time.Second
+)
+
 // SQLServerDriver implements Driver for Microsoft SQL Server
 type SQLServerDriver struct {
 	conn     *sql.DB
@@ -23,21 +46,25 @@ type SQLServerDriver struct {
 func NewSQLServerDriver(cfg config.DatabaseConfig) (*SQLServerDriver, error) {
 	readOnly := cfg.IsReadOnly()
 
+	// Resolve encrypt setting (default: disable for internal VPC connections)
+	encrypt := cfg.Encrypt
+	if encrypt == "" {
+		encrypt = "disable"
+	}
+
 	// Build connection string
-	// - connection timeout=10: Fail fast on connection issues
-	// - encrypt=disable: For RDS internal VPC (change to 'true' if needed)
 	var connStr string
 	if readOnly {
 		// Read-only: Add ApplicationIntent=ReadOnly for AG routing and read-only mode
 		connStr = fmt.Sprintf(
-			"server=%s;port=%d;user id=%s;password=%s;database=%s;encrypt=disable;connection timeout=10;ApplicationIntent=ReadOnly",
-			cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.Database,
+			"server=%s;port=%d;user id=%s;password=%s;database=%s;encrypt=%s;connection timeout=%d;ApplicationIntent=ReadOnly",
+			cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.Database, encrypt, sqlserverConnectionTimeout,
 		)
 	} else {
 		// Write-enabled: No ApplicationIntent restriction
 		connStr = fmt.Sprintf(
-			"server=%s;port=%d;user id=%s;password=%s;database=%s;encrypt=disable;connection timeout=10",
-			cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.Database,
+			"server=%s;port=%d;user id=%s;password=%s;database=%s;encrypt=%s;connection timeout=%d",
+			cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.Database, encrypt, sqlserverConnectionTimeout,
 		)
 	}
 
@@ -50,7 +77,7 @@ func NewSQLServerDriver(cfg config.DatabaseConfig) (*SQLServerDriver, error) {
 	configureSQLServerPool(conn)
 
 	// Test connection
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), sqlserverPingTimeout)
 	defer cancel()
 
 	if err := conn.PingContext(ctx); err != nil {
@@ -62,10 +89,10 @@ func NewSQLServerDriver(cfg config.DatabaseConfig) (*SQLServerDriver, error) {
 }
 
 func configureSQLServerPool(conn *sql.DB) {
-	conn.SetMaxOpenConns(5)                   // Low max connections - we're just a read proxy
-	conn.SetMaxIdleConns(2)                   // Keep few idle connections
-	conn.SetConnMaxLifetime(5 * time.Minute)  // Recycle connections regularly
-	conn.SetConnMaxIdleTime(2 * time.Minute)  // Don't hold idle connections long
+	conn.SetMaxOpenConns(sqlserverMaxOpenConns)
+	conn.SetMaxIdleConns(sqlserverMaxIdleConns)
+	conn.SetConnMaxLifetime(sqlserverConnMaxLifetime)
+	conn.SetConnMaxIdleTime(sqlserverConnMaxIdleTime)
 }
 
 // Name returns the connection name
@@ -103,7 +130,7 @@ func (d *SQLServerDriver) Reconnect() error {
 	configureSQLServerPool(conn)
 
 	// Test connection
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), sqlserverPingTimeout)
 	defer cancel()
 
 	if err := conn.PingContext(ctx); err != nil {
@@ -203,8 +230,7 @@ func (d *SQLServerDriver) Query(ctx context.Context, sessCfg config.SessionConfi
 // SQL Server uses @param syntax natively, so we just need to convert
 // the map to sql.Named arguments.
 func (d *SQLServerDriver) buildArgs(query string, params map[string]any) []any {
-	re := regexp.MustCompile(`@(\w+)`)
-	matches := re.FindAllStringSubmatch(query, -1)
+	matches := sqlParamRegex.FindAllStringSubmatch(query, -1)
 
 	addedParams := make(map[string]bool)
 	var args []any

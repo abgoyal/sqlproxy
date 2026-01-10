@@ -12,6 +12,38 @@ import (
 	"sql-proxy/internal/config"
 )
 
+// paramRegex matches @param style named parameters in SQL queries
+var paramRegex = regexp.MustCompile(`@(\w+)`)
+
+const (
+	// sqliteMaxOpenConns is the max open connections for SQLite (single-writer)
+	sqliteMaxOpenConns = 5
+
+	// sqliteMaxIdleConns is the max idle connections to keep
+	sqliteMaxIdleConns = 2
+
+	// sqliteConnMaxLifetime is how long connections can be reused
+	sqliteConnMaxLifetime = 5 * time.Minute
+
+	// sqliteConnMaxIdleTime is how long idle connections are kept
+	sqliteConnMaxIdleTime = 2 * time.Minute
+
+	// sqlitePingTimeout is the timeout for ping operations
+	sqlitePingTimeout = 10 * time.Second
+
+	// sqliteDefaultBusyTimeout is the default busy_timeout pragma value (ms)
+	sqliteDefaultBusyTimeout = 5000
+
+	// sqliteDefaultJournalMode is the default journal mode
+	sqliteDefaultJournalMode = "wal"
+
+	// sqliteDefaultCacheSize is the default cache size pragma value (KB, negative)
+	sqliteDefaultCacheSize = -64000
+
+	// sqliteDefaultMmapSize is the default mmap_size pragma value (bytes)
+	sqliteDefaultMmapSize = 268435456 // 256MB
+)
+
 // SQLiteDriver implements Driver for SQLite
 type SQLiteDriver struct {
 	conn     *sql.DB
@@ -73,7 +105,7 @@ func NewSQLiteDriver(cfg config.DatabaseConfig) (*SQLiteDriver, error) {
 	}
 
 	// Test connection
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), sqlitePingTimeout)
 	defer cancel()
 
 	if err := conn.PingContext(ctx); err != nil {
@@ -87,17 +119,17 @@ func NewSQLiteDriver(cfg config.DatabaseConfig) (*SQLiteDriver, error) {
 func configureSQLitePool(conn *sql.DB) {
 	// SQLite is single-writer, so we don't need many connections
 	// WAL mode allows concurrent reads with single writer
-	conn.SetMaxOpenConns(5)
-	conn.SetMaxIdleConns(2)
-	conn.SetConnMaxLifetime(5 * time.Minute)
-	conn.SetConnMaxIdleTime(2 * time.Minute)
+	conn.SetMaxOpenConns(sqliteMaxOpenConns)
+	conn.SetMaxIdleConns(sqliteMaxIdleConns)
+	conn.SetConnMaxLifetime(sqliteConnMaxLifetime)
+	conn.SetConnMaxIdleTime(sqliteConnMaxIdleTime)
 }
 
 // applyInitialPragmas applies database-level pragmas that should be set once.
 // These settings are critical for good concurrent performance and avoiding "database is locked" errors.
 func (d *SQLiteDriver) applyInitialPragmas() error {
-	// Resolve busy timeout (default: 5 seconds)
-	busyTimeout := 5000
+	// Resolve busy timeout
+	busyTimeout := sqliteDefaultBusyTimeout
 	if d.cfg.BusyTimeoutMs != nil {
 		busyTimeout = *d.cfg.BusyTimeoutMs
 	}
@@ -105,7 +137,7 @@ func (d *SQLiteDriver) applyInitialPragmas() error {
 	// Set journal mode (default: WAL for better concurrency)
 	journalMode := d.cfg.JournalMode
 	if journalMode == "" {
-		journalMode = "wal"
+		journalMode = sqliteDefaultJournalMode
 	}
 
 	// Build pragmas - order matters for some settings
@@ -136,12 +168,10 @@ func (d *SQLiteDriver) applyInitialPragmas() error {
 		"PRAGMA temp_store = MEMORY",
 
 		// cache_size: Negative value = KB, positive = pages
-		// -64000 = 64MB cache (helps with concurrent reads)
-		"PRAGMA cache_size = -64000",
+		fmt.Sprintf("PRAGMA cache_size = %d", sqliteDefaultCacheSize),
 
-		// mmap_size: Memory-map up to 256MB of database file
-		// Improves read performance significantly
-		"PRAGMA mmap_size = 268435456",
+		// mmap_size: Memory-map database file for faster reads
+		fmt.Sprintf("PRAGMA mmap_size = %d", sqliteDefaultMmapSize),
 
 		// foreign_keys: Enable foreign key enforcement (good practice)
 		"PRAGMA foreign_keys = ON",
@@ -216,7 +246,7 @@ func (d *SQLiteDriver) Reconnect() error {
 	}
 
 	// Test connection
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), sqlitePingTimeout)
 	defer cancel()
 
 	if err := conn.PingContext(ctx); err != nil {
@@ -236,8 +266,8 @@ func (d *SQLiteDriver) Close() error {
 // critical pragmas on each connection we get from the pool.
 // Isolation and deadlock_priority are ignored (not applicable to SQLite).
 func (d *SQLiteDriver) configureSession(ctx context.Context, conn *sql.Conn, sessCfg config.SessionConfig) error {
-	// Resolve busy timeout (default: 5 seconds)
-	busyTimeout := 5000
+	// Resolve busy timeout
+	busyTimeout := sqliteDefaultBusyTimeout
 	if d.cfg.BusyTimeoutMs != nil {
 		busyTimeout = *d.cfg.BusyTimeoutMs
 	}
@@ -245,7 +275,7 @@ func (d *SQLiteDriver) configureSession(ctx context.Context, conn *sql.Conn, ses
 	// Resolve journal mode (default: WAL)
 	journalMode := d.cfg.JournalMode
 	if journalMode == "" {
-		journalMode = "wal"
+		journalMode = sqliteDefaultJournalMode
 	}
 
 	// Set critical pragmas on this connection
@@ -302,8 +332,7 @@ func (d *SQLiteDriver) Query(ctx context.Context, sessCfg config.SessionConfig, 
 // translateQuery keeps @param syntax for SQLite and builds args.
 // modernc.org/sqlite supports named parameters with @name syntax using sql.Named().
 func (d *SQLiteDriver) translateQuery(query string, params map[string]any) (string, []any) {
-	re := regexp.MustCompile(`@(\w+)`)
-	matches := re.FindAllStringSubmatch(query, -1)
+	matches := paramRegex.FindAllStringSubmatch(query, -1)
 
 	// Keep @param syntax - SQLite driver supports it directly with sql.Named()
 	// No translation needed

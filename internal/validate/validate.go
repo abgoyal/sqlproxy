@@ -2,7 +2,6 @@ package validate
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -13,15 +12,11 @@ import (
 
 	"sql-proxy/internal/config"
 	"sql-proxy/internal/db"
+	"sql-proxy/internal/webhook"
 )
 
-// templateFuncMap matches the functions available in webhook templates
-var templateFuncMap = template.FuncMap{
-	"add":        func(a, b int) int { return a + b },
-	"mod":        func(a, b int) int { return a % b },
-	"json":       func(v any) string { b, _ := json.Marshal(v); return string(b) },
-	"jsonIndent": func(v any) string { b, _ := json.MarshalIndent(v, "", "  "); return string(b) },
-}
+// sqlParamRegex matches @param style named parameters in SQL queries
+var sqlParamRegex = regexp.MustCompile(`@(\w+)`)
 
 // Result holds validation results
 type Result struct {
@@ -67,6 +62,16 @@ func validateServer(cfg *config.Config, r *Result) {
 	if cfg.Server.MaxTimeoutSec < cfg.Server.DefaultTimeoutSec {
 		r.addError("Max timeout (%d) must be >= default timeout (%d)",
 			cfg.Server.MaxTimeoutSec, cfg.Server.DefaultTimeoutSec)
+	}
+
+	// Validate cache configuration
+	if cfg.Server.Cache != nil && cfg.Server.Cache.Enabled {
+		if cfg.Server.Cache.MaxSizeMB < 0 {
+			r.addError("server.cache.max_size_mb cannot be negative")
+		}
+		if cfg.Server.Cache.DefaultTTLSec < 0 {
+			r.addError("server.cache.default_ttl_sec cannot be negative")
+		}
 	}
 }
 
@@ -271,6 +276,11 @@ func validateQueries(cfg *config.Config, r *Result) {
 		if q.Schedule != nil {
 			validateSchedule(q, prefix, r)
 		}
+
+		// Validate cache if present
+		if q.Cache != nil {
+			validateCache(q.Cache, prefix, r)
+		}
 	}
 
 	// Warn about unused database connections
@@ -283,8 +293,7 @@ func validateQueries(cfg *config.Config, r *Result) {
 
 func validateParams(q config.QueryConfig, prefix string, r *Result) {
 	// Find @params in SQL
-	re := regexp.MustCompile(`@(\w+)`)
-	matches := re.FindAllStringSubmatch(q.SQL, -1)
+	matches := sqlParamRegex.FindAllStringSubmatch(q.SQL, -1)
 
 	sqlParams := make(map[string]bool)
 	for _, m := range matches {
@@ -416,8 +425,54 @@ func validateWebhookBody(b *config.WebhookBodyConfig, prefix string, r *Result) 
 }
 
 func validateTemplate(tmpl string) error {
-	_, err := template.New("").Funcs(templateFuncMap).Parse(tmpl)
+	_, err := template.New("").Funcs(webhook.TemplateFuncMap).Parse(tmpl)
 	return err
+}
+
+// cacheKeyFuncMap matches the functions available in cache key templates
+var cacheKeyFuncMap = template.FuncMap{
+	"default": func(def, val any) any {
+		if val == nil || val == "" {
+			return def
+		}
+		return val
+	},
+}
+
+func validateCache(c *config.QueryCacheConfig, prefix string, r *Result) {
+	cachePrefix := prefix + ".cache"
+
+	if !c.Enabled {
+		return // Skip validation for disabled cache
+	}
+
+	// Key template is required when cache is enabled
+	if c.Key == "" {
+		r.addError("%s: key template is required when cache is enabled", cachePrefix)
+	} else {
+		// Validate key template syntax
+		if _, err := template.New("").Funcs(cacheKeyFuncMap).Parse(c.Key); err != nil {
+			r.addError("%s: invalid key template: %v", cachePrefix, err)
+		}
+	}
+
+	// Validate TTL
+	if c.TTLSec < 0 {
+		r.addError("%s: ttl_sec cannot be negative", cachePrefix)
+	}
+
+	// Validate max size
+	if c.MaxSizeMB < 0 {
+		r.addError("%s: max_size_mb cannot be negative", cachePrefix)
+	}
+
+	// Validate evict_cron if specified
+	if c.EvictCron != "" {
+		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+		if _, err := parser.Parse(c.EvictCron); err != nil {
+			r.addError("%s: invalid evict_cron expression '%s': %v", cachePrefix, c.EvictCron, err)
+		}
+	}
 }
 
 func testDBConnections(cfg *config.Config, r *Result) {

@@ -233,6 +233,9 @@ Run `make test-cover` for current coverage statistics.
 - **TestValidateWebhook**: TestValidateWebhook tests webhook configuration validation
 - **TestValidateWebhookBody**: TestValidateWebhookBody tests webhook body configuration validation
 - **TestValidateScheduleWithWebhook**: TestValidateScheduleWithWebhook tests schedule validation with webhook
+- **TestValidateCache**: TestValidateCache tests cache configuration validation
+- **TestValidateServerCache**: TestValidateServerCache tests server-level cache configuration validation
+- **TestValidateQueries_WithCache**: TestValidateQueries_WithCache tests query-level cache validation integration
 - **TestValidateTemplate**: TestValidateTemplate tests template syntax validation
 
 
@@ -261,6 +264,8 @@ Run `make test-cover` for current coverage statistics.
 - **TestServer_HealthHandler_Degraded**: TestServer_HealthHandler_Degraded tests /health returns degraded status when database is unreachable
 - **TestServer_HealthHandler_DatabaseDown**: TestServer_HealthHandler_DatabaseDown tests /health shows database as disconnected when ping fails
 - **TestServer_HealthHandler_MultipleDatabases**: TestServer_HealthHandler_MultipleDatabases tests /health with multiple database connections
+- **TestServer_Integration_WithCache**: TestServer_Integration_WithCache tests cache hit/miss behavior and headers
+- **TestServer_Integration_CacheMetrics**: TestServer_Integration_CacheMetrics tests cache stats appear in metrics snapshot
 
 
 ---
@@ -391,6 +396,34 @@ Run `make test-cover` for current coverage statistics.
 - **TestJsonFunction_Error**: TestJsonFunction_Error tests json function with unmarshalable value
 - **TestJsonFunctions_Error**: TestJsonFunctions_Error tests json/jsonIndent functions with unmarshalable values
 - **TestExecute_ConnectionError**: TestExecute_ConnectionError tests error when server is unreachable
+
+
+---
+
+## Cache
+
+**Package**: `internal/cache`
+
+### cache_test.go
+
+- **TestNew**: TestNew verifies cache creation with different configurations
+- **TestCache_GetSet**: TestCache_GetSet tests basic cache operations
+- **TestCache_Delete**: TestCache_Delete tests cache entry deletion
+- **TestCache_Clear**: TestCache_Clear tests clearing all entries for an endpoint
+- **TestCache_ClearAll**: TestCache_ClearAll tests clearing entire cache
+- **TestCache_TTL**: TestCache_TTL tests TTL expiration
+- **TestCache_GetSnapshot**: TestCache_GetSnapshot tests metrics snapshot
+- **TestCache_GetTTLRemaining**: TestCache_GetTTLRemaining tests remaining TTL calculation
+- **TestBuildKey**: TestBuildKey tests cache key template execution
+- **TestCache_NilSafe**: TestCache_NilSafe tests that nil cache is handled safely
+- **TestCache_MultipleEndpoints**: TestCache_MultipleEndpoints tests independent tracking per endpoint
+- **TestCache_PerEndpointSizeLimit**: TestCache_PerEndpointSizeLimit tests per-endpoint size limits trigger eviction
+- **TestRegisterEndpoint_CronEviction**: TestRegisterEndpoint_CronEviction tests cron-based eviction setup
+- **TestRegisterEndpoint_NilConfig**: TestRegisterEndpoint_NilConfig tests registering with nil config
+- **TestCache_UpdateExistingKey**: TestCache_UpdateExistingKey tests updating an existing cached entry
+- **TestCache_DefaultTTL**: TestCache_DefaultTTL tests that TTL=0 uses server default TTL
+- **TestCache_UnregisteredEndpoint**: TestCache_UnregisteredEndpoint tests operations on endpoints not explicitly registered
+- **TestCalculateSize**: TestCalculateSize tests size calculation for cache entries
 
 
 ---

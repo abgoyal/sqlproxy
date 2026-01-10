@@ -28,7 +28,7 @@ type Driver interface {
 	// Name returns the connection name
 	Name() string
 
-	// Type returns the database type (sqlserver, sqlite, mysql, postgres)
+	// Type returns the database type (sqlserver or sqlite)
 	Type() string
 
 	// IsReadOnly returns whether this is a read-only connection

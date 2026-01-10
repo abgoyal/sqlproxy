@@ -428,43 +428,6 @@ func TestScheduler_ResolveValue_DateFormats(t *testing.T) {
 	}
 }
 
-// TestParseInt tests integer parsing accepts positives, rejects negatives and invalid input
-func TestParseInt(t *testing.T) {
-	tests := []struct {
-		input   string
-		want    int
-		wantErr bool
-	}{
-		{"0", 0, false},
-		{"1", 1, false},
-		{"42", 42, false},
-		{"12345", 12345, false},
-		{"", 0, true},
-		{"abc", 0, true},
-		{"-1", 0, true}, // negative not supported
-		{"1.5", 0, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			result, err := parseInt(tt.input)
-			if tt.wantErr {
-				if err == nil {
-					t.Error("expected error")
-				}
-				return
-			}
-			if err != nil {
-				t.Errorf("unexpected error: %v", err)
-				return
-			}
-			if result != tt.want {
-				t.Errorf("expected %d, got %d", tt.want, result)
-			}
-		})
-	}
-}
-
 // TestHasScheduledQueries tests detection of scheduled queries in config list
 func TestHasScheduledQueries(t *testing.T) {
 	tests := []struct {

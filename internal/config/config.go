@@ -28,10 +28,18 @@ type MetricsConfig struct {
 }
 
 type ServerConfig struct {
-	Port              int `yaml:"port"`
-	Host              string `yaml:"host"`
-	DefaultTimeoutSec int `yaml:"default_timeout_sec"` // Default query timeout (can be overridden per-query or per-request)
-	MaxTimeoutSec     int `yaml:"max_timeout_sec"`     // Maximum allowed timeout (caps request overrides)
+	Port              int          `yaml:"port"`
+	Host              string       `yaml:"host"`
+	DefaultTimeoutSec int          `yaml:"default_timeout_sec"` // Default query timeout (can be overridden per-query or per-request)
+	MaxTimeoutSec     int          `yaml:"max_timeout_sec"`     // Maximum allowed timeout (caps request overrides)
+	Cache             *CacheConfig `yaml:"cache"`               // Optional cache configuration
+}
+
+// CacheConfig is server-level cache configuration
+type CacheConfig struct {
+	Enabled       bool `yaml:"enabled"`
+	MaxSizeMB     int  `yaml:"max_size_mb"`      // Total cache limit in MB (default: 256)
+	DefaultTTLSec int  `yaml:"default_ttl_sec"`  // Default TTL in seconds (default: 300)
 }
 
 type DatabaseConfig struct {
@@ -50,6 +58,9 @@ type DatabaseConfig struct {
 
 	// Common settings
 	ReadOnly *bool `yaml:"readonly"` // Connection routing: ApplicationIntent=ReadOnly (nil defaults to true)
+
+	// SQL Server connection options
+	Encrypt string `yaml:"encrypt"` // disable, false, true (default: disable)
 
 	// Session defaults for queries using this connection (override implicit defaults)
 	// SQL Server: isolation, lock_timeout_ms, deadlock_priority
@@ -72,20 +83,30 @@ func (d *DatabaseConfig) IsReadOnly() bool {
 }
 
 type QueryConfig struct {
-	Name        string          `yaml:"name"`
-	Database    string          `yaml:"database"` // Connection name (required)
-	Path        string          `yaml:"path"`     // HTTP path (required unless schedule-only)
-	Method      string          `yaml:"method"`   // GET or POST (required when path is set)
-	Description string          `yaml:"description"`
-	SQL         string          `yaml:"sql"`
-	Parameters  []ParamConfig   `yaml:"parameters"`
-	TimeoutSec  int             `yaml:"timeout_sec"` // Query-specific timeout (0 = use server default)
-	Schedule    *ScheduleConfig `yaml:"schedule"`    // Optional scheduled execution
+	Name        string            `yaml:"name"`
+	Database    string            `yaml:"database"` // Connection name (required)
+	Path        string            `yaml:"path"`     // HTTP path (required unless schedule-only)
+	Method      string            `yaml:"method"`   // GET or POST (required when path is set)
+	Description string            `yaml:"description"`
+	SQL         string            `yaml:"sql"`
+	Parameters  []ParamConfig     `yaml:"parameters"`
+	TimeoutSec  int               `yaml:"timeout_sec"` // Query-specific timeout (0 = use server default)
+	Schedule    *ScheduleConfig   `yaml:"schedule"`    // Optional scheduled execution
+	Cache       *QueryCacheConfig `yaml:"cache"`       // Optional cache configuration
 
 	// Session overrides (empty = use connection default)
-	Isolation        string `yaml:"isolation"`          // Override isolation level for this query
-	LockTimeoutMs    *int   `yaml:"lock_timeout_ms"`    // Override lock timeout for this query
-	DeadlockPriority string `yaml:"deadlock_priority"`  // Override deadlock priority for this query
+	Isolation        string `yaml:"isolation"`         // Override isolation level for this query
+	LockTimeoutMs    *int   `yaml:"lock_timeout_ms"`   // Override lock timeout for this query
+	DeadlockPriority string `yaml:"deadlock_priority"` // Override deadlock priority for this query
+}
+
+// QueryCacheConfig is per-query cache configuration
+type QueryCacheConfig struct {
+	Enabled   bool   `yaml:"enabled"`
+	Key       string `yaml:"key"`          // Template for cache key (e.g., "machines:{{.status}}")
+	TTLSec    int    `yaml:"ttl_sec"`      // TTL in seconds (0 = use server default)
+	MaxSizeMB int    `yaml:"max_size_mb"`  // Per-endpoint cache limit in MB (0 = no limit)
+	EvictCron string `yaml:"evict_cron"`   // Optional cron expression for scheduled eviction
 }
 
 type ScheduleConfig struct {
@@ -218,23 +239,25 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	// Validate
-	if err := cfg.validate(); err != nil {
+	// Basic structural validation (required fields)
+	if err := cfg.validateRequired(); err != nil {
 		return nil, err
 	}
 
 	return &cfg, nil
 }
 
-func (c *Config) validate() error {
-	// Validate server config
+// validateRequired checks structural requirements for config loading.
+// Full validation with warnings is done by validate.Run().
+func (c *Config) validateRequired() error {
+	// Server basics
 	if c.Server.Host == "" {
 		return fmt.Errorf("server.host is required")
 	}
 	if c.Server.Port == 0 {
 		return fmt.Errorf("server.port is required")
 	}
-	if c.Server.Port < 1 || c.Server.Port > 65535 {
+	if c.Server.Port < 0 || c.Server.Port > 65535 {
 		return fmt.Errorf("server.port must be 1-65535")
 	}
 	if c.Server.DefaultTimeoutSec == 0 {
@@ -247,7 +270,7 @@ func (c *Config) validate() error {
 		return fmt.Errorf("server.max_timeout_sec must be >= server.default_timeout_sec")
 	}
 
-	// Validate logging config
+	// Logging basics
 	if c.Logging.Level == "" {
 		return fmt.Errorf("logging.level is required")
 	}
@@ -265,18 +288,19 @@ func (c *Config) validate() error {
 		return fmt.Errorf("logging.max_age_days is required")
 	}
 
-	// Validate database configs
+	// At least one database
 	if len(c.Databases) == 0 {
 		return fmt.Errorf("at least one database connection is required in 'databases'")
 	}
 
+	// Database validation
 	dbNames := make(map[string]bool)
 	for i, db := range c.Databases {
 		if db.Name == "" {
 			return fmt.Errorf("databases[%d].name is required", i)
 		}
 		if dbNames[db.Name] {
-			return fmt.Errorf("duplicate database name: %s", db.Name)
+			return fmt.Errorf("databases[%d]: duplicate database name '%s'", i, db.Name)
 		}
 		dbNames[db.Name] = true
 
@@ -286,7 +310,7 @@ func (c *Config) validate() error {
 			dbType = "sqlserver"
 		}
 		if !ValidDatabaseTypes[dbType] {
-			return fmt.Errorf("databases[%d] (%s): invalid type '%s'", i, db.Name, db.Type)
+			return fmt.Errorf("databases[%d] (%s): invalid type '%s' (must be sqlserver or sqlite)", i, db.Name, db.Type)
 		}
 
 		// Type-specific validation
@@ -307,31 +331,19 @@ func (c *Config) validate() error {
 			if db.Database == "" {
 				return fmt.Errorf("databases[%d] (%s): database is required for sqlserver", i, db.Name)
 			}
-			// Validate SQL Server session settings
-			if db.Isolation != "" && !ValidIsolationLevels[db.Isolation] {
-				return fmt.Errorf("databases[%d] (%s): invalid isolation level '%s'", i, db.Name, db.Isolation)
-			}
-			if db.DeadlockPriority != "" && !ValidDeadlockPriorities[db.DeadlockPriority] {
-				return fmt.Errorf("databases[%d] (%s): invalid deadlock_priority '%s'", i, db.Name, db.DeadlockPriority)
-			}
-			if db.LockTimeoutMs != nil && *db.LockTimeoutMs < 0 {
-				return fmt.Errorf("databases[%d] (%s): lock_timeout_ms cannot be negative", i, db.Name)
-			}
-
 		case "sqlite":
 			if db.Path == "" {
 				return fmt.Errorf("databases[%d] (%s): path is required for sqlite", i, db.Name)
 			}
-			// Validate SQLite session settings
-			if db.JournalMode != "" && !ValidJournalModes[db.JournalMode] {
-				return fmt.Errorf("databases[%d] (%s): invalid journal_mode '%s'", i, db.Name, db.JournalMode)
-			}
-			if db.BusyTimeoutMs != nil && *db.BusyTimeoutMs < 0 {
-				return fmt.Errorf("databases[%d] (%s): busy_timeout_ms cannot be negative", i, db.Name)
-			}
+		}
+
+		// Validate isolation level if specified
+		if db.Isolation != "" && !ValidIsolationLevels[db.Isolation] {
+			return fmt.Errorf("databases[%d] (%s): invalid isolation level '%s'", i, db.Name, db.Isolation)
 		}
 	}
 
+	// Query validation
 	for i, q := range c.Queries {
 		if q.Name == "" {
 			return fmt.Errorf("queries[%d]: name is required", i)
@@ -342,34 +354,19 @@ func (c *Config) validate() error {
 		if !dbNames[q.Database] {
 			return fmt.Errorf("queries[%d] (%s): unknown database '%s'", i, q.Name, q.Database)
 		}
-		// Path is required only if not a scheduled-only query
-		if q.Path == "" && q.Schedule == nil {
-			return fmt.Errorf("queries[%d] (%s): path is required (unless schedule is set)", i, q.Name)
-		}
 		if q.SQL == "" {
 			return fmt.Errorf("queries[%d] (%s): sql is required", i, q.Name)
 		}
-		if q.Path != "" && q.Method == "" {
-			return fmt.Errorf("queries[%d] (%s): method is required when path is set", i, q.Name)
-		}
+		// Method validation only if path is set (HTTP endpoint)
 		if q.Path != "" && q.Method != "GET" && q.Method != "POST" {
 			return fmt.Errorf("queries[%d] (%s): method must be GET or POST", i, q.Name)
 		}
-
-		// Validate timeout
 		if q.TimeoutSec < 0 {
 			return fmt.Errorf("queries[%d] (%s): timeout_sec cannot be negative", i, q.Name)
 		}
-
-		// Validate session settings if specified
+		// Validate query isolation level if specified
 		if q.Isolation != "" && !ValidIsolationLevels[q.Isolation] {
 			return fmt.Errorf("queries[%d] (%s): invalid isolation level '%s'", i, q.Name, q.Isolation)
-		}
-		if q.DeadlockPriority != "" && !ValidDeadlockPriorities[q.DeadlockPriority] {
-			return fmt.Errorf("queries[%d] (%s): invalid deadlock_priority '%s'", i, q.Name, q.DeadlockPriority)
-		}
-		if q.LockTimeoutMs != nil && *q.LockTimeoutMs < 0 {
-			return fmt.Errorf("queries[%d] (%s): lock_timeout_ms cannot be negative", i, q.Name)
 		}
 	}
 

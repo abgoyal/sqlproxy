@@ -223,10 +223,10 @@ func TestBuildQueryPath_GET(t *testing.T) {
 		t.Errorf("expected tags [Queries], got %v", tags)
 	}
 
-	// Check parameters include _timeout and id
+	// Check parameters include _timeout, _nocache, and id
 	params := get["parameters"].([]map[string]any)
-	if len(params) != 2 {
-		t.Errorf("expected 2 parameters, got %d", len(params))
+	if len(params) != 3 {
+		t.Errorf("expected 3 parameters, got %d", len(params))
 	}
 
 	// First should be _timeout
@@ -234,9 +234,14 @@ func TestBuildQueryPath_GET(t *testing.T) {
 		t.Errorf("expected first param _timeout, got %v", params[0]["name"])
 	}
 
-	// Second should be id
-	if params[1]["name"] != "id" {
-		t.Errorf("expected second param id, got %v", params[1]["name"])
+	// Second should be _nocache
+	if params[1]["name"] != "_nocache" {
+		t.Errorf("expected second param _nocache, got %v", params[1]["name"])
+	}
+
+	// Third should be id
+	if params[2]["name"] != "id" {
+		t.Errorf("expected third param id, got %v", params[2]["name"])
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"sql-proxy/internal/cache"
 	"sql-proxy/internal/config"
 	"sql-proxy/internal/db"
 	"sql-proxy/internal/logging"
@@ -19,10 +20,12 @@ import (
 
 type Handler struct {
 	dbManager         *db.Manager
+	cache             *cache.Cache
 	dbName            string // Which connection to use
 	queryConfig       config.QueryConfig
 	defaultTimeoutSec int
 	maxTimeoutSec     int
+	defaultCacheTTL   time.Duration
 }
 
 type Response struct {
@@ -34,20 +37,30 @@ type Response struct {
 	RequestID  string `json:"request_id,omitempty"`
 }
 
-func New(dbManager *db.Manager, queryCfg config.QueryConfig, serverCfg config.ServerConfig) *Handler {
+func New(dbManager *db.Manager, c *cache.Cache, queryCfg config.QueryConfig, serverCfg config.ServerConfig) *Handler {
+	defaultCacheTTL := 300 * time.Second
+	if serverCfg.Cache != nil && serverCfg.Cache.DefaultTTLSec > 0 {
+		defaultCacheTTL = time.Duration(serverCfg.Cache.DefaultTTLSec) * time.Second
+	}
+
 	return &Handler{
 		dbManager:         dbManager,
+		cache:             c,
 		dbName:            queryCfg.Database,
 		queryConfig:       queryCfg,
 		defaultTimeoutSec: serverCfg.DefaultTimeoutSec,
 		maxTimeoutSec:     serverCfg.MaxTimeoutSec,
+		defaultCacheTTL:   defaultCacheTTL,
 	}
 }
 
 // generateRequestID creates a short unique ID for request tracing
 func generateRequestID() string {
 	b := make([]byte, 8)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp-based ID if crypto/rand fails (extremely rare)
+		return fmt.Sprintf("%x", time.Now().UnixNano())
+	}
 	return hex.EncodeToString(b)
 }
 
@@ -124,6 +137,41 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	timeoutSec := h.resolveTimeout(r)
 	logFields["timeout_sec"] = timeoutSec
 
+	// Check cache (if enabled and not bypassed)
+	cacheEnabled := h.cache != nil && h.queryConfig.Cache != nil && h.queryConfig.Cache.Enabled
+	noCache := r.URL.Query().Get("_nocache") == "1"
+	var cacheKey string
+
+	if cacheEnabled && !noCache {
+		var keyErr error
+		cacheKey, keyErr = cache.BuildKey(h.queryConfig.Cache.Key, params)
+		if keyErr == nil {
+			if cached, hit := h.cache.Get(h.queryConfig.Path, cacheKey); hit {
+				m.TotalDuration = time.Since(startTime)
+				m.RowCount = len(cached)
+				m.CacheHit = true
+				logFields["cache_hit"] = true
+				logFields["cache_key"] = cacheKey
+				logFields["row_count"] = len(cached)
+				logFields["total_duration_ms"] = m.TotalDuration.Milliseconds()
+
+				metrics.Record(m)
+				logging.Info("request_completed", logFields)
+
+				// Add cache headers
+				w.Header().Set("X-Cache", "HIT")
+				w.Header().Set("X-Cache-Key", cacheKey)
+				if ttlRemaining := h.cache.GetTTLRemaining(h.queryConfig.Path, cacheKey); ttlRemaining > 0 {
+					w.Header().Set("X-Cache-TTL", fmt.Sprintf("%d", int(ttlRemaining.Seconds())))
+				}
+
+				h.writeSuccess(w, cached, timeoutSec, requestID)
+				return
+			}
+		}
+		logFields["cache_hit"] = false
+	}
+
 	// Build query params
 	queryParams := h.buildQueryParams(params)
 
@@ -176,6 +224,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Store in cache if enabled
+	if cacheEnabled && !noCache && cacheKey != "" {
+		ttl := time.Duration(h.queryConfig.Cache.TTLSec) * time.Second
+		if ttl == 0 {
+			ttl = h.defaultCacheTTL
+		}
+		h.cache.Set(h.queryConfig.Path, cacheKey, results, ttl)
+		logFields["cache_key"] = cacheKey
+		logFields["cache_ttl_sec"] = int(ttl.Seconds())
+	}
+
 	m.RowCount = len(results)
 	m.TotalDuration = time.Since(startTime)
 
@@ -191,6 +250,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	metrics.Record(m)
 
 	logging.Info("request_completed", logFields)
+
+	// Add cache headers
+	if cacheEnabled {
+		if noCache {
+			w.Header().Set("X-Cache", "BYPASS")
+		} else if cacheKey != "" {
+			w.Header().Set("X-Cache", "MISS")
+			w.Header().Set("X-Cache-Key", cacheKey)
+		}
+	}
 
 	h.writeSuccess(w, results, timeoutSec, requestID)
 }

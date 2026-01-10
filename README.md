@@ -1180,3 +1180,9 @@ make test-docs
 | Benchmarks | `internal/*/benchmark_test.go` | Performance tests |
 
 All unit and integration tests use SQLite in-memory databases (`:memory:`) to avoid external dependencies.
+
+## Roadmap
+
+Planned features for future releases:
+
+- [ ] **TLS Support** - Native HTTPS termination without requiring a reverse proxy (Caddy/nginx). Will support configurable certificate paths and automatic Let's Encrypt integration.

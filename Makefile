@@ -28,6 +28,7 @@ PKG_METRICS := ./internal/metrics/...
 PKG_OPENAPI := ./internal/openapi/...
 PKG_SERVICE := ./internal/service/...
 PKG_WEBHOOK := ./internal/webhook/...
+PKG_CACHE := ./internal/cache/...
 
 .PHONY: all build clean test validate run install deps tidy \
         build-linux build-windows build-darwin build-all \
@@ -86,6 +87,9 @@ test-openapi:
 
 test-webhook:
 	$(GOTEST) -v $(PKG_WEBHOOK)
+
+test-cache:
+	$(GOTEST) -v $(PKG_CACHE)
 
 # Run unit tests only (exclude benchmarks and e2e)
 test-unit:
@@ -246,6 +250,7 @@ help:
 	@echo "  make test-metrics    Run metrics package tests"
 	@echo "  make test-openapi    Run openapi package tests"
 	@echo "  make test-webhook    Run webhook package tests"
+	@echo "  make test-cache      Run cache package tests"
 	@echo ""
 	@echo "Testing by type:"
 	@echo "  make test-unit        Run unit tests (internal packages)"

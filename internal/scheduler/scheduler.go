@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +27,7 @@ type Scheduler struct {
 	cron      *cron.Cron
 	dbManager *db.Manager
 	serverCfg config.ServerConfig
+	stopCh    chan struct{} // Signal channel for graceful shutdown
 }
 
 // New creates a new scheduler for the given queries
@@ -34,6 +36,7 @@ func New(dbManager *db.Manager, queries []config.QueryConfig, serverCfg config.S
 		cron:      cron.New(),
 		dbManager: dbManager,
 		serverCfg: serverCfg,
+		stopCh:    make(chan struct{}),
 	}
 
 	for _, q := range queries {
@@ -55,6 +58,9 @@ func (s *Scheduler) Start() {
 
 // Stop gracefully stops the scheduler
 func (s *Scheduler) Stop() {
+	// Signal any running jobs to stop
+	close(s.stopCh)
+	// Wait for cron to stop
 	ctx := s.cron.Stop()
 	<-ctx.Done()
 	logging.Info("scheduler_stopped", nil)
@@ -97,7 +103,19 @@ func (s *Scheduler) executeJob(q config.QueryConfig) {
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		if attempt > 1 {
-			time.Sleep(backoffs[attempt-1])
+			// Interruptible backoff - respect shutdown signal
+			select {
+			case <-s.stopCh:
+				logging.Info("scheduled_query_cancelled", map[string]any{
+					"query_name": q.Name,
+					"database":   q.Database,
+					"attempt":    attempt,
+					"reason":     "scheduler stopping",
+				})
+				return
+			case <-time.After(backoffs[attempt-1]):
+				// Backoff completed, continue with retry
+			}
 			logging.Debug("scheduled_query_retry", map[string]any{
 				"query_name": q.Name,
 				"database":   q.Database,
@@ -278,14 +296,10 @@ func (s *Scheduler) resolveValue(strVal, paramName string, params []config.Param
 	// Convert based on type
 	switch paramType {
 	case "int", "integer":
-		var i int
-		if _, err := time.Parse("2006-01-02", strVal); err != nil {
-			// Try parsing as int
-			if n, err := parseInt(strVal); err == nil {
-				return n
-			}
+		if n, err := strconv.Atoi(strVal); err == nil {
+			return n
 		}
-		return i
+		return 0
 	case "datetime", "date":
 		// Try parsing various date formats
 		formats := []string{
@@ -307,19 +321,6 @@ func (s *Scheduler) resolveValue(strVal, paramName string, params []config.Param
 	}
 }
 
-func parseInt(s string) (int, error) {
-	if s == "" {
-		return 0, fmt.Errorf("empty string")
-	}
-	var n int
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return 0, fmt.Errorf("invalid character: %c", c)
-		}
-		n = n*10 + int(c-'0')
-	}
-	return n, nil
-}
 
 // HasScheduledQueries returns true if any queries have schedules
 func HasScheduledQueries(queries []config.QueryConfig) bool {

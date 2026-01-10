@@ -119,7 +119,15 @@ func printValidationResult(cfg *config.Config, result *validate.Result) {
 		if !db.IsReadOnly() {
 			mode = "read-write"
 		}
-		fmt.Printf("  - %s: %s@%s/%s (%s)\n", db.Name, db.User, db.Host, db.Database, mode)
+		dbType := db.Type
+		if dbType == "" {
+			dbType = "sqlserver"
+		}
+		if dbType == "sqlite" {
+			fmt.Printf("  - %s: sqlite:%s (%s)\n", db.Name, db.Path, mode)
+		} else {
+			fmt.Printf("  - %s: %s@%s/%s (%s)\n", db.Name, db.User, db.Host, db.Database, mode)
+		}
 	}
 	fmt.Printf("Queries: %d configured\n", len(cfg.Queries))
 

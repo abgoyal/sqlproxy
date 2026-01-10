@@ -7,6 +7,11 @@ server:
   port: 8081               # HTTP port
   default_timeout_sec: 30  # Default query timeout (seconds)
   max_timeout_sec: 300     # Maximum allowed timeout (caps _timeout param)
+  # Cache configuration (optional)
+  # cache:
+  #   enabled: true
+  #   max_size_mb: 256       # Total cache memory limit (default: 256)
+  #   default_ttl_sec: 300   # Default TTL if not specified per-query (default: 300)
 
 # Database connections - type-specific fields required
 databases:
@@ -220,6 +225,75 @@ queries:
   #     params:
   #       reportDate: "yesterday"  # Dynamic date: resolves to yesterday at runtime
   #     log_results: true
+
+  # ============================================================================
+  # CACHE EXAMPLES
+  # ============================================================================
+  # Per-query caching with templated keys, TTL, and cron-based eviction
+
+  # Example: Cached query with templated key
+  # - name: "get_machine_status"
+  #   database: "primary"
+  #   path: "/api/machines/status"
+  #   method: "GET"
+  #   sql: SELECT * FROM Machines WHERE status = @status
+  #   parameters:
+  #     - name: "status"
+  #       type: "string"
+  #       default: "active"
+  #   cache:
+  #     enabled: true
+  #     key: "machines:{{.status}}"      # Key from params: "machines:active"
+  #     ttl_sec: 300                      # Cache for 5 minutes
+  #     max_size_mb: 32                   # Per-endpoint limit (optional)
+
+  # Example: Cached query with multiple params in key
+  # - name: "date_range_report"
+  #   database: "primary"
+  #   path: "/api/reports/range"
+  #   method: "GET"
+  #   sql: SELECT * FROM Reports WHERE date BETWEEN @from AND @to
+  #   parameters:
+  #     - name: "from"
+  #       type: "date"
+  #       required: true
+  #     - name: "to"
+  #       type: "date"
+  #       required: true
+  #   cache:
+  #     enabled: true
+  #     key: "report:{{.from}}:{{.to}}"   # Key: "report:2024-01-01:2024-01-31"
+  #     ttl_sec: 3600                      # Cache for 1 hour
+
+  # Example: Cached query with cron-based eviction (cache clears on schedule)
+  # - name: "daily_summary"
+  #   database: "primary"
+  #   path: "/api/summary"
+  #   method: "GET"
+  #   sql: SELECT * FROM DailySummary
+  #   cache:
+  #     enabled: true
+  #     key: "summary"                    # Static key (no params)
+  #     ttl_sec: 86400                    # 24 hour TTL
+  #     evict_cron: "0 0 * * *"           # Also clear cache at midnight
+
+  # Example: Key with default value for optional param
+  # - name: "filtered_items"
+  #   database: "primary"
+  #   path: "/api/items"
+  #   method: "GET"
+  #   sql: SELECT * FROM Items WHERE (@category = '' OR category = @category)
+  #   parameters:
+  #     - name: "category"
+  #       type: "string"
+  #       required: false
+  #   cache:
+  #     enabled: true
+  #     key: "items:{{.category | default \"all\"}}"   # "items:all" or "items:electronics"
+  #     ttl_sec: 600
+
+  # Cache Bypass: Add ?_nocache=1 to any request to bypass cache
+  # Response Headers: X-Cache (HIT/MISS), X-Cache-Key, X-Cache-TTL
 
   # ============================================================================
   # WEBHOOK EXAMPLES

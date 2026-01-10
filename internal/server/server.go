@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"sql-proxy/internal/cache"
 	"sql-proxy/internal/config"
 	"sql-proxy/internal/db"
 	"sql-proxy/internal/handler"
@@ -21,9 +23,30 @@ import (
 	"sql-proxy/internal/scheduler"
 )
 
+const (
+	// healthCheckInterval is how often to check database connectivity
+	healthCheckInterval = 30 * time.Second
+
+	// healthCheckTimeout is the timeout for each health check ping
+	healthCheckTimeout = 5 * time.Second
+
+	// healthCheckFailuresBeforeReconnect is how many consecutive failures before attempting reconnect
+	healthCheckFailuresBeforeReconnect = 3
+
+	// httpReadTimeout is the timeout for reading the entire request
+	httpReadTimeout = 15 * time.Second
+
+	// httpIdleTimeout is how long to keep idle connections open
+	httpIdleTimeout = 60 * time.Second
+
+	// writeTimeoutBuffer is added to max query timeout for HTTP write timeout
+	writeTimeoutBuffer = 30 * time.Second
+)
+
 type Server struct {
 	httpServer *http.Server
 	dbManager  *db.Manager
+	cache      *cache.Cache
 	config     *config.Config
 	createdAt  time.Time
 
@@ -84,9 +107,31 @@ func New(cfg *config.Config, interactive bool) (*Server, error) {
 	}
 	s.dbHealthy.Store(true)
 
+	// Initialize cache if enabled
+	if cfg.Server.Cache != nil && cfg.Server.Cache.Enabled {
+		var err error
+		s.cache, err = cache.New(*cfg.Server.Cache)
+		if err != nil {
+			logging.Error("cache_init_failed", map[string]any{
+				"error": err.Error(),
+			})
+			return nil, fmt.Errorf("failed to initialize cache: %w", err)
+		}
+		logging.Info("cache_initialized", map[string]any{
+			"max_size_mb":     cfg.Server.Cache.MaxSizeMB,
+			"default_ttl_sec": cfg.Server.Cache.DefaultTTLSec,
+		})
+	}
+
 	// Initialize metrics
 	if cfg.Metrics.Enabled {
 		metrics.Init(s.checkDBHealth)
+		// Set cache snapshot provider for metrics
+		if s.cache != nil {
+			metrics.SetCacheSnapshotProvider(func() any {
+				return s.cache.GetSnapshot()
+			})
+		}
 		logging.Info("metrics_initialized", nil)
 	}
 
@@ -105,7 +150,7 @@ func New(cfg *config.Config, interactive bool) (*Server, error) {
 	s.setupRoutes(mux)
 
 	// Calculate write timeout based on max query timeout + buffer
-	writeTimeout := time.Duration(cfg.Server.MaxTimeoutSec+30) * time.Second
+	writeTimeout := time.Duration(cfg.Server.MaxTimeoutSec)*time.Second + writeTimeoutBuffer
 
 	// Middleware chain: recovery -> gzip -> routes
 	handler := s.recoveryMiddleware(s.gzipMiddleware(mux))
@@ -113,9 +158,9 @@ func New(cfg *config.Config, interactive bool) (*Server, error) {
 	s.httpServer = &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
 		Handler:      handler,
-		ReadTimeout:  15 * time.Second,
+		ReadTimeout:  httpReadTimeout,
 		WriteTimeout: writeTimeout,
-		IdleTimeout:  60 * time.Second,
+		IdleTimeout:  httpIdleTimeout,
 	}
 
 	return s, nil
@@ -123,7 +168,7 @@ func New(cfg *config.Config, interactive bool) (*Server, error) {
 
 // runHealthChecker periodically checks database connectivity for all connections
 func (s *Server) runHealthChecker(ctx context.Context) {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(healthCheckInterval)
 	defer ticker.Stop()
 
 	// Track consecutive failures per database
@@ -134,7 +179,7 @@ func (s *Server) runHealthChecker(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			pingCtx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
 			results := s.dbManager.Ping(pingCtx)
 			cancel()
 
@@ -152,8 +197,8 @@ func (s *Server) runHealthChecker(ctx context.Context) {
 						"consecutive_failures": consecutiveFailures[name],
 					})
 
-					// After 3 consecutive failures, try to reconnect
-					if consecutiveFailures[name] >= 3 {
+					// After consecutive failures, try to reconnect
+					if consecutiveFailures[name] >= healthCheckFailuresBeforeReconnect {
 						logging.Info("attempting_reconnect", map[string]any{
 							"database": name,
 						})
@@ -207,6 +252,9 @@ func (s *Server) setupRoutes(mux *http.ServeMux) {
 	// Runtime config endpoint
 	mux.HandleFunc("/config/loglevel", s.logLevelHandler)
 
+	// Cache management endpoint
+	mux.HandleFunc("/cache/clear", s.cacheClearHandler)
+
 	// List available endpoints
 	mux.HandleFunc("/", s.listEndpointsHandler)
 
@@ -215,17 +263,36 @@ func (s *Server) setupRoutes(mux *http.ServeMux) {
 		if q.Path == "" {
 			continue // Schedule-only query, no HTTP endpoint
 		}
-		h := handler.New(s.dbManager, q, s.config.Server)
+
+		// Register cache endpoint if caching is enabled for this query
+		if s.cache != nil && q.Cache != nil && q.Cache.Enabled {
+			if err := s.cache.RegisterEndpoint(q.Path, q.Cache); err != nil {
+				logging.Warn("cache_endpoint_registration_failed", map[string]any{
+					"path":  q.Path,
+					"error": err.Error(),
+				})
+			}
+		}
+
+		h := handler.New(s.dbManager, s.cache, q, s.config.Server)
 		mux.Handle(q.Path, h)
 
-		logging.Info("endpoint_registered", map[string]any{
+		logFields := map[string]any{
 			"method":      q.Method,
 			"path":        q.Path,
 			"name":        q.Name,
 			"database":    q.Database,
 			"description": q.Description,
 			"scheduled":   q.Schedule != nil,
-		})
+		}
+		if q.Cache != nil && q.Cache.Enabled {
+			logFields["cached"] = true
+			logFields["cache_key"] = q.Cache.Key
+			if q.Cache.TTLSec > 0 {
+				logFields["cache_ttl_sec"] = q.Cache.TTLSec
+			}
+		}
+		logging.Info("endpoint_registered", logFields)
 	}
 }
 
@@ -233,7 +300,7 @@ func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	// Check each database individually
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), healthCheckTimeout)
 	defer cancel()
 	dbResults := s.dbManager.Ping(ctx)
 
@@ -316,6 +383,52 @@ func (s *Server) logLevelHandler(w http.ResponseWriter, r *http.Request) {
 		"current_level": logging.GetLevel(),
 		"usage":         "POST /config/loglevel?level=debug|info|warn|error",
 	})
+}
+
+func (s *Server) cacheClearHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	// Only allow POST/DELETE methods
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "method not allowed, use POST or DELETE",
+		})
+		return
+	}
+
+	// Check if cache is enabled
+	if s.cache == nil {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "cache not enabled",
+		})
+		return
+	}
+
+	// Check for endpoint parameter (optional)
+	endpoint := r.URL.Query().Get("endpoint")
+
+	if endpoint != "" {
+		// Clear specific endpoint
+		s.cache.Clear(endpoint)
+		logging.Info("cache_cleared", map[string]any{
+			"endpoint": endpoint,
+		})
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":   "ok",
+			"message":  "cache cleared for endpoint",
+			"endpoint": endpoint,
+		})
+	} else {
+		// Clear all cache
+		s.cache.ClearAll()
+		logging.Info("cache_cleared_all", nil)
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":  "ok",
+			"message": "all cache cleared",
+		})
+	}
 }
 
 func (s *Server) startTime() time.Time {
@@ -404,15 +517,17 @@ func (s *Server) listEndpointsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-// recoveryMiddleware catches panics and logs them
+// recoveryMiddleware catches panics and logs them with stack traces
 func (s *Server) recoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
+				stack := debug.Stack()
 				logging.Error("panic_recovered", map[string]any{
 					"error":  fmt.Sprintf("%v", err),
 					"path":   r.URL.Path,
 					"method": r.Method,
+					"stack":  string(stack),
 				})
 
 				w.Header().Set("Content-Type", "application/json")
@@ -503,6 +618,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			"error": err.Error(),
 		})
 		return err
+	}
+
+	// Close cache (stops cron jobs)
+	if s.cache != nil {
+		s.cache.Close()
+		logging.Info("cache_closed", nil)
 	}
 
 	// Close metrics (exports final metrics)

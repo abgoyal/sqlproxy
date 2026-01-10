@@ -15,6 +15,7 @@ type RequestMetrics struct {
 	RowCount      int
 	StatusCode    int
 	Error         string
+	CacheHit      bool
 }
 
 // EndpointStats aggregates stats for an endpoint
@@ -45,6 +46,9 @@ type RuntimeStats struct {
 	LastGCPauseNs  uint64 `json:"gc_last_pause_ns"`
 }
 
+// CacheSnapshotProvider is a function that returns cache metrics
+type CacheSnapshotProvider func() any
+
 // Snapshot represents metrics at a point in time
 type Snapshot struct {
 	Timestamp     time.Time                 `json:"timestamp"`
@@ -55,12 +59,14 @@ type Snapshot struct {
 	Endpoints     map[string]*EndpointStats `json:"endpoints"`
 	DBHealthy     bool                      `json:"db_healthy"`
 	Runtime       RuntimeStats              `json:"runtime"`
+	Cache         any                       `json:"cache,omitempty"`
 }
 
 // Collector collects metrics
 type Collector struct {
-	startTime       time.Time
-	dbHealthChecker func() bool
+	startTime            time.Time
+	dbHealthChecker      func() bool
+	cacheSnapshotProvider CacheSnapshotProvider
 
 	mu            sync.RWMutex
 	totalRequests int64
@@ -89,6 +95,13 @@ func Init(dbHealthChecker func() bool) {
 		startTime:       time.Now(),
 		dbHealthChecker: dbHealthChecker,
 		endpoints:       make(map[string]*endpointData),
+	}
+}
+
+// SetCacheSnapshotProvider sets the function that provides cache metrics
+func SetCacheSnapshotProvider(provider CacheSnapshotProvider) {
+	if defaultCollector != nil {
+		defaultCollector.cacheSnapshotProvider = provider
 	}
 }
 
@@ -194,6 +207,11 @@ func GetSnapshot() *Snapshot {
 			stats.AvgQueryMs = ep.totalQueryMs / float64(ep.requestCount)
 		}
 		snap.Endpoints[endpoint] = stats
+	}
+
+	// Include cache stats if provider is set
+	if c.cacheSnapshotProvider != nil {
+		snap.Cache = c.cacheSnapshotProvider()
 	}
 
 	return snap

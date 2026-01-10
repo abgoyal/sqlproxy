@@ -100,6 +100,7 @@ process_package "internal/metrics" "Metrics"
 process_package "internal/openapi" "OpenAPI"
 process_package "internal/service" "Service"
 process_package "internal/webhook" "Webhook"
+process_package "internal/cache" "Cache"
 process_package "e2e" "End-to-End"
 
 # Add footer

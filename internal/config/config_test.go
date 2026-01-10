@@ -239,7 +239,7 @@ queries:
     method: "GET"
     sql: "SELECT 1"
 `
-	expectLoadError(t, content, "duplicate database name: primary")
+	expectLoadError(t, content, "duplicate database name")
 }
 
 // TestLoad_InvalidDatabaseType rejects unsupported database types like mysql

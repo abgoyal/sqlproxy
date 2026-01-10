@@ -579,7 +579,7 @@ func TestServer_Integration_WithGzip(t *testing.T) {
 // Helper to create a query handler
 func createQueryHandler(srv *Server, q config.QueryConfig) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h := handler.New(srv.dbManager, q, srv.config.Server)
+		h := handler.New(srv.dbManager, srv.cache, q, srv.config.Server)
 		h.ServeHTTP(w, r)
 	})
 }
@@ -702,6 +702,213 @@ func TestServer_HealthHandler_MultipleDatabases(t *testing.T) {
 	}
 	if databases["db2"] != "connected" {
 		t.Errorf("expected db2 connected, got %v", databases["db2"])
+	}
+}
+
+// TestServer_Integration_WithCache tests cache hit/miss behavior and headers
+func TestServer_Integration_WithCache(t *testing.T) {
+	readOnly := false
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Host:              "127.0.0.1",
+			Port:              8080,
+			DefaultTimeoutSec: 30,
+			MaxTimeoutSec:     300,
+			Cache: &config.CacheConfig{
+				Enabled:       true,
+				MaxSizeMB:     64,
+				DefaultTTLSec: 300,
+			},
+		},
+		Databases: []config.DatabaseConfig{
+			{
+				Name:     "test",
+				Type:     "sqlite",
+				Path:     ":memory:",
+				ReadOnly: &readOnly,
+			},
+		},
+		Logging: config.LoggingConfig{
+			Level: "error",
+		},
+		Metrics: config.MetricsConfig{
+			Enabled: false,
+		},
+		Queries: []config.QueryConfig{
+			{
+				Name:     "cached_query",
+				Database: "test",
+				Path:     "/api/cached",
+				Method:   "GET",
+				SQL:      "SELECT 1 as num, 'cached' as msg",
+				Cache: &config.QueryCacheConfig{
+					Enabled: true,
+					Key:     "test:static",
+					TTLSec:  60,
+				},
+			},
+		},
+	}
+
+	srv, err := New(cfg, true)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	// Build test server
+	mux := http.NewServeMux()
+	for _, q := range cfg.Queries {
+		if q.Path != "" {
+			h := createQueryHandler(srv, q)
+			mux.Handle(q.Path, h)
+		}
+	}
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// First request - should be cache MISS
+	resp1, err := http.Get(ts.URL + "/api/cached")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp1.Body.Close()
+
+	if resp1.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp1.StatusCode)
+	}
+	if resp1.Header.Get("X-Cache") != "MISS" {
+		t.Errorf("expected X-Cache: MISS, got %s", resp1.Header.Get("X-Cache"))
+	}
+	if resp1.Header.Get("X-Cache-Key") != "test:static" {
+		t.Errorf("expected X-Cache-Key: test:static, got %s", resp1.Header.Get("X-Cache-Key"))
+	}
+
+	// Give cache time to settle
+	time.Sleep(20 * time.Millisecond)
+
+	// Second request - should be cache HIT
+	resp2, err := http.Get(ts.URL + "/api/cached")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp2.Body.Close()
+
+	if resp2.Header.Get("X-Cache") != "HIT" {
+		t.Errorf("expected X-Cache: HIT, got %s", resp2.Header.Get("X-Cache"))
+	}
+	if resp2.Header.Get("X-Cache-TTL") == "" {
+		t.Error("expected X-Cache-TTL header on cache hit")
+	}
+
+	// Third request with _nocache=1 - should bypass cache
+	resp3, err := http.Get(ts.URL + "/api/cached?_nocache=1")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp3.Body.Close()
+
+	if resp3.Header.Get("X-Cache") != "BYPASS" {
+		t.Errorf("expected X-Cache: BYPASS, got %s", resp3.Header.Get("X-Cache"))
+	}
+}
+
+// TestServer_Integration_CacheMetrics tests cache stats appear in metrics snapshot
+func TestServer_Integration_CacheMetrics(t *testing.T) {
+	readOnly := false
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Host:              "127.0.0.1",
+			Port:              8080,
+			DefaultTimeoutSec: 30,
+			MaxTimeoutSec:     300,
+			Cache: &config.CacheConfig{
+				Enabled:       true,
+				MaxSizeMB:     64,
+				DefaultTTLSec: 300,
+			},
+		},
+		Databases: []config.DatabaseConfig{
+			{
+				Name:     "test",
+				Type:     "sqlite",
+				Path:     ":memory:",
+				ReadOnly: &readOnly,
+			},
+		},
+		Logging: config.LoggingConfig{
+			Level: "error",
+		},
+		Metrics: config.MetricsConfig{
+			Enabled: true,
+		},
+		Queries: []config.QueryConfig{
+			{
+				Name:     "cached_query",
+				Database: "test",
+				Path:     "/api/cached",
+				Method:   "GET",
+				SQL:      "SELECT 1 as num",
+				Cache: &config.QueryCacheConfig{
+					Enabled: true,
+					Key:     "metrics:test",
+					TTLSec:  60,
+				},
+			},
+		},
+	}
+
+	srv, err := New(cfg, true)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	// Make a request to generate cache activity
+	mux := http.NewServeMux()
+	for _, q := range cfg.Queries {
+		if q.Path != "" {
+			h := createQueryHandler(srv, q)
+			mux.Handle(q.Path, h)
+		}
+	}
+	mux.HandleFunc("/metrics", srv.metricsHandler)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// First request (miss), second request (hit)
+	http.Get(ts.URL + "/api/cached")
+	time.Sleep(20 * time.Millisecond)
+	http.Get(ts.URL + "/api/cached")
+
+	// Get metrics
+	resp, err := http.Get(ts.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("metrics request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var metrics map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&metrics); err != nil {
+		t.Fatalf("failed to decode metrics: %v", err)
+	}
+
+	// Check cache section exists
+	cacheMetrics, ok := metrics["cache"].(map[string]any)
+	if !ok {
+		t.Fatal("expected cache section in metrics")
+	}
+
+	if cacheMetrics["enabled"] != true {
+		t.Error("expected cache enabled=true")
+	}
+
+	// Should have at least 1 hit and 1 miss
+	if cacheMetrics["total_hits"].(float64) < 1 {
+		t.Errorf("expected at least 1 hit, got %v", cacheMetrics["total_hits"])
+	}
+	if cacheMetrics["total_misses"].(float64) < 1 {
+		t.Errorf("expected at least 1 miss, got %v", cacheMetrics["total_misses"])
 	}
 }
 

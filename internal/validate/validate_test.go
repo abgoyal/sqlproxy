@@ -1174,6 +1174,181 @@ func TestValidateScheduleWithWebhook(t *testing.T) {
 	}
 }
 
+// TestValidateCache tests cache configuration validation
+func TestValidateCache(t *testing.T) {
+	tests := []struct {
+		name    string
+		cache   *config.QueryCacheConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "valid cache config",
+			cache:   &config.QueryCacheConfig{Enabled: true, Key: "user:{{.id}}", TTLSec: 300},
+			wantErr: false,
+		},
+		{
+			name:    "disabled cache skips validation",
+			cache:   &config.QueryCacheConfig{Enabled: false, Key: ""}, // Empty key ok when disabled
+			wantErr: false,
+		},
+		{
+			name:    "missing key when enabled",
+			cache:   &config.QueryCacheConfig{Enabled: true, Key: ""},
+			wantErr: true,
+			errMsg:  "key template is required",
+		},
+		{
+			name:    "invalid key template",
+			cache:   &config.QueryCacheConfig{Enabled: true, Key: "{{.invalid"},
+			wantErr: true,
+			errMsg:  "invalid key template",
+		},
+		{
+			name:    "negative TTL",
+			cache:   &config.QueryCacheConfig{Enabled: true, Key: "test", TTLSec: -1},
+			wantErr: true,
+			errMsg:  "ttl_sec cannot be negative",
+		},
+		{
+			name:    "negative max size",
+			cache:   &config.QueryCacheConfig{Enabled: true, Key: "test", MaxSizeMB: -1},
+			wantErr: true,
+			errMsg:  "max_size_mb cannot be negative",
+		},
+		{
+			name:    "valid evict cron",
+			cache:   &config.QueryCacheConfig{Enabled: true, Key: "test", EvictCron: "0 * * * *"},
+			wantErr: false,
+		},
+		{
+			name:    "invalid evict cron",
+			cache:   &config.QueryCacheConfig{Enabled: true, Key: "test", EvictCron: "invalid"},
+			wantErr: true,
+			errMsg:  "invalid evict_cron",
+		},
+		{
+			name:    "key with default function",
+			cache:   &config.QueryCacheConfig{Enabled: true, Key: `items:{{.status | default "all"}}`},
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &Result{Valid: true}
+			validateCache(tc.cache, "queries[0]", r)
+
+			if tc.wantErr && r.Valid {
+				t.Error("expected error but got none")
+			}
+			if !tc.wantErr && !r.Valid {
+				t.Errorf("unexpected error: %v", r.Errors)
+			}
+			if tc.wantErr && !strings.Contains(strings.Join(r.Errors, " "), tc.errMsg) {
+				t.Errorf("expected error containing %q, got %v", tc.errMsg, r.Errors)
+			}
+		})
+	}
+}
+
+// TestValidateServerCache tests server-level cache configuration validation
+func TestValidateServerCache(t *testing.T) {
+	tests := []struct {
+		name    string
+		cache   *config.CacheConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "valid cache config",
+			cache:   &config.CacheConfig{Enabled: true, MaxSizeMB: 256, DefaultTTLSec: 300},
+			wantErr: false,
+		},
+		{
+			name:    "disabled cache skips validation",
+			cache:   &config.CacheConfig{Enabled: false},
+			wantErr: false,
+		},
+		{
+			name:    "nil cache config",
+			cache:   nil,
+			wantErr: false,
+		},
+		{
+			name:    "negative max size",
+			cache:   &config.CacheConfig{Enabled: true, MaxSizeMB: -1},
+			wantErr: true,
+			errMsg:  "max_size_mb cannot be negative",
+		},
+		{
+			name:    "negative default TTL",
+			cache:   &config.CacheConfig{Enabled: true, DefaultTTLSec: -1},
+			wantErr: true,
+			errMsg:  "default_ttl_sec cannot be negative",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{
+				Server: config.ServerConfig{
+					Port:              8080,
+					DefaultTimeoutSec: 30,
+					MaxTimeoutSec:     300,
+					Cache:             tc.cache,
+				},
+			}
+
+			r := &Result{Valid: true}
+			validateServer(cfg, r)
+
+			if tc.wantErr && r.Valid {
+				t.Error("expected error but got none")
+			}
+			if !tc.wantErr && !r.Valid {
+				t.Errorf("unexpected error: %v", r.Errors)
+			}
+			if tc.wantErr && !strings.Contains(strings.Join(r.Errors, " "), tc.errMsg) {
+				t.Errorf("expected error containing %q, got %v", tc.errMsg, r.Errors)
+			}
+		})
+	}
+}
+
+// TestValidateQueries_WithCache tests query-level cache validation integration
+func TestValidateQueries_WithCache(t *testing.T) {
+	cfg := &config.Config{
+		Databases: []config.DatabaseConfig{
+			{Name: "test", Type: "sqlite", Path: ":memory:"},
+		},
+		Queries: []config.QueryConfig{
+			{
+				Name:     "cached_query",
+				Database: "test",
+				Path:     "/api/test",
+				Method:   "GET",
+				SQL:      "SELECT * FROM users WHERE status = @status",
+				Parameters: []config.ParamConfig{
+					{Name: "status", Type: "string", Default: "active"},
+				},
+				Cache: &config.QueryCacheConfig{
+					Enabled: true,
+					Key:     "users:{{.status}}",
+					TTLSec:  300,
+				},
+			},
+		},
+	}
+
+	r := &Result{Valid: true}
+	validateQueries(cfg, r)
+
+	if !r.Valid {
+		t.Errorf("expected valid config, got errors: %v", r.Errors)
+	}
+}
+
 // TestValidateTemplate tests template syntax validation
 func TestValidateTemplate(t *testing.T) {
 	tests := []struct {

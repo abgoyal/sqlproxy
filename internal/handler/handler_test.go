@@ -91,7 +91,7 @@ func TestHandler_ServeHTTP_SimpleQuery(t *testing.T) {
 		MaxTimeoutSec:     300,
 	}
 
-	handler := New(manager, queryCfg, serverCfg)
+	handler := New(manager, nil, queryCfg, serverCfg)
 
 	req := httptest.NewRequest("GET", "/api/users", nil)
 	w := httptest.NewRecorder()
@@ -150,7 +150,7 @@ func TestHandler_ServeHTTP_WithParameters(t *testing.T) {
 		MaxTimeoutSec:     300,
 	}
 
-	handler := New(manager, queryCfg, serverCfg)
+	handler := New(manager, nil, queryCfg, serverCfg)
 
 	req := httptest.NewRequest("GET", "/api/user?status=active", nil)
 	w := httptest.NewRecorder()
@@ -190,7 +190,7 @@ func TestHandler_ServeHTTP_MissingRequiredParam(t *testing.T) {
 		MaxTimeoutSec:     300,
 	}
 
-	handler := New(manager, queryCfg, serverCfg)
+	handler := New(manager, nil, queryCfg, serverCfg)
 
 	req := httptest.NewRequest("GET", "/api/user", nil)
 	w := httptest.NewRecorder()
@@ -234,7 +234,7 @@ func TestHandler_ServeHTTP_DefaultParameter(t *testing.T) {
 		MaxTimeoutSec:     300,
 	}
 
-	handler := New(manager, queryCfg, serverCfg)
+	handler := New(manager, nil, queryCfg, serverCfg)
 
 	req := httptest.NewRequest("GET", "/api/users", nil)
 	w := httptest.NewRecorder()
@@ -272,7 +272,7 @@ func TestHandler_ServeHTTP_WrongMethod(t *testing.T) {
 		MaxTimeoutSec:     300,
 	}
 
-	handler := New(manager, queryCfg, serverCfg)
+	handler := New(manager, nil, queryCfg, serverCfg)
 
 	req := httptest.NewRequest("POST", "/api/users", nil)
 	w := httptest.NewRecorder()
@@ -305,7 +305,7 @@ func TestHandler_ServeHTTP_InvalidParamType(t *testing.T) {
 		MaxTimeoutSec:     300,
 	}
 
-	handler := New(manager, queryCfg, serverCfg)
+	handler := New(manager, nil, queryCfg, serverCfg)
 
 	req := httptest.NewRequest("GET", "/api/user?id=not_a_number", nil)
 	w := httptest.NewRecorder()
@@ -342,7 +342,7 @@ func TestHandler_ServeHTTP_POSTMethod(t *testing.T) {
 	}
 
 	_ = readOnly // Not used in this test
-	handler := New(manager, queryCfg, serverCfg)
+	handler := New(manager, nil, queryCfg, serverCfg)
 
 	form := url.Values{}
 	form.Set("name", "Dave")
@@ -377,7 +377,7 @@ func TestHandler_ServeHTTP_CustomRequestID(t *testing.T) {
 		MaxTimeoutSec:     300,
 	}
 
-	handler := New(manager, queryCfg, serverCfg)
+	handler := New(manager, nil, queryCfg, serverCfg)
 
 	tests := []struct {
 		name       string
@@ -489,7 +489,7 @@ func TestHandler_ResolveTimeout(t *testing.T) {
 				MaxTimeoutSec:     tt.maxTimeout,
 			}
 
-			handler := New(manager, queryCfg, serverCfg)
+			handler := New(manager, nil, queryCfg, serverCfg)
 
 			url := "/test"
 			if tt.requestTimeout != "" {
@@ -601,7 +601,7 @@ func TestHandler_ParseParameters(t *testing.T) {
 		MaxTimeoutSec:     300,
 	}
 
-	handler := New(manager, queryCfg, serverCfg)
+	handler := New(manager, nil, queryCfg, serverCfg)
 
 	tests := []struct {
 		name      string
@@ -674,7 +674,7 @@ func TestHandler_ServeHTTP_EmptyResult(t *testing.T) {
 		MaxTimeoutSec:     300,
 	}
 
-	handler := New(manager, queryCfg, serverCfg)
+	handler := New(manager, nil, queryCfg, serverCfg)
 
 	req := httptest.NewRequest("GET", "/api/user?id=999", nil)
 	w := httptest.NewRecorder()
@@ -715,7 +715,7 @@ func TestHandler_ServeHTTP_SQLError(t *testing.T) {
 		MaxTimeoutSec:     300,
 	}
 
-	handler := New(manager, queryCfg, serverCfg)
+	handler := New(manager, nil, queryCfg, serverCfg)
 
 	req := httptest.NewRequest("GET", "/api/bad", nil)
 	w := httptest.NewRecorder()
@@ -779,7 +779,7 @@ func TestHandler_ServeHTTP_DateTimeParam(t *testing.T) {
 		MaxTimeoutSec:     300,
 	}
 
-	handler := New(manager, queryCfg, serverCfg)
+	handler := New(manager, nil, queryCfg, serverCfg)
 
 	req := httptest.NewRequest("GET", "/api/events?since=2024-01-01", nil)
 	w := httptest.NewRecorder()

@@ -102,6 +102,33 @@ func buildPaths(cfg *config.Config) map[string]any {
 		},
 	}
 
+	paths["/cache/clear"] = map[string]any{
+		"post": map[string]any{
+			"summary":     "Clear cache",
+			"description": "Clear all cache entries or entries for a specific endpoint",
+			"tags":        []string{"System"},
+			"parameters": []map[string]any{
+				{
+					"name":        "endpoint",
+					"in":          "query",
+					"required":    false,
+					"description": "Endpoint path to clear cache for (e.g., /api/machines). If omitted, clears all cache.",
+					"schema": map[string]any{
+						"type": "string",
+					},
+				},
+			},
+			"responses": map[string]any{
+				"200": map[string]any{
+					"description": "Cache cleared successfully",
+				},
+				"404": map[string]any{
+					"description": "Cache not enabled",
+				},
+			},
+		},
+	}
+
 	// Add query endpoints (skip schedule-only queries without HTTP paths)
 	for _, q := range cfg.Queries {
 		if q.Path != "" {
@@ -129,6 +156,16 @@ func buildQueryPath(q config.QueryConfig, serverCfg config.ServerConfig) map[str
 				"type":    "integer",
 				"default": serverCfg.DefaultTimeoutSec,
 				"maximum": serverCfg.MaxTimeoutSec,
+			},
+		},
+		{
+			"name":        "_nocache",
+			"in":          "query",
+			"required":    false,
+			"description": "Bypass cache and fetch fresh data (set to 1 to enable)",
+			"schema": map[string]any{
+				"type": "integer",
+				"enum": []int{0, 1},
 			},
 		},
 	}
