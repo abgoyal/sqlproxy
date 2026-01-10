@@ -92,6 +92,25 @@ type ScheduleConfig struct {
 	Cron       string            `yaml:"cron"`        // Cron expression (e.g., "0 8 * * *" for 8 AM daily)
 	Params     map[string]string `yaml:"params"`      // Parameter values for scheduled runs
 	LogResults bool              `yaml:"log_results"` // Log first 10 result rows (default: false, just log count)
+	Webhook    *WebhookConfig    `yaml:"webhook"`     // Optional webhook to call after query execution
+}
+
+// WebhookConfig defines an outgoing webhook to call after query execution
+type WebhookConfig struct {
+	URL     string            `yaml:"url"`     // Target URL (supports templates: {{.query}}, {{.count}})
+	Method  string            `yaml:"method"`  // HTTP method (default: POST)
+	Headers map[string]string `yaml:"headers"` // HTTP headers (supports env vars: ${TOKEN})
+	Body    *WebhookBodyConfig `yaml:"body"`   // Body template config (if nil, sends raw query results)
+}
+
+// WebhookBodyConfig defines the body template structure
+type WebhookBodyConfig struct {
+	Header    string `yaml:"header"`    // Template for body prefix (access: .count, .query, .success, .duration_ms, .params, .data)
+	Item      string `yaml:"item"`      // Template for each result row (access: row fields, ._index, ._count)
+	Footer    string `yaml:"footer"`    // Template for body suffix (same access as header)
+	Separator string `yaml:"separator"` // Separator between items (default: ",")
+	OnEmpty   string `yaml:"on_empty"`  // Behavior when no results: "send" (default) or "skip"
+	Empty     string `yaml:"empty"`     // Alternate body template when count=0 (overrides on_empty)
 }
 
 type ParamConfig struct {

@@ -2,9 +2,11 @@ package validate
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -12,6 +14,14 @@ import (
 	"sql-proxy/internal/config"
 	"sql-proxy/internal/db"
 )
+
+// templateFuncMap matches the functions available in webhook templates
+var templateFuncMap = template.FuncMap{
+	"add":        func(a, b int) int { return a + b },
+	"mod":        func(a, b int) int { return a % b },
+	"json":       func(v any) string { b, _ := json.Marshal(v); return string(b) },
+	"jsonIndent": func(v any) string { b, _ := json.MarshalIndent(v, "", "  "); return string(b) },
+}
 
 // Result holds validation results
 type Result struct {
@@ -347,6 +357,67 @@ func validateSchedule(q config.QueryConfig, prefix string, r *Result) {
 			}
 		}
 	}
+
+	// Validate webhook if present
+	if sched.Webhook != nil {
+		validateWebhook(sched.Webhook, prefix, r)
+	}
+}
+
+func validateWebhook(w *config.WebhookConfig, prefix string, r *Result) {
+	webhookPrefix := prefix + ".webhook"
+
+	// URL is required
+	if w.URL == "" {
+		r.addError("%s: url is required", webhookPrefix)
+	}
+
+	// Validate method if specified
+	if w.Method != "" {
+		validMethods := map[string]bool{"GET": true, "POST": true, "PUT": true, "PATCH": true}
+		if !validMethods[strings.ToUpper(w.Method)] {
+			r.addError("%s: method must be GET, POST, PUT, or PATCH", webhookPrefix)
+		}
+	}
+
+	// Validate body config if present
+	if w.Body != nil {
+		validateWebhookBody(w.Body, webhookPrefix, r)
+	}
+}
+
+func validateWebhookBody(b *config.WebhookBodyConfig, prefix string, r *Result) {
+	bodyPrefix := prefix + ".body"
+
+	// Validate on_empty if specified
+	if b.OnEmpty != "" && b.OnEmpty != "send" && b.OnEmpty != "skip" {
+		r.addError("%s: on_empty must be 'send' or 'skip'", bodyPrefix)
+	}
+
+	// If empty template is provided, it implies on_empty: send
+	if b.Empty != "" && b.OnEmpty == "skip" {
+		r.addWarning("%s: 'empty' template is ignored when on_empty is 'skip'", bodyPrefix)
+	}
+
+	// Validate templates parse correctly (basic syntax check)
+	templates := map[string]string{
+		"header": b.Header,
+		"item":   b.Item,
+		"footer": b.Footer,
+		"empty":  b.Empty,
+	}
+	for name, tmpl := range templates {
+		if tmpl != "" {
+			if err := validateTemplate(tmpl); err != nil {
+				r.addError("%s.%s: invalid template: %v", bodyPrefix, name, err)
+			}
+		}
+	}
+}
+
+func validateTemplate(tmpl string) error {
+	_, err := template.New("").Funcs(templateFuncMap).Parse(tmpl)
+	return err
 }
 
 func testDBConnections(cfg *config.Config, r *Result) {

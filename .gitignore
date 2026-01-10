@@ -3,3 +3,4 @@ sql-proxy.exe
 build/
 .claude
 coverage/
+coverage.out

@@ -1005,3 +1005,223 @@ func TestValidateQueries_AllWriteOperations(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateWebhook tests webhook configuration validation
+func TestValidateWebhook(t *testing.T) {
+	tests := []struct {
+		name    string
+		webhook *config.WebhookConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "valid webhook",
+			webhook: &config.WebhookConfig{URL: "https://example.com/hook"},
+			wantErr: false,
+		},
+		{
+			name:    "missing url",
+			webhook: &config.WebhookConfig{URL: ""},
+			wantErr: true,
+			errMsg:  "url is required",
+		},
+		{
+			name:    "valid method POST",
+			webhook: &config.WebhookConfig{URL: "https://example.com", Method: "POST"},
+			wantErr: false,
+		},
+		{
+			name:    "valid method GET",
+			webhook: &config.WebhookConfig{URL: "https://example.com", Method: "GET"},
+			wantErr: false,
+		},
+		{
+			name:    "valid method PUT",
+			webhook: &config.WebhookConfig{URL: "https://example.com", Method: "PUT"},
+			wantErr: false,
+		},
+		{
+			name:    "invalid method",
+			webhook: &config.WebhookConfig{URL: "https://example.com", Method: "DELETE"},
+			wantErr: true,
+			errMsg:  "method must be",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &Result{Valid: true}
+			validateWebhook(tc.webhook, "test", r)
+
+			if tc.wantErr && r.Valid {
+				t.Error("expected error but got none")
+			}
+			if !tc.wantErr && !r.Valid {
+				t.Errorf("unexpected error: %v", r.Errors)
+			}
+			if tc.wantErr && !strings.Contains(strings.Join(r.Errors, " "), tc.errMsg) {
+				t.Errorf("expected error containing %q, got %v", tc.errMsg, r.Errors)
+			}
+		})
+	}
+}
+
+// TestValidateWebhookBody tests webhook body configuration validation
+func TestValidateWebhookBody(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       *config.WebhookBodyConfig
+		wantErr    bool
+		wantWarn   bool
+		errMsg     string
+		warnMsg    string
+	}{
+		{
+			name:    "valid body config",
+			body:    &config.WebhookBodyConfig{Header: `{"items": [`, Item: `{{.id}}`, Footer: `]}`},
+			wantErr: false,
+		},
+		{
+			name:    "valid on_empty send",
+			body:    &config.WebhookBodyConfig{OnEmpty: "send"},
+			wantErr: false,
+		},
+		{
+			name:    "valid on_empty skip",
+			body:    &config.WebhookBodyConfig{OnEmpty: "skip"},
+			wantErr: false,
+		},
+		{
+			name:    "invalid on_empty",
+			body:    &config.WebhookBodyConfig{OnEmpty: "ignore"},
+			wantErr: true,
+			errMsg:  "on_empty must be",
+		},
+		{
+			name:     "empty template ignored with skip",
+			body:     &config.WebhookBodyConfig{OnEmpty: "skip", Empty: `{"msg": "empty"}`},
+			wantWarn: true,
+			warnMsg:  "ignored when on_empty is 'skip'",
+		},
+		{
+			name:    "invalid header template",
+			body:    &config.WebhookBodyConfig{Header: `{{.Invalid`},
+			wantErr: true,
+			errMsg:  "invalid template",
+		},
+		{
+			name:    "invalid item template",
+			body:    &config.WebhookBodyConfig{Item: `{{if}}`},
+			wantErr: true,
+			errMsg:  "invalid template",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &Result{Valid: true}
+			validateWebhookBody(tc.body, "test", r)
+
+			if tc.wantErr && r.Valid {
+				t.Error("expected error but got none")
+			}
+			if !tc.wantErr && !r.Valid {
+				t.Errorf("unexpected error: %v", r.Errors)
+			}
+			if tc.wantErr && !strings.Contains(strings.Join(r.Errors, " "), tc.errMsg) {
+				t.Errorf("expected error containing %q, got %v", tc.errMsg, r.Errors)
+			}
+			if tc.wantWarn && !strings.Contains(strings.Join(r.Warnings, " "), tc.warnMsg) {
+				t.Errorf("expected warning containing %q, got %v", tc.warnMsg, r.Warnings)
+			}
+		})
+	}
+}
+
+// TestValidateScheduleWithWebhook tests schedule validation with webhook
+func TestValidateScheduleWithWebhook(t *testing.T) {
+	cfg := &config.Config{
+		Databases: []config.DatabaseConfig{
+			{Name: "test", Type: "sqlite", Path: ":memory:"},
+		},
+		Queries: []config.QueryConfig{
+			{
+				Name:     "scheduled_with_webhook",
+				Database: "test",
+				SQL:      "SELECT * FROM test",
+				Schedule: &config.ScheduleConfig{
+					Cron: "0 8 * * *",
+					Webhook: &config.WebhookConfig{
+						URL:    "https://example.com/hook",
+						Method: "POST",
+						Body: &config.WebhookBodyConfig{
+							Header:  `{"data": [`,
+							Item:    `{{json .}}`,
+							Footer:  `]}`,
+							OnEmpty: "skip",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	r := &Result{Valid: true}
+	validateQueries(cfg, r)
+
+	if !r.Valid {
+		t.Errorf("expected valid config, got errors: %v", r.Errors)
+	}
+}
+
+// TestValidateTemplate tests template syntax validation
+func TestValidateTemplate(t *testing.T) {
+	tests := []struct {
+		name    string
+		tmpl    string
+		wantErr bool
+	}{
+		{
+			name:    "valid simple template",
+			tmpl:    "{{.Count}}",
+			wantErr: false,
+		},
+		{
+			name:    "valid conditional",
+			tmpl:    `{{if .Success}}OK{{else}}FAIL{{end}}`,
+			wantErr: false,
+		},
+		{
+			name:    "valid range",
+			tmpl:    `{{range .Data}}{{.id}}{{end}}`,
+			wantErr: false,
+		},
+		{
+			name:    "unclosed brace",
+			tmpl:    `{{.Invalid`,
+			wantErr: true,
+		},
+		{
+			name:    "invalid action",
+			tmpl:    `{{if}}`,
+			wantErr: true,
+		},
+		{
+			name:    "empty template",
+			tmpl:    "",
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateTemplate(tc.tmpl)
+			if tc.wantErr && err == nil {
+				t.Error("expected error but got none")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}

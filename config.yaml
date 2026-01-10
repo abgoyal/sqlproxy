@@ -220,3 +220,101 @@ queries:
   #     params:
   #       reportDate: "yesterday"  # Dynamic date: resolves to yesterday at runtime
   #     log_results: true
+
+  # ============================================================================
+  # WEBHOOK EXAMPLES
+  # ============================================================================
+  # Webhooks can be attached to scheduled queries to POST results to external URLs
+
+  # Example: Simple webhook - sends raw JSON with all query results
+  # - name: "offline_machines_alert"
+  #   database: "primary"
+  #   sql: |
+  #     SELECT MachineId, MachineName, LastPingTime
+  #     FROM Machines WHERE IsOnline = 0
+  #   schedule:
+  #     cron: "*/15 * * * *"    # Every 15 minutes
+  #     webhook:
+  #       url: "https://hooks.slack.com/services/XXX/YYY/ZZZ"
+  #       method: "POST"
+  #       headers:
+  #         Authorization: "Bearer ${SLACK_TOKEN}"
+
+  # Example: Slack webhook with custom payload template
+  # - name: "daily_summary_slack"
+  #   database: "primary"
+  #   sql: |
+  #     SELECT
+  #       COUNT(*) AS total,
+  #       SUM(CASE WHEN IsOnline = 1 THEN 1 ELSE 0 END) AS online
+  #     FROM Machines
+  #   schedule:
+  #     cron: "0 9 * * *"       # 9 AM daily
+  #     webhook:
+  #       url: "https://hooks.slack.com/services/XXX/YYY/ZZZ"
+  #       body:
+  #         header: |
+  #           {"text": "Daily Machine Status Report ({{.Count}} rows)", "blocks": [
+  #         item: |
+  #           {"type": "section", "text": {"type": "mrkdwn", "text": "*Total:* {{.total}} | *Online:* {{.online}}"}}
+  #         footer: |
+  #           ]}
+  #         separator: ","
+
+  # Example: Teams webhook with custom payload
+  # - name: "alert_to_teams"
+  #   database: "primary"
+  #   sql: SELECT MachineName, Location FROM Machines WHERE IsOnline = 0
+  #   schedule:
+  #     cron: "*/30 * * * *"
+  #     webhook:
+  #       url: "https://outlook.office.com/webhook/..."
+  #       body:
+  #         header: |
+  #           {"@type": "MessageCard", "title": "Offline Machines Alert", "sections": [{"facts": [
+  #         item: |
+  #           {"name": "{{.MachineName}}", "value": "{{.Location}}"}
+  #         footer: |
+  #           ]}]}
+  #         separator: ","
+  #         on_empty: "skip"    # Don't send webhook if no offline machines
+
+  # Example: Custom API endpoint with templated URL and all features
+  # - name: "sync_data_to_api"
+  #   database: "primary"
+  #   sql: |
+  #     SELECT EmployeeId, PunchTime, PunchType
+  #     FROM AttendanceLog
+  #     WHERE PunchTime >= @since
+  #   parameters:
+  #     - name: "since"
+  #       type: "datetime"
+  #       required: true
+  #   schedule:
+  #     cron: "*/10 * * * *"
+  #     params:
+  #       since: "today"        # Dynamic date
+  #     webhook:
+  #       url: "https://api.example.com/sync/{{.Query}}?count={{.Count}}"
+  #       method: "POST"
+  #       headers:
+  #         Authorization: "Bearer ${API_TOKEN}"
+  #         Content-Type: "application/json"
+  #       body:
+  #         # Build JSON array with header/item/footer
+  #         header: |
+  #           {"query": "{{.Query}}", "timestamp": "{{.DurationMs}}ms", "data": [
+  #         item: |
+  #           {"employee": "{{.EmployeeId}}", "time": "{{.PunchTime}}", "type": "{{.PunchType}}"}
+  #         footer: |
+  #           ]}
+  #         separator: ","
+  #         on_empty: "send"    # Send even with empty results
+  #         empty: |
+  #           {"query": "{{.Query}}", "timestamp": "{{.DurationMs}}ms", "data": [], "message": "No new records"}
+
+  # Template Reference:
+  # Header/Footer context: .Query, .Count, .Success, .DurationMs, .Params, .Data, .Error
+  # Item context: row fields (e.g., .MachineName), plus ._index (0-based) and ._count (total)
+  # Functions: add, mod, json, jsonIndent
+  # Conditionals: {{if eq ._index 0}}first{{end}}, {{if .Success}}ok{{else}}fail{{end}}

@@ -230,6 +230,10 @@ Run `make test-cover` for current coverage statistics.
 - **TestValidateQueries_ScheduleOnlyQuery**: TestValidateQueries_ScheduleOnlyQuery tests schedule-only queries (no HTTP path) are valid
 - **TestValidateQueries_QueryWithTimeout**: TestValidateQueries_QueryWithTimeout tests query with custom timeout is validated
 - **TestValidateQueries_AllWriteOperations**: TestValidateQueries_AllWriteOperations tests all write operations are detected
+- **TestValidateWebhook**: TestValidateWebhook tests webhook configuration validation
+- **TestValidateWebhookBody**: TestValidateWebhookBody tests webhook body configuration validation
+- **TestValidateScheduleWithWebhook**: TestValidateScheduleWithWebhook tests schedule validation with webhook
+- **TestValidateTemplate**: TestValidateTemplate tests template syntax validation
 
 
 ---
@@ -352,6 +356,41 @@ Run `make test-cover` for current coverage statistics.
 
 - **TestServiceName**: TestServiceName verifies ServiceName returns the expected constant
 - **TestIsWindowsService**: TestIsWindowsService verifies IsWindowsService returns false on non-Windows
+
+
+---
+
+## Webhook
+
+**Package**: `internal/webhook`
+
+### webhook_test.go
+
+- **TestExecuteTemplate_Basic**: TestExecuteTemplate_Basic tests basic template execution
+- **TestExecuteTemplate_Functions**: TestExecuteTemplate_Functions tests custom template functions
+- **TestExecuteItemTemplate**: TestExecuteItemTemplate tests item template with row data
+- **TestBuildBody_RawJSON**: TestBuildBody_RawJSON tests raw JSON output when no body config
+- **TestBuildBody_HeaderItemFooter**: TestBuildBody_HeaderItemFooter tests templated body building
+- **TestBuildBody_EmptyTemplate**: TestBuildBody_EmptyTemplate tests alternate empty template
+- **TestBuildBody_DefaultSeparator**: TestBuildBody_DefaultSeparator tests default comma separator when not specified
+- **TestBuildBody_NewlineSeparator**: TestBuildBody_NewlineSeparator tests newline separator for list format
+- **TestBuildBody_ParamsAccess**: TestBuildBody_ParamsAccess tests access to params in templates
+- **TestExecute_RawPayload**: TestExecute_RawPayload tests webhook execution with raw JSON
+- **TestExecute_TemplatedURL**: TestExecute_TemplatedURL tests URL template execution
+- **TestExecute_SkipOnEmpty**: TestExecute_SkipOnEmpty tests on_empty: skip behavior
+- **TestExecute_SendOnEmpty**: TestExecute_SendOnEmpty tests on_empty: send (default) behavior
+- **TestExecute_HTTPError**: TestExecute_HTTPError tests error handling for non-2xx responses
+- **TestExecute_Timeout**: TestExecute_Timeout tests context timeout
+- **TestExecute_HTTPMethods**: TestExecute_HTTPMethods tests default POST and explicit GET methods
+- **TestBuildBody_SlackFormat**: TestBuildBody_SlackFormat tests building Slack-style webhook body
+- **TestExecuteTemplate_InvalidTemplate**: TestExecuteTemplate_InvalidTemplate tests error handling for invalid templates
+- **TestExecute_URLTemplateError**: TestExecute_URLTemplateError tests error when URL template is invalid
+- **TestExecute_InvalidURL**: TestExecute_InvalidURL tests error when URL is malformed
+- **TestBuildBody_TemplateErrors**: TestBuildBody_TemplateErrors tests error messages identify which template failed
+- **TestExecuteTemplate_ExecutionError**: TestExecuteTemplate_ExecutionError tests template execution error (not parse error)
+- **TestJsonFunction_Error**: TestJsonFunction_Error tests json function with unmarshalable value
+- **TestJsonFunctions_Error**: TestJsonFunctions_Error tests json/jsonIndent functions with unmarshalable values
+- **TestExecute_ConnectionError**: TestExecute_ConnectionError tests error when server is unreachable
 
 
 ---

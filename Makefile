@@ -27,12 +27,13 @@ PKG_LOGGING := ./internal/logging/...
 PKG_METRICS := ./internal/metrics/...
 PKG_OPENAPI := ./internal/openapi/...
 PKG_SERVICE := ./internal/service/...
+PKG_WEBHOOK := ./internal/webhook/...
 
 .PHONY: all build clean test validate run install deps tidy \
         build-linux build-windows build-darwin build-all \
         build-linux-arm64 build-darwin-arm64 \
         test-config test-db test-handler test-scheduler test-validate \
-        test-server test-logging test-metrics test-openapi \
+        test-server test-logging test-metrics test-openapi test-webhook \
         test-unit test-integration test-e2e test-bench \
         test-cover test-cover-html test-cover-report test-docs
 
@@ -82,6 +83,9 @@ test-metrics:
 
 test-openapi:
 	$(GOTEST) -v $(PKG_OPENAPI)
+
+test-webhook:
+	$(GOTEST) -v $(PKG_WEBHOOK)
 
 # Run unit tests only (exclude benchmarks and e2e)
 test-unit:
@@ -241,6 +245,7 @@ help:
 	@echo "  make test-logging    Run logging package tests"
 	@echo "  make test-metrics    Run metrics package tests"
 	@echo "  make test-openapi    Run openapi package tests"
+	@echo "  make test-webhook    Run webhook package tests"
 	@echo ""
 	@echo "Testing by type:"
 	@echo "  make test-unit        Run unit tests (internal packages)"

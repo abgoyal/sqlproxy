@@ -12,6 +12,7 @@ import (
 	"sql-proxy/internal/config"
 	"sql-proxy/internal/db"
 	"sql-proxy/internal/logging"
+	"sql-proxy/internal/webhook"
 )
 
 const (
@@ -127,6 +128,11 @@ func (s *Scheduler) executeJob(q config.QueryConfig) {
 			"attempts":    maxRetries,
 			"duration_ms": duration.Milliseconds(),
 		})
+
+		// Send failure webhook if configured
+		if q.Schedule.Webhook != nil {
+			s.sendWebhook(q, nil, lastErr, duration)
+		}
 		return
 	}
 
@@ -151,6 +157,45 @@ func (s *Scheduler) executeJob(q config.QueryConfig) {
 	}
 
 	logging.Info("scheduled_query_completed", logFields)
+
+	// Send success webhook if configured
+	if q.Schedule.Webhook != nil {
+		s.sendWebhook(q, results, nil, duration)
+	}
+}
+
+func (s *Scheduler) sendWebhook(q config.QueryConfig, results []map[string]any, queryErr error, duration time.Duration) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Build execution context
+	execCtx := &webhook.ExecutionContext{
+		Query:      q.Name,
+		Count:      len(results),
+		Success:    queryErr == nil,
+		DurationMs: duration.Milliseconds(),
+		Params:     q.Schedule.Params,
+		Data:       results,
+	}
+	if queryErr != nil {
+		execCtx.Error = queryErr.Error()
+	}
+
+	err := webhook.Execute(ctx, q.Schedule.Webhook, execCtx)
+	if err != nil {
+		logging.Error("webhook_failed", map[string]any{
+			"query_name": q.Name,
+			"url":        q.Schedule.Webhook.URL,
+			"error":      err.Error(),
+		})
+	} else {
+		logging.Debug("webhook_sent", map[string]any{
+			"query_name": q.Name,
+			"url":        q.Schedule.Webhook.URL,
+			"success":    execCtx.Success,
+			"count":      execCtx.Count,
+		})
+	}
 }
 
 func (s *Scheduler) runQuery(q config.QueryConfig) ([]map[string]any, error) {
