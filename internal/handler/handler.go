@@ -68,12 +68,30 @@ func generateRequestID() string {
 func getOrGenerateRequestID(r *http.Request) string {
 	// Check for caller-provided request ID (for end-to-end tracing)
 	if id := r.Header.Get("X-Request-ID"); id != "" {
-		return id
+		return sanitizeHeaderValue(id)
 	}
 	if id := r.Header.Get("X-Correlation-ID"); id != "" {
-		return id
+		return sanitizeHeaderValue(id)
 	}
 	return generateRequestID()
+}
+
+// sanitizeHeaderValue removes control characters and limits length to prevent
+// log injection and header injection attacks
+func sanitizeHeaderValue(s string) string {
+	const maxLen = 128
+	if len(s) > maxLen {
+		s = s[:maxLen]
+	}
+	// Remove control characters (0x00-0x1F, 0x7F) including newlines
+	var result strings.Builder
+	result.Grow(len(s))
+	for _, r := range s {
+		if r >= 0x20 && r != 0x7F {
+			result.WriteRune(r)
+		}
+	}
+	return result.String()
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -160,7 +178,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 				// Add cache headers
 				w.Header().Set("X-Cache", "HIT")
-				w.Header().Set("X-Cache-Key", cacheKey)
+				w.Header().Set("X-Cache-Key", sanitizeHeaderValue(cacheKey))
 				if ttlRemaining := h.cache.GetTTLRemaining(h.queryConfig.Path, cacheKey); ttlRemaining > 0 {
 					w.Header().Set("X-Cache-TTL", fmt.Sprintf("%d", int(ttlRemaining.Seconds())))
 				}
@@ -257,7 +275,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-Cache", "BYPASS")
 		} else if cacheKey != "" {
 			w.Header().Set("X-Cache", "MISS")
-			w.Header().Set("X-Cache-Key", cacheKey)
+			w.Header().Set("X-Cache-Key", sanitizeHeaderValue(cacheKey))
 		}
 	}
 

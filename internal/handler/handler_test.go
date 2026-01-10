@@ -846,3 +846,91 @@ func TestGetOrGenerateRequestID(t *testing.T) {
 		t.Errorf("expected 16 char generated ID, got %d: %s", len(id), id)
 	}
 }
+
+// TestSanitizeHeaderValue tests header value sanitization for security
+func TestSanitizeHeaderValue(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "normal value",
+			input:    "test-request-123",
+			expected: "test-request-123",
+		},
+		{
+			name:     "newline injection",
+			input:    "test\nX-Injected: malicious",
+			expected: "testX-Injected: malicious",
+		},
+		{
+			name:     "carriage return injection",
+			input:    "test\rX-Injected: malicious",
+			expected: "testX-Injected: malicious",
+		},
+		{
+			name:     "CRLF injection",
+			input:    "test\r\nX-Injected: malicious",
+			expected: "testX-Injected: malicious",
+		},
+		{
+			name:     "null byte",
+			input:    "test\x00value",
+			expected: "testvalue",
+		},
+		{
+			name:     "tab character",
+			input:    "test\tvalue",
+			expected: "testvalue",
+		},
+		{
+			name:     "DEL character",
+			input:    "test\x7Fvalue",
+			expected: "testvalue",
+		},
+		{
+			name:     "very long value truncated",
+			input:    strings.Repeat("a", 200),
+			expected: strings.Repeat("a", 128),
+		},
+		{
+			name:     "empty value",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "unicode preserved",
+			input:    "test-\u4e2d\u6587-value",
+			expected: "test-\u4e2d\u6587-value",
+		},
+		{
+			name:     "mixed control chars",
+			input:    "a\x00b\nc\rd\te",
+			expected: "abcde",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := sanitizeHeaderValue(tt.input)
+			if result != tt.expected {
+				t.Errorf("sanitizeHeaderValue(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestGetOrGenerateRequestID_Sanitizes validates that request IDs from headers are sanitized
+func TestGetOrGenerateRequestID_Sanitizes(t *testing.T) {
+	// Test that malicious header values are sanitized
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-Request-ID", "test\r\nX-Injected: evil")
+	id := getOrGenerateRequestID(req)
+	if strings.Contains(id, "\n") || strings.Contains(id, "\r") {
+		t.Errorf("expected sanitized ID, got %q", id)
+	}
+	if id != "testX-Injected: evil" {
+		t.Errorf("expected 'testX-Injected: evil', got %q", id)
+	}
+}
