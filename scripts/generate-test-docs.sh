@@ -98,6 +98,7 @@ process_package "internal/server" "Server"
 process_package "internal/logging" "Logging"
 process_package "internal/metrics" "Metrics"
 process_package "internal/openapi" "OpenAPI"
+process_package "internal/service" "Service"
 process_package "e2e" "End-to-End"
 
 # Add footer

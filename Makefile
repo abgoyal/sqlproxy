@@ -26,6 +26,7 @@ PKG_SERVER := ./internal/server/...
 PKG_LOGGING := ./internal/logging/...
 PKG_METRICS := ./internal/metrics/...
 PKG_OPENAPI := ./internal/openapi/...
+PKG_SERVICE := ./internal/service/...
 
 .PHONY: all build clean test validate run install deps tidy \
         build-linux build-windows build-darwin build-all \
@@ -108,20 +109,22 @@ test-bench-short:
 
 # Run tests with coverage summary
 test-cover:
-	$(GOTEST) -cover ./...
+	@$(GOTEST) -cover ./internal/... 2>&1 | grep -v "internal/testutil"
 
-# Generate coverage report (text)
+# Generate coverage report (text) - excludes testutil
 test-cover-report:
 	@mkdir -p $(COVERAGE_DIR)
-	$(GOTEST) -coverprofile=$(COVERAGE_DIR)/coverage.out ./...
+	$(GOTEST) -coverprofile=$(COVERAGE_DIR)/coverage.out ./internal/...
+	@grep -v "internal/testutil" $(COVERAGE_DIR)/coverage.out > $(COVERAGE_DIR)/coverage.tmp && mv $(COVERAGE_DIR)/coverage.tmp $(COVERAGE_DIR)/coverage.out
 	$(GOCMD) tool cover -func=$(COVERAGE_DIR)/coverage.out
 	@echo ""
 	@echo "Coverage report saved to $(COVERAGE_DIR)/coverage.out"
 
-# Generate HTML coverage report
+# Generate HTML coverage report - excludes testutil
 test-cover-html:
 	@mkdir -p $(COVERAGE_DIR)
-	$(GOTEST) -coverprofile=$(COVERAGE_DIR)/coverage.out ./...
+	$(GOTEST) -coverprofile=$(COVERAGE_DIR)/coverage.out ./internal/...
+	@grep -v "internal/testutil" $(COVERAGE_DIR)/coverage.out > $(COVERAGE_DIR)/coverage.tmp && mv $(COVERAGE_DIR)/coverage.tmp $(COVERAGE_DIR)/coverage.out
 	$(GOCMD) tool cover -html=$(COVERAGE_DIR)/coverage.out -o $(COVERAGE_DIR)/coverage.html
 	@echo "HTML coverage report: $(COVERAGE_DIR)/coverage.html"
 

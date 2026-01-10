@@ -830,3 +830,178 @@ func TestRun_DBConnectionFail(t *testing.T) {
 func intPtr(i int) *int {
 	return &i
 }
+
+// TestRun_SQLServerUnresolvedEnvVar tests that SQL Server with unresolved env vars is skipped during connection test
+func TestRun_SQLServerUnresolvedEnvVar(t *testing.T) {
+	// SQL Server with unresolved env var in host should be skipped (no connection attempt)
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Host:              "localhost",
+			Port:              8080,
+			DefaultTimeoutSec: 30,
+			MaxTimeoutSec:     300,
+		},
+		Databases: []config.DatabaseConfig{
+			{
+				Name:     "test",
+				Type:     "sqlserver",
+				Host:     "${DB_HOST}", // Unresolved env var
+				Port:     1433,
+				User:     "user",
+				Password: "pass",
+				Database: "db",
+			},
+		},
+		Logging: config.LoggingConfig{Level: "info"},
+		Queries: []config.QueryConfig{
+			{Name: "q1", Database: "test", Path: "/api/test", Method: "GET", SQL: "SELECT 1"},
+		},
+	}
+
+	result := Run(cfg)
+
+	// Should pass because connection test is skipped for unresolved env vars
+	if !result.Valid {
+		t.Errorf("expected config to pass (skipping connection test), got errors: %v", result.Errors)
+	}
+}
+
+// TestRun_SQLServerUnresolvedPassword tests SQL Server with unresolved password env var is skipped
+func TestRun_SQLServerUnresolvedPassword(t *testing.T) {
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Host:              "localhost",
+			Port:              8080,
+			DefaultTimeoutSec: 30,
+			MaxTimeoutSec:     300,
+		},
+		Databases: []config.DatabaseConfig{
+			{
+				Name:     "test",
+				Type:     "sqlserver",
+				Host:     "localhost",
+				Port:     1433,
+				User:     "user",
+				Password: "${DB_PASSWORD}", // Unresolved env var
+				Database: "db",
+			},
+		},
+		Logging: config.LoggingConfig{Level: "info"},
+		Queries: []config.QueryConfig{
+			{Name: "q1", Database: "test", Path: "/api/test", Method: "GET", SQL: "SELECT 1"},
+		},
+	}
+
+	result := Run(cfg)
+
+	// Should pass because connection test is skipped for unresolved env vars
+	if !result.Valid {
+		t.Errorf("expected config to pass (skipping connection test), got errors: %v", result.Errors)
+	}
+}
+
+// TestValidateQueries_ScheduleOnlyQuery tests schedule-only queries (no HTTP path) are valid
+func TestValidateQueries_ScheduleOnlyQuery(t *testing.T) {
+	cfg := &config.Config{
+		Databases: []config.DatabaseConfig{
+			{Name: "test", Type: "sqlite", Path: ":memory:"},
+		},
+		Queries: []config.QueryConfig{
+			{
+				Name:     "scheduled_job",
+				Database: "test",
+				Path:     "", // No HTTP path
+				Method:   "GET",
+				SQL:      "SELECT 1",
+				Schedule: &config.ScheduleConfig{
+					Cron: "0 * * * *",
+				},
+			},
+		},
+	}
+
+	r := &Result{Valid: true}
+	validateQueries(cfg, r)
+
+	if !r.Valid {
+		t.Errorf("expected schedule-only query to be valid, got errors: %v", r.Errors)
+	}
+}
+
+// TestValidateQueries_QueryWithTimeout tests query with custom timeout is validated
+func TestValidateQueries_QueryWithTimeout(t *testing.T) {
+	tests := []struct {
+		name    string
+		timeout int
+		wantErr bool
+	}{
+		{"positive timeout", 60, false},
+		{"negative timeout", -5, true},
+		{"zero timeout (default)", 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{
+				Databases: []config.DatabaseConfig{
+					{Name: "test", Type: "sqlite", Path: ":memory:"},
+				},
+				Queries: []config.QueryConfig{
+					{
+						Name:       "test_query",
+						Database:   "test",
+						Path:       "/api/test",
+						Method:     "GET",
+						SQL:        "SELECT 1",
+						TimeoutSec: tt.timeout,
+					},
+				},
+			}
+
+			r := &Result{Valid: true}
+			validateQueries(cfg, r)
+
+			if tt.wantErr && r.Valid {
+				t.Error("expected validation to fail")
+			}
+			if !tt.wantErr && !r.Valid {
+				t.Errorf("expected validation to pass, got errors: %v", r.Errors)
+			}
+		})
+	}
+}
+
+// TestValidateQueries_AllWriteOperations tests all write operations are detected
+func TestValidateQueries_AllWriteOperations(t *testing.T) {
+	readOnly := true
+	writeOps := []string{
+		"INSERT INTO users VALUES (1)",
+		"UPDATE users SET name = 'test'",
+		"DELETE FROM users WHERE id = 1",
+		"TRUNCATE TABLE users",
+		"DROP TABLE users",
+		"ALTER TABLE users ADD col INT",
+		"CREATE TABLE new_table (id INT)",
+		"EXEC sp_some_procedure",
+	}
+
+	for _, sql := range writeOps {
+		t.Run(sql[:6], func(t *testing.T) {
+			cfg := &config.Config{
+				Databases: []config.DatabaseConfig{
+					{Name: "test", Type: "sqlite", Path: ":memory:", ReadOnly: &readOnly},
+				},
+				Queries: []config.QueryConfig{
+					{Name: "q1", Database: "test", Path: "/api/test", Method: "GET", SQL: sql},
+				},
+			}
+
+			r := &Result{Valid: true}
+			validateQueries(cfg, r)
+
+			if r.Valid {
+				t.Errorf("expected %s to be rejected on read-only database", sql[:6])
+			}
+		})
+	}
+}

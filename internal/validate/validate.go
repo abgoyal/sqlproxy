@@ -221,7 +221,7 @@ func validateQueries(cfg *config.Config, r *Result) {
 
 		// Check for write operations
 		sqlUpper := strings.ToUpper(q.SQL)
-		writeKeywords := []string{"INSERT ", "UPDATE ", "DELETE ", "DROP ", "TRUNCATE "}
+		writeKeywords := []string{"INSERT ", "UPDATE ", "DELETE ", "DROP ", "TRUNCATE ", "ALTER ", "CREATE ", "EXEC "}
 		for _, kw := range writeKeywords {
 			if strings.Contains(sqlUpper, kw) {
 				if dbExists && isReadOnly {

@@ -114,6 +114,14 @@ Run `make test-cover` for current coverage statistics.
 - **TestSQLiteDriver_Config**: TestSQLiteDriver_Config verifies Config() returns original configuration
 - **TestSQLiteDriver_TranslateQuery**: TestSQLiteDriver_TranslateQuery tests @param to sql.Named translation and deduplication
 
+### sqlserver_test.go
+
+- **TestIsolationToSQL**: TestIsolationToSQL tests conversion of config isolation strings to SQL Server syntax
+- **TestDeadlockPriorityToSQL**: TestDeadlockPriorityToSQL tests conversion of config deadlock priority strings to SQL Server syntax
+- **TestSQLServerDriver_BuildArgs**: TestSQLServerDriver_BuildArgs verifies parameter extraction from SQL
+- **TestSQLServerDriver_BuildArgs_Values**: TestSQLServerDriver_BuildArgs_Values verifies parameter values are correctly assigned
+- **TestSQLServerDriver_BuildArgs_NilValue**: TestSQLServerDriver_BuildArgs_NilValue verifies nil values are handled correctly
+
 
 ---
 
@@ -217,6 +225,11 @@ Run `make test-cover` for current coverage statistics.
 - **TestRun_InvalidConfig**: TestRun_InvalidConfig tests configuration with invalid port fails validation
 - **TestRun_DBConnectionTest**: TestRun_DBConnectionTest verifies SQLite :memory: connection succeeds
 - **TestRun_DBConnectionFail**: TestRun_DBConnectionFail verifies invalid SQLite path fails connection test
+- **TestRun_SQLServerUnresolvedEnvVar**: TestRun_SQLServerUnresolvedEnvVar tests that SQL Server with unresolved env vars is skipped during connection test
+- **TestRun_SQLServerUnresolvedPassword**: TestRun_SQLServerUnresolvedPassword tests SQL Server with unresolved password env var is skipped
+- **TestValidateQueries_ScheduleOnlyQuery**: TestValidateQueries_ScheduleOnlyQuery tests schedule-only queries (no HTTP path) are valid
+- **TestValidateQueries_QueryWithTimeout**: TestValidateQueries_QueryWithTimeout tests query with custom timeout is validated
+- **TestValidateQueries_AllWriteOperations**: TestValidateQueries_AllWriteOperations tests all write operations are detected
 
 
 ---
@@ -241,6 +254,9 @@ Run `make test-cover` for current coverage statistics.
 - **TestServer_Integration_QueryEndpoint**: TestServer_Integration_QueryEndpoint tests query execution via httptest server
 - **TestServer_Integration_ParameterizedQuery**: TestServer_Integration_ParameterizedQuery tests parameterized query with required and optional params
 - **TestServer_Integration_WithGzip**: TestServer_Integration_WithGzip tests HTTP request/response cycle with gzip encoding
+- **TestServer_HealthHandler_Degraded**: TestServer_HealthHandler_Degraded tests /health returns degraded status when database is unreachable
+- **TestServer_HealthHandler_DatabaseDown**: TestServer_HealthHandler_DatabaseDown tests /health shows database as disconnected when ping fails
+- **TestServer_HealthHandler_MultipleDatabases**: TestServer_HealthHandler_MultipleDatabases tests /health with multiple database connections
 
 
 ---
@@ -324,6 +340,18 @@ Run `make test-cover` for current coverage statistics.
 - **TestSpec_TimeoutParameter**: TestSpec_TimeoutParameter tests _timeout param has correct default and maximum
 - **TestSpec_QueryDescription**: TestSpec_QueryDescription tests custom description and timeout info in spec
 - **TestBuildQueryPath_DefaultTimeout**: TestBuildQueryPath_DefaultTimeout tests server default timeout used when query has none
+
+
+---
+
+## Service
+
+**Package**: `internal/service`
+
+### service_test.go
+
+- **TestServiceName**: TestServiceName verifies ServiceName returns the expected constant
+- **TestIsWindowsService**: TestIsWindowsService verifies IsWindowsService returns false on non-Windows
 
 
 ---

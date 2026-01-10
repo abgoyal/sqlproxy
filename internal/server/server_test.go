@@ -583,3 +583,125 @@ func createQueryHandler(srv *Server, q config.QueryConfig) http.Handler {
 		h.ServeHTTP(w, r)
 	})
 }
+
+// TestServer_HealthHandler_Degraded tests /health returns degraded status when database is unreachable
+func TestServer_HealthHandler_Degraded(t *testing.T) {
+	cfg := createTestConfig()
+
+	srv, err := New(cfg, true)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	// Close the database connection to simulate failure
+	driver, err := srv.dbManager.Get("test")
+	if err != nil {
+		t.Fatalf("failed to get database: %v", err)
+	}
+	driver.Close()
+
+	// Now health check should show degraded status
+	req := httptest.NewRequest("GET", "/health", nil)
+	w := httptest.NewRecorder()
+
+	srv.healthHandler(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected status 503, got %d", w.Code)
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp["status"] != "degraded" {
+		t.Errorf("expected status 'degraded', got %v", resp["status"])
+	}
+
+	databases, ok := resp["databases"].(map[string]any)
+	if !ok {
+		t.Fatal("expected databases map")
+	}
+
+	if databases["test"] != "disconnected" {
+		t.Errorf("expected test database to be 'disconnected', got %v", databases["test"])
+	}
+}
+
+// TestServer_HealthHandler_DatabaseDown tests /health shows database as disconnected when ping fails
+func TestServer_HealthHandler_DatabaseDown(t *testing.T) {
+	cfg := createTestConfig()
+	// Use an invalid SQLite path to simulate connection failure
+	cfg.Databases[0].Path = "/nonexistent/path/that/does/not/exist.db"
+
+	// This should fail to create server since DB can't connect
+	_, err := New(cfg, true)
+	if err == nil {
+		t.Error("expected error when database path is invalid")
+	}
+}
+
+// TestServer_HealthHandler_MultipleDatabases tests /health with multiple database connections
+func TestServer_HealthHandler_MultipleDatabases(t *testing.T) {
+	readOnly := false
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Host:              "127.0.0.1",
+			Port:              8080,
+			DefaultTimeoutSec: 30,
+			MaxTimeoutSec:     300,
+		},
+		Databases: []config.DatabaseConfig{
+			{
+				Name:     "db1",
+				Type:     "sqlite",
+				Path:     ":memory:",
+				ReadOnly: &readOnly,
+			},
+			{
+				Name:     "db2",
+				Type:     "sqlite",
+				Path:     ":memory:",
+				ReadOnly: &readOnly,
+			},
+		},
+		Logging: config.LoggingConfig{
+			Level: "error",
+		},
+		Metrics: config.MetricsConfig{
+			Enabled: false,
+		},
+		Queries: []config.QueryConfig{},
+	}
+
+	srv, err := New(cfg, true)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	req := httptest.NewRequest("GET", "/health", nil)
+	w := httptest.NewRecorder()
+
+	srv.healthHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+
+	var result map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	databases := result["databases"].(map[string]any)
+	if databases["db1"] != "connected" {
+		t.Errorf("expected db1 connected, got %v", databases["db1"])
+	}
+	if databases["db2"] != "connected" {
+		t.Errorf("expected db2 connected, got %v", databases["db2"])
+	}
+}
+
