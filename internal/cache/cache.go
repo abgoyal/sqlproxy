@@ -236,10 +236,12 @@ func (c *Cache) Set(endpoint, key string, data []map[string]any, ttl time.Durati
 	}
 
 	// Store in ristretto with TTL
+	// Note: SetWithTTL returns immediately - the write is buffered.
+	// We intentionally don't call Wait() here to avoid blocking.
+	// This means a Get() immediately after Set() might miss, which is
+	// acceptable cache behavior. Our metadata tracking may briefly be
+	// out of sync but will eventually converge.
 	success := c.store.SetWithTTL(fullKey, entry, sizeBytes, ttl)
-
-	// Wait for value to pass through buffers
-	c.store.Wait()
 
 	if success && ep != nil {
 		ep.mu.Lock()
@@ -470,7 +472,7 @@ func BuildKey(tmpl string, params map[string]any) (string, error) {
 		return "", fmt.Errorf("cache key template is empty")
 	}
 
-	t, err := template.New("key").Funcs(keyFuncMap).Parse(tmpl)
+	t, err := template.New("key").Funcs(KeyFuncMap).Parse(tmpl)
 	if err != nil {
 		return "", fmt.Errorf("parsing cache key template: %w", err)
 	}
@@ -483,8 +485,9 @@ func BuildKey(tmpl string, params map[string]any) (string, error) {
 	return buf.String(), nil
 }
 
-// keyFuncMap provides template functions for cache keys
-var keyFuncMap = template.FuncMap{
+// KeyFuncMap provides template functions for cache keys.
+// Exported so validate package can use the same functions for validation.
+var KeyFuncMap = template.FuncMap{
 	"default": func(def, val any) any {
 		if val == nil || val == "" {
 			return def

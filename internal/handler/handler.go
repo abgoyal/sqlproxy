@@ -378,7 +378,12 @@ func (h *Handler) writeSuccess(w http.ResponseWriter, data []map[string]any, tim
 		RequestID:  requestID,
 	}
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		logging.Error("response_encode_failed", map[string]any{
+			"request_id": requestID,
+			"error":      err.Error(),
+		})
+	}
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, status int, message string, requestID string) {
@@ -388,5 +393,10 @@ func (h *Handler) writeError(w http.ResponseWriter, status int, message string, 
 		RequestID: requestID,
 	}
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		logging.Error("response_encode_failed", map[string]any{
+			"request_id": requestID,
+			"error":      err.Error(),
+		})
+	}
 }

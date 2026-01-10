@@ -10,6 +10,7 @@ import (
 
 	"github.com/robfig/cron/v3"
 
+	"sql-proxy/internal/cache"
 	"sql-proxy/internal/config"
 	"sql-proxy/internal/db"
 	"sql-proxy/internal/webhook"
@@ -429,16 +430,6 @@ func validateTemplate(tmpl string) error {
 	return err
 }
 
-// cacheKeyFuncMap matches the functions available in cache key templates
-var cacheKeyFuncMap = template.FuncMap{
-	"default": func(def, val any) any {
-		if val == nil || val == "" {
-			return def
-		}
-		return val
-	},
-}
-
 func validateCache(c *config.QueryCacheConfig, prefix string, r *Result) {
 	cachePrefix := prefix + ".cache"
 
@@ -450,8 +441,8 @@ func validateCache(c *config.QueryCacheConfig, prefix string, r *Result) {
 	if c.Key == "" {
 		r.addError("%s: key template is required when cache is enabled", cachePrefix)
 	} else {
-		// Validate key template syntax
-		if _, err := template.New("").Funcs(cacheKeyFuncMap).Parse(c.Key); err != nil {
+		// Validate key template syntax using same FuncMap as cache package
+		if _, err := template.New("").Funcs(cache.KeyFuncMap).Parse(c.Key); err != nil {
 			r.addError("%s: invalid key template: %v", cachePrefix, err)
 		}
 	}

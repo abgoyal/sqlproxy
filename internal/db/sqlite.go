@@ -212,6 +212,7 @@ func (d *SQLiteDriver) Reconnect() error {
 	// Close existing connection (ignore errors)
 	if d.conn != nil {
 		d.conn.Close()
+		d.conn = nil
 	}
 
 	// Build connection string with DSN parameters
@@ -238,9 +239,10 @@ func (d *SQLiteDriver) Reconnect() error {
 	}
 
 	configureSQLitePool(conn)
-	d.conn = conn
 
-	if err := d.applyInitialPragmas(); err != nil {
+	// Create a temporary driver to apply pragmas (using the new conn)
+	tempDriver := &SQLiteDriver{conn: conn, path: d.path, cfg: d.cfg, readOnly: d.readOnly}
+	if err := tempDriver.applyInitialPragmas(); err != nil {
 		conn.Close()
 		return fmt.Errorf("failed to apply initial pragmas: %w", err)
 	}
@@ -254,6 +256,8 @@ func (d *SQLiteDriver) Reconnect() error {
 		return fmt.Errorf("failed to ping sqlite database: %w", err)
 	}
 
+	// Only assign to d.conn after all checks pass
+	d.conn = conn
 	return nil
 }
 

@@ -15,6 +15,17 @@ import (
 	"sql-proxy/internal/config"
 )
 
+// httpClient is a shared client for all webhook requests.
+// Reusing the client allows connection pooling and TLS session reuse.
+var httpClient = &http.Client{
+	Timeout: 30 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        10,
+		MaxIdleConnsPerHost: 5,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
+
 // ExecutionContext holds data available to templates
 type ExecutionContext struct {
 	Query      string            `json:"query"`       // Query name
@@ -90,16 +101,17 @@ func Execute(ctx context.Context, webhookCfg *config.WebhookConfig, execCtx *Exe
 		req.Header.Set(key, os.ExpandEnv(value))
 	}
 
-	// Send request
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	// Send request using shared client for connection reuse
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("sending webhook: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Read response for error reporting
+	// Read response body (limited) for error reporting, then drain remainder
+	// Full drain is required for connection reuse
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	io.Copy(io.Discard, resp.Body) // Drain any remaining bytes
 
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("webhook returned %d: %s", resp.StatusCode, string(respBody))

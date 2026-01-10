@@ -143,21 +143,21 @@ func printValidationResult(cfg *config.Config, result *validate.Result) {
 	if len(result.Warnings) > 0 {
 		fmt.Println("\nWarnings:")
 		for _, w := range result.Warnings {
-			fmt.Printf("  ⚠ %s\n", w)
+			fmt.Printf("  [WARN] %s\n", w)
 		}
 	}
 
 	if len(result.Errors) > 0 {
 		fmt.Println("\nErrors:")
 		for _, e := range result.Errors {
-			fmt.Printf("  ✗ %s\n", e)
+			fmt.Printf("  [ERROR] %s\n", e)
 		}
 	}
 
 	fmt.Println()
 	if result.Valid {
-		fmt.Println("✓ Configuration valid")
+		fmt.Println("Configuration valid")
 	} else {
-		fmt.Println("✗ Configuration invalid")
+		fmt.Println("Configuration invalid")
 	}
 }

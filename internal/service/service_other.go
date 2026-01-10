@@ -9,10 +9,13 @@ import (
 	"os/signal"
 	"runtime"
 	"syscall"
+	"time"
 
 	"sql-proxy/internal/config"
 	"sql-proxy/internal/server"
 )
+
+const shutdownTimeout = 30 * time.Second
 
 const serviceName = "sql-proxy"
 
@@ -36,7 +39,9 @@ func Run(cfg *config.Config) error {
 	case err := <-errChan:
 		return err
 	case <-sigChan:
-		return srv.Shutdown(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		return srv.Shutdown(ctx)
 	}
 }
 

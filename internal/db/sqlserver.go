@@ -120,6 +120,7 @@ func (d *SQLServerDriver) Reconnect() error {
 	// Close existing connection (ignore errors)
 	if d.conn != nil {
 		d.conn.Close()
+		d.conn = nil
 	}
 
 	conn, err := sql.Open("sqlserver", d.connStr)

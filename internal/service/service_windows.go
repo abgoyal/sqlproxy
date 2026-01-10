@@ -20,6 +20,7 @@ import (
 
 const serviceName = "SQLProxy"
 const serviceDesc = "SQL Proxy Service - HTTP endpoints for SQL Server and SQLite databases"
+const shutdownTimeout = 30 * time.Second
 
 type windowsService struct {
 	server *server.Server
@@ -103,7 +104,9 @@ func Run(cfg *config.Config) error {
 		return err
 	case <-sigChan:
 		log.Println("Received interrupt, shutting down...")
-		return srv.Shutdown(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		return srv.Shutdown(ctx)
 	}
 }
 
