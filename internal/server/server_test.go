@@ -427,8 +427,8 @@ func TestServer_StartShutdown(t *testing.T) {
 	}
 }
 
-// TestServer_E2E_QueryEndpoint tests end-to-end query execution via HTTP test server
-func TestServer_E2E_QueryEndpoint(t *testing.T) {
+// TestServer_Integration_QueryEndpoint tests query execution via httptest server
+func TestServer_Integration_QueryEndpoint(t *testing.T) {
 	cfg := createTestConfig()
 
 	srv, err := New(cfg, true)
@@ -481,8 +481,8 @@ func TestServer_E2E_QueryEndpoint(t *testing.T) {
 	}
 }
 
-// TestServer_E2E_ParameterizedQuery tests parameterized query with required and optional params
-func TestServer_E2E_ParameterizedQuery(t *testing.T) {
+// TestServer_Integration_ParameterizedQuery tests parameterized query with required and optional params
+func TestServer_Integration_ParameterizedQuery(t *testing.T) {
 	cfg := createTestConfig()
 
 	srv, err := New(cfg, true)
@@ -525,8 +525,8 @@ func TestServer_E2E_ParameterizedQuery(t *testing.T) {
 	}
 }
 
-// TestServer_E2E_WithGzip tests full HTTP request/response cycle with gzip encoding
-func TestServer_E2E_WithGzip(t *testing.T) {
+// TestServer_Integration_WithGzip tests HTTP request/response cycle with gzip encoding
+func TestServer_Integration_WithGzip(t *testing.T) {
 	cfg := createTestConfig()
 
 	srv, err := New(cfg, true)

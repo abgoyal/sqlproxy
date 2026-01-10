@@ -1129,15 +1129,24 @@ Check logs:
 
 ## Testing
 
-The project includes comprehensive tests using SQLite in-memory databases to avoid external dependencies.
+The project includes comprehensive tests at multiple levels:
+
+- **Unit tests** - Test individual functions and methods in isolation
+- **Integration tests** - Test component interactions using `httptest` (in-process HTTP server)
+- **End-to-end tests** - Start the actual binary as a subprocess and test via real HTTP
 
 ### Running Tests
 
 ```bash
-# Run all tests
+# Run all tests (unit + integration + e2e)
 make test
 
-# Run tests for a specific package
+# Run by test type
+make test-unit         # Unit tests only (internal packages)
+make test-integration  # Integration tests (httptest-based)
+make test-e2e          # End-to-end tests (starts actual binary)
+
+# Run by package
 make test-db
 make test-handler
 make test-config
@@ -1163,9 +1172,11 @@ make test-docs
 
 ### Test Organization
 
-| Type | Description |
-|------|-------------|
-| Unit tests | Test individual functions and methods |
-| Integration tests | Test component interactions (e.g., handler + db) |
-| E2E tests | Test full HTTP request/response cycles |
-| Benchmarks | Performance tests (prefixed with `Benchmark`) |
+| Type | Location | Description |
+|------|----------|-------------|
+| Unit tests | `internal/*/` | Test individual functions and methods |
+| Integration tests | `internal/server/` | Test component interactions via `httptest` |
+| End-to-end tests | `e2e/` | Start binary, make real HTTP requests |
+| Benchmarks | `internal/*/benchmark_test.go` | Performance tests |
+
+All unit and integration tests use SQLite in-memory databases (`:memory:`) to avoid external dependencies.

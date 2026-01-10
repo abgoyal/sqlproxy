@@ -238,9 +238,9 @@ Run `make test-cover` for current coverage statistics.
 - **TestServer_GzipMiddleware**: TestServer_GzipMiddleware tests gzip compression when Accept-Encoding header set
 - **TestServer_GzipMiddleware_NoGzip**: TestServer_GzipMiddleware_NoGzip tests no compression without Accept-Encoding header
 - **TestServer_StartShutdown**: TestServer_StartShutdown tests server start and graceful shutdown sequence
-- **TestServer_E2E_QueryEndpoint**: TestServer_E2E_QueryEndpoint tests end-to-end query execution via HTTP test server
-- **TestServer_E2E_ParameterizedQuery**: TestServer_E2E_ParameterizedQuery tests parameterized query with required and optional params
-- **TestServer_E2E_WithGzip**: TestServer_E2E_WithGzip tests full HTTP request/response cycle with gzip encoding
+- **TestServer_Integration_QueryEndpoint**: TestServer_Integration_QueryEndpoint tests query execution via httptest server
+- **TestServer_Integration_ParameterizedQuery**: TestServer_Integration_ParameterizedQuery tests parameterized query with required and optional params
+- **TestServer_Integration_WithGzip**: TestServer_Integration_WithGzip tests HTTP request/response cycle with gzip encoding
 
 
 ---
@@ -328,13 +328,42 @@ Run `make test-cover` for current coverage statistics.
 
 ---
 
+## End-to-End
+
+**Package**: `e2e`
+
+### e2e_test.go
+
+- **TestE2E_ServerStartupAndShutdown**: TestE2E_ServerStartupAndShutdown tests the server starts and stops cleanly
+- **TestE2E_HealthEndpoint**: TestE2E_HealthEndpoint tests /health returns database status
+- **TestE2E_MetricsEndpoint**: TestE2E_MetricsEndpoint tests /metrics returns runtime stats
+- **TestE2E_OpenAPIEndpoint**: TestE2E_OpenAPIEndpoint tests /openapi.json returns valid spec
+- **TestE2E_RootEndpoint**: TestE2E_RootEndpoint tests / returns endpoint listing
+- **TestE2E_QueryEndpoint**: TestE2E_QueryEndpoint tests query execution returns data
+- **TestE2E_QueryWithParameters**: TestE2E_QueryWithParameters tests parameterized query execution
+- **TestE2E_LogLevelEndpoint**: TestE2E_LogLevelEndpoint tests runtime log level changes
+- **TestE2E_GzipCompression**: TestE2E_GzipCompression tests response compression
+- **TestE2E_RequestID**: TestE2E_RequestID tests request ID propagation
+- **TestE2E_NotFound**: TestE2E_NotFound tests 404 for unknown paths
+- **TestE2E_GracefulShutdown**: TestE2E_GracefulShutdown tests server handles SIGTERM gracefully
+- **TestE2E_ConfigValidation**: TestE2E_ConfigValidation tests -validate flag
+- **TestE2E_InvalidConfig**: TestE2E_InvalidConfig tests server rejects invalid config
+
+
+---
+
 ## Running Tests
 
 ```bash
 # Run all tests
 make test
 
-# Run tests for a specific package
+# Run by test type
+make test-unit         # Unit tests (internal packages)
+make test-integration  # Integration tests (httptest-based)
+make test-e2e          # End-to-end tests (starts actual binary)
+
+# Run by package
 make test-db
 make test-handler
 # etc.
@@ -349,9 +378,11 @@ make test-bench
 
 ## Test Organization
 
-- **Unit tests**: Test individual functions and methods
-- **Integration tests**: Test component interactions (e.g., handler + db)
-- **E2E tests**: Test full request/response cycles
-- **Benchmarks**: Performance tests (prefixed with `Benchmark`)
+| Type | Location | Description |
+|------|----------|-------------|
+| Unit tests | `internal/*/` | Test individual functions and methods |
+| Integration tests | `internal/server/` | Test component interactions via `httptest` |
+| End-to-end tests | `e2e/` | Start binary, make real HTTP requests |
+| Benchmarks | `internal/*/benchmark_test.go` | Performance tests |
 
-All tests use SQLite in-memory databases to avoid external dependencies.
+All unit and integration tests use SQLite in-memory databases to avoid external dependencies.

@@ -98,6 +98,7 @@ process_package "internal/server" "Server"
 process_package "internal/logging" "Logging"
 process_package "internal/metrics" "Metrics"
 process_package "internal/openapi" "OpenAPI"
+process_package "e2e" "End-to-End"
 
 # Add footer
 cat >> "$OUTPUT_FILE" << 'FOOTER'
@@ -110,7 +111,12 @@ cat >> "$OUTPUT_FILE" << 'FOOTER'
 # Run all tests
 make test
 
-# Run tests for a specific package
+# Run by test type
+make test-unit         # Unit tests (internal packages)
+make test-integration  # Integration tests (httptest-based)
+make test-e2e          # End-to-end tests (starts actual binary)
+
+# Run by package
 make test-db
 make test-handler
 # etc.
@@ -125,12 +131,14 @@ make test-bench
 
 ## Test Organization
 
-- **Unit tests**: Test individual functions and methods
-- **Integration tests**: Test component interactions (e.g., handler + db)
-- **E2E tests**: Test full request/response cycles
-- **Benchmarks**: Performance tests (prefixed with `Benchmark`)
+| Type | Location | Description |
+|------|----------|-------------|
+| Unit tests | `internal/*/` | Test individual functions and methods |
+| Integration tests | `internal/server/` | Test component interactions via `httptest` |
+| End-to-end tests | `e2e/` | Start binary, make real HTTP requests |
+| Benchmarks | `internal/*/benchmark_test.go` | Performance tests |
 
-All tests use SQLite in-memory databases to avoid external dependencies.
+All unit and integration tests use SQLite in-memory databases to avoid external dependencies.
 FOOTER
 
 echo "Generated: $OUTPUT_FILE"

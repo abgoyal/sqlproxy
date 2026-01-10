@@ -32,8 +32,8 @@ PKG_OPENAPI := ./internal/openapi/...
         build-linux-arm64 build-darwin-arm64 \
         test-config test-db test-handler test-scheduler test-validate \
         test-server test-logging test-metrics test-openapi \
-        test-unit test-bench test-cover test-cover-html test-cover-report \
-        test-docs
+        test-unit test-integration test-e2e test-bench \
+        test-cover test-cover-html test-cover-report test-docs
 
 # Default target
 all: build
@@ -82,13 +82,21 @@ test-metrics:
 test-openapi:
 	$(GOTEST) -v $(PKG_OPENAPI)
 
-# Run unit tests only (exclude benchmarks)
+# Run unit tests only (exclude benchmarks and e2e)
 test-unit:
-	$(GOTEST) -v -run "^Test" ./...
+	$(GOTEST) -v -run "^Test" ./internal/...
+
+# Run integration tests (httptest-based, in-process)
+test-integration:
+	$(GOTEST) -v -run "Integration" ./internal/...
+
+# Run end-to-end tests (starts actual binary)
+test-e2e:
+	$(GOTEST) -v ./e2e/...
 
 # Run benchmarks
 test-bench:
-	$(GOTEST) -bench=. -benchmem ./...
+	$(GOTEST) -bench=. -benchmem ./internal/...
 
 # Run benchmarks with short time (quick check)
 test-bench-short:
@@ -230,6 +238,11 @@ help:
 	@echo "  make test-logging    Run logging package tests"
 	@echo "  make test-metrics    Run metrics package tests"
 	@echo "  make test-openapi    Run openapi package tests"
+	@echo ""
+	@echo "Testing by type:"
+	@echo "  make test-unit        Run unit tests (internal packages)"
+	@echo "  make test-integration Run integration tests (httptest-based)"
+	@echo "  make test-e2e         Run end-to-end tests (starts binary)"
 	@echo ""
 	@echo "Benchmarks:"
 	@echo "  make test-bench        Run all benchmarks"
