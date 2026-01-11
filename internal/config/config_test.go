@@ -1005,3 +1005,116 @@ func TestValidParameterTypes(t *testing.T) {
 		}
 	}
 }
+
+// TestQueryRateLimitConfig_IsPoolReference verifies IsPoolReference returns true only when Pool is set
+func TestQueryRateLimitConfig_IsPoolReference(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   config.QueryRateLimitConfig
+		expected bool
+	}{
+		{
+			name:     "empty config",
+			config:   config.QueryRateLimitConfig{},
+			expected: false,
+		},
+		{
+			name:     "pool set",
+			config:   config.QueryRateLimitConfig{Pool: "global"},
+			expected: true,
+		},
+		{
+			name:     "pool empty string",
+			config:   config.QueryRateLimitConfig{Pool: ""},
+			expected: false,
+		},
+		{
+			name:     "inline only - no pool",
+			config:   config.QueryRateLimitConfig{RequestsPerSecond: 10, Burst: 20, Key: "{{.ClientIP}}"},
+			expected: false,
+		},
+		{
+			name:     "pool with inline values (invalid config but tests method)",
+			config:   config.QueryRateLimitConfig{Pool: "test", RequestsPerSecond: 10, Burst: 20},
+			expected: true, // Pool is set, so IsPoolReference returns true
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.config.IsPoolReference()
+			if result != tt.expected {
+				t.Errorf("IsPoolReference() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestQueryRateLimitConfig_IsInline verifies IsInline returns true only when both RequestsPerSecond and Burst are positive
+func TestQueryRateLimitConfig_IsInline(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   config.QueryRateLimitConfig
+		expected bool
+	}{
+		{
+			name:     "empty config",
+			config:   config.QueryRateLimitConfig{},
+			expected: false,
+		},
+		{
+			name:     "only requests_per_second",
+			config:   config.QueryRateLimitConfig{RequestsPerSecond: 10},
+			expected: false, // Burst is 0, so not valid inline
+		},
+		{
+			name:     "only burst",
+			config:   config.QueryRateLimitConfig{Burst: 20},
+			expected: false, // RequestsPerSecond is 0, so not valid inline
+		},
+		{
+			name:     "both positive",
+			config:   config.QueryRateLimitConfig{RequestsPerSecond: 10, Burst: 20},
+			expected: true,
+		},
+		{
+			name:     "both positive with key",
+			config:   config.QueryRateLimitConfig{RequestsPerSecond: 10, Burst: 20, Key: "{{.ClientIP}}"},
+			expected: true, // Key is optional
+		},
+		{
+			name:     "requests_per_second zero",
+			config:   config.QueryRateLimitConfig{RequestsPerSecond: 0, Burst: 20},
+			expected: false,
+		},
+		{
+			name:     "burst zero",
+			config:   config.QueryRateLimitConfig{RequestsPerSecond: 10, Burst: 0},
+			expected: false,
+		},
+		{
+			name:     "negative requests_per_second",
+			config:   config.QueryRateLimitConfig{RequestsPerSecond: -1, Burst: 20},
+			expected: false,
+		},
+		{
+			name:     "negative burst",
+			config:   config.QueryRateLimitConfig{RequestsPerSecond: 10, Burst: -1},
+			expected: false,
+		},
+		{
+			name:     "pool with inline values (tests method behavior)",
+			config:   config.QueryRateLimitConfig{Pool: "test", RequestsPerSecond: 10, Burst: 20},
+			expected: true, // IsInline checks only inline fields, ignores Pool
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.config.IsInline()
+			if result != tt.expected {
+				t.Errorf("IsInline() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}

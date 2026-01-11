@@ -42,6 +42,8 @@ Run `make test-cover` for current coverage statistics.
 - **TestIsArrayType**: TestIsArrayType verifies IsArrayType correctly identifies array types
 - **TestArrayBaseType**: TestArrayBaseType verifies ArrayBaseType extracts the base type from array types
 - **TestValidParameterTypes**: TestValidParameterTypes verifies all expected parameter types are in ValidParameterTypes
+- **TestQueryRateLimitConfig_IsPoolReference**: TestQueryRateLimitConfig_IsPoolReference verifies IsPoolReference returns true only when Pool is set
+- **TestQueryRateLimitConfig_IsInline**: TestQueryRateLimitConfig_IsInline verifies IsInline returns true only when both RequestsPerSecond and Burst are positive
 
 
 ---
@@ -292,8 +294,12 @@ Run `make test-cover` for current coverage statistics.
 - **TestServer_HealthHandler_Degraded**: TestServer_HealthHandler_Degraded tests /health returns degraded status when database is unreachable
 - **TestServer_HealthHandler_DatabaseDown**: TestServer_HealthHandler_DatabaseDown tests /_/health shows database as disconnected when ping fails
 - **TestServer_HealthHandler_MultipleDatabases**: TestServer_HealthHandler_MultipleDatabases tests /_/health with multiple database connections
+- **TestServer_DBHealthHandler**: TestServer_DBHealthHandler tests /_/health/{dbname} endpoint
+- **TestServer_DBHealthHandler_Disconnected**: TestServer_DBHealthHandler_Disconnected tests /_/health/{dbname} when db is down
 - **TestServer_Integration_WithCache**: TestServer_Integration_WithCache tests cache hit/miss behavior and headers
 - **TestServer_Integration_CacheMetrics**: TestServer_Integration_CacheMetrics tests cache stats appear in metrics snapshot
+- **TestServer_CacheClearHandler**: TestServer_CacheClearHandler tests /_/cache/clear endpoint
+- **TestServer_CacheClearHandler_NoCacheConfigured**: TestServer_CacheClearHandler_NoCacheConfigured tests cache clear when cache disabled
 - **TestServer_RateLimitsHandler**: TestServer_RateLimitsHandler tests the /_/ratelimits endpoint
 - **TestServer_RateLimitsHandler_NotConfigured**: TestServer_RateLimitsHandler_NotConfigured tests the endpoint when rate limiting is disabled
 - **TestServer_RateLimitResponse**: TestServer_RateLimitResponse tests that 429 response includes retry_after_sec

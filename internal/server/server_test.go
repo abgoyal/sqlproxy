@@ -709,6 +709,121 @@ func TestServer_HealthHandler_MultipleDatabases(t *testing.T) {
 	}
 }
 
+// TestServer_DBHealthHandler tests /_/health/{dbname} endpoint
+func TestServer_DBHealthHandler(t *testing.T) {
+	cfg := createTestConfig()
+
+	srv, err := New(cfg, true)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	tests := []struct {
+		name           string
+		path           string
+		expectedStatus int
+		checkBody      func(t *testing.T, body map[string]any)
+	}{
+		{
+			name:           "valid database",
+			path:           "/_/health/test",
+			expectedStatus: http.StatusOK,
+			checkBody: func(t *testing.T, body map[string]any) {
+				if body["database"] != "test" {
+					t.Errorf("expected database='test', got %v", body["database"])
+				}
+				if body["status"] != "connected" {
+					t.Errorf("expected status='connected', got %v", body["status"])
+				}
+				if body["type"] != "sqlite" {
+					t.Errorf("expected type='sqlite', got %v", body["type"])
+				}
+				if _, ok := body["readonly"]; !ok {
+					t.Error("expected readonly field in response")
+				}
+			},
+		},
+		{
+			name:           "unknown database",
+			path:           "/_/health/nonexistent",
+			expectedStatus: http.StatusNotFound,
+			checkBody: func(t *testing.T, body map[string]any) {
+				if body["error"] == nil {
+					t.Error("expected error field for unknown database")
+				}
+			},
+		},
+		{
+			name:           "missing database name",
+			path:           "/_/health/",
+			expectedStatus: http.StatusBadRequest,
+			checkBody: func(t *testing.T, body map[string]any) {
+				if body["error"] == nil {
+					t.Error("expected error field for missing database name")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tt.path, nil)
+			w := httptest.NewRecorder()
+
+			srv.dbHealthHandler(w, req)
+
+			if w.Code != tt.expectedStatus {
+				t.Errorf("expected status %d, got %d", tt.expectedStatus, w.Code)
+			}
+
+			var body map[string]any
+			if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+				t.Fatalf("failed to decode response: %v", err)
+			}
+
+			tt.checkBody(t, body)
+		})
+	}
+}
+
+// TestServer_DBHealthHandler_Disconnected tests /_/health/{dbname} when db is down
+func TestServer_DBHealthHandler_Disconnected(t *testing.T) {
+	cfg := createTestConfig()
+
+	srv, err := New(cfg, true)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	// Close the database to simulate disconnection
+	driver, err := srv.dbManager.Get("test")
+	if err != nil {
+		t.Fatalf("failed to get database: %v", err)
+	}
+	driver.Close()
+
+	req := httptest.NewRequest("GET", "/_/health/test", nil)
+	w := httptest.NewRecorder()
+
+	srv.dbHealthHandler(w, req)
+
+	// Should still return 200 - clients parse status field
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+
+	var body map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if body["status"] != "disconnected" {
+		t.Errorf("expected status='disconnected', got %v", body["status"])
+	}
+}
+
 // TestServer_Integration_WithCache tests cache hit/miss behavior and headers
 func TestServer_Integration_WithCache(t *testing.T) {
 	readOnly := false
@@ -913,6 +1028,144 @@ func TestServer_Integration_CacheMetrics(t *testing.T) {
 	}
 	if cacheMetrics["total_misses"].(float64) < 1 {
 		t.Errorf("expected at least 1 miss, got %v", cacheMetrics["total_misses"])
+	}
+}
+
+// TestServer_CacheClearHandler tests /_/cache/clear endpoint
+func TestServer_CacheClearHandler(t *testing.T) {
+	readOnly := false
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Host:              "127.0.0.1",
+			Port:              8080,
+			DefaultTimeoutSec: 30,
+			MaxTimeoutSec:     300,
+			Cache: &config.CacheConfig{
+				Enabled:       true,
+				MaxSizeMB:     64,
+				DefaultTTLSec: 300,
+			},
+		},
+		Databases: []config.DatabaseConfig{
+			{
+				Name:     "test",
+				Type:     "sqlite",
+				Path:     ":memory:",
+				ReadOnly: &readOnly,
+			},
+		},
+		Logging: config.LoggingConfig{
+			Level: "error",
+		},
+		Metrics: config.MetricsConfig{
+			Enabled: false,
+		},
+		Queries: []config.QueryConfig{
+			{
+				Name:     "cached_query",
+				Database: "test",
+				Path:     "/api/cached",
+				Method:   "GET",
+				SQL:      "SELECT 1 as num",
+				Cache: &config.QueryCacheConfig{
+					Enabled: true,
+					Key:     "test:static",
+					TTLSec:  60,
+				},
+			},
+		},
+	}
+
+	srv, err := New(cfg, true)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	t.Run("method not allowed", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/_/cache/clear", nil)
+		w := httptest.NewRecorder()
+
+		srv.cacheClearHandler(w, req)
+
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("expected status 405, got %d", w.Code)
+		}
+	})
+
+	t.Run("clear all cache", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/_/cache/clear", nil)
+		w := httptest.NewRecorder()
+
+		srv.cacheClearHandler(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d", w.Code)
+		}
+
+		var result map[string]any
+		if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if result["status"] != "ok" {
+			t.Errorf("expected status='ok', got %v", result["status"])
+		}
+		if result["message"] != "all cache cleared" {
+			t.Errorf("expected message='all cache cleared', got %v", result["message"])
+		}
+	})
+
+	t.Run("clear specific endpoint", func(t *testing.T) {
+		req := httptest.NewRequest("DELETE", "/_/cache/clear?endpoint=/api/cached", nil)
+		w := httptest.NewRecorder()
+
+		srv.cacheClearHandler(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d", w.Code)
+		}
+
+		var result map[string]any
+		if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if result["status"] != "ok" {
+			t.Errorf("expected status='ok', got %v", result["status"])
+		}
+		if result["endpoint"] != "/api/cached" {
+			t.Errorf("expected endpoint='/api/cached', got %v", result["endpoint"])
+		}
+	})
+}
+
+// TestServer_CacheClearHandler_NoCacheConfigured tests cache clear when cache disabled
+func TestServer_CacheClearHandler_NoCacheConfigured(t *testing.T) {
+	cfg := createTestConfig() // No cache configured
+
+	srv, err := New(cfg, true)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	req := httptest.NewRequest("POST", "/_/cache/clear", nil)
+	w := httptest.NewRecorder()
+
+	srv.cacheClearHandler(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected status 404 when cache not enabled, got %d", w.Code)
+	}
+
+	var result map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if result["error"] == nil {
+		t.Error("expected error field when cache not enabled")
 	}
 }
 
