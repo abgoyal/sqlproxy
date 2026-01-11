@@ -104,6 +104,9 @@ type QueryConfig struct {
 	Isolation        string `yaml:"isolation"`         // Override isolation level for this query
 	LockTimeoutMs    *int   `yaml:"lock_timeout_ms"`   // Override lock timeout for this query
 	DeadlockPriority string `yaml:"deadlock_priority"` // Override deadlock priority for this query
+
+	// Response transformation
+	JSONColumns []string `yaml:"json_columns"` // Column names containing JSON to parse (e.g., ["data", "metadata"])
 }
 
 // QueryCacheConfig is per-query cache configuration
@@ -184,6 +187,40 @@ var ValidDatabaseTypes = map[string]bool{
 	"sqlserver": true,
 	"sqlite":    true,
 	// Future: "mysql", "postgres"
+}
+
+// Valid parameter types
+var ValidParameterTypes = map[string]bool{
+	// Scalar types
+	"string":   true,
+	"int":      true,
+	"integer":  true,
+	"float":    true,
+	"double":   true,
+	"bool":     true,
+	"boolean":  true,
+	"datetime": true,
+	"date":     true,
+	// JSON type - accepts any JSON value (object, array, primitive), serializes to string
+	"json": true,
+	// Array types - accept JSON arrays, serialize to JSON array string for use with json_each/OPENJSON
+	"int[]":    true,
+	"string[]": true,
+	"float[]":  true,
+	"bool[]":   true,
+}
+
+// IsArrayType returns true if the type is an array type
+func IsArrayType(typeName string) bool {
+	return len(typeName) > 2 && typeName[len(typeName)-2:] == "[]"
+}
+
+// ArrayBaseType returns the base type of an array type (e.g., "int[]" -> "int")
+func ArrayBaseType(typeName string) string {
+	if IsArrayType(typeName) {
+		return typeName[:len(typeName)-2]
+	}
+	return typeName
 }
 
 // DefaultSessionConfig returns implicit defaults based on readonly flag

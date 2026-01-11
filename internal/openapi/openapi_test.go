@@ -357,6 +357,7 @@ func TestParamTypeToSchema(t *testing.T) {
 		{"string", "", "string", "", nil},
 		{"string", "default_value", "string", "", "default_value"},
 		{"unknown", "", "string", "", nil}, // defaults to string
+		{"json", "", "string", "", nil},    // json type maps to string
 	}
 
 	for _, tt := range tests {
@@ -530,6 +531,90 @@ func TestSpec_QueryDescription(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected description to contain timeout, got %s", desc)
+	}
+}
+
+// TestParamTypeToSchema_ArrayTypes tests array type schema generation
+func TestParamTypeToSchema_ArrayTypes(t *testing.T) {
+	tests := []struct {
+		typeName     string
+		wantItemType string
+		wantDesc     string
+	}{
+		{"int[]", "integer", "Array of integers"},
+		{"string[]", "string", "Array of strings"},
+		{"float[]", "number", "Array of numbers"},
+		{"bool[]", "boolean", "Array of booleans"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.typeName, func(t *testing.T) {
+			schema := paramTypeToSchema(tt.typeName, "")
+
+			// Should be array type
+			if schema["type"] != "array" {
+				t.Errorf("expected type array, got %v", schema["type"])
+			}
+
+			// Check items has correct type
+			items, ok := schema["items"].(map[string]any)
+			if !ok {
+				t.Fatal("expected items to be map")
+			}
+			if items["type"] != tt.wantItemType {
+				t.Errorf("expected item type %s, got %v", tt.wantItemType, items["type"])
+			}
+
+			// Check description mentions array type
+			desc, ok := schema["description"].(string)
+			if !ok {
+				t.Fatal("expected description string")
+			}
+			if desc == "" {
+				t.Error("expected non-empty description")
+			}
+			// Should mention json_each or OPENJSON for SQL usage
+			found := false
+			if len(desc) > 10 {
+				for i := 0; i <= len(desc)-10; i++ {
+					if desc[i:i+9] == "json_each" || desc[i:i+8] == "OPENJSON" {
+						found = true
+						break
+					}
+				}
+			}
+			if !found {
+				t.Errorf("expected description to mention json_each or OPENJSON, got %s", desc)
+			}
+		})
+	}
+}
+
+// TestParamTypeToSchema_JSONType tests json type schema generation
+func TestParamTypeToSchema_JSONType(t *testing.T) {
+	schema := paramTypeToSchema("json", "")
+
+	if schema["type"] != "string" {
+		t.Errorf("expected type string, got %v", schema["type"])
+	}
+
+	desc, ok := schema["description"].(string)
+	if !ok || desc == "" {
+		t.Error("expected non-empty description for json type")
+	}
+
+	// Should mention JSON functions
+	found := false
+	if len(desc) > 4 {
+		for i := 0; i <= len(desc)-4; i++ {
+			if desc[i:i+4] == "JSON" {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected description to mention JSON, got %s", desc)
 	}
 }
 

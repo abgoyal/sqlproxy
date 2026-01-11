@@ -593,9 +593,52 @@ func TestValidateParams(t *testing.T) {
 			wantWarning: true,
 		},
 		{
-			name:    "reserved param name",
+			name:    "reserved param name _timeout",
 			sql:     "SELECT * FROM users",
 			params:  []config.ParamConfig{{Name: "_timeout", Type: "int"}},
+			wantErr: true,
+		},
+		{
+			name:    "reserved param name _nocache",
+			sql:     "SELECT * FROM users",
+			params:  []config.ParamConfig{{Name: "_nocache", Type: "int"}},
+			wantErr: true,
+		},
+		{
+			name:    "invalid parameter type",
+			sql:     "SELECT * FROM users WHERE id = @id",
+			params:  []config.ParamConfig{{Name: "id", Type: "invalid_type"}},
+			wantErr: true,
+		},
+		{
+			name:   "valid json parameter type",
+			sql:    "SELECT * FROM users WHERE data = @data",
+			params: []config.ParamConfig{{Name: "data", Type: "json"}},
+		},
+		{
+			name:   "valid int array parameter type",
+			sql:    "SELECT * FROM users WHERE id IN (SELECT value FROM json_each(@ids))",
+			params: []config.ParamConfig{{Name: "ids", Type: "int[]"}},
+		},
+		{
+			name:   "valid string array parameter type",
+			sql:    "SELECT * FROM users WHERE status IN (SELECT value FROM json_each(@statuses))",
+			params: []config.ParamConfig{{Name: "statuses", Type: "string[]"}},
+		},
+		{
+			name:   "valid float array parameter type",
+			sql:    "SELECT * FROM data WHERE value IN (SELECT value FROM json_each(@values))",
+			params: []config.ParamConfig{{Name: "values", Type: "float[]"}},
+		},
+		{
+			name:   "valid bool array parameter type",
+			sql:    "SELECT * FROM data WHERE flag IN (SELECT value FROM json_each(@flags))",
+			params: []config.ParamConfig{{Name: "flags", Type: "bool[]"}},
+		},
+		{
+			name:    "invalid array type",
+			sql:     "SELECT * FROM users",
+			params:  []config.ParamConfig{{Name: "data", Type: "object[]"}},
 			wantErr: true,
 		},
 	}
@@ -1398,5 +1441,130 @@ func TestValidateTemplate(t *testing.T) {
 				t.Errorf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+// TestValidateJSONColumns tests json_columns validation
+func TestValidateJSONColumns(t *testing.T) {
+	tests := []struct {
+		name        string
+		columns     []string
+		wantErr     bool
+		wantWarning bool
+	}{
+		{
+			name:        "valid single column",
+			columns:     []string{"data"},
+			wantErr:     false,
+			wantWarning: false,
+		},
+		{
+			name:        "valid multiple columns",
+			columns:     []string{"data", "metadata", "config"},
+			wantErr:     false,
+			wantWarning: false,
+		},
+		{
+			name:        "empty column name is error",
+			columns:     []string{"data", ""},
+			wantErr:     true,
+			wantWarning: false,
+		},
+		{
+			name:        "duplicate column is warning",
+			columns:     []string{"data", "data"},
+			wantErr:     false,
+			wantWarning: true,
+		},
+		{
+			name:        "duplicate with different columns",
+			columns:     []string{"data", "meta", "data"},
+			wantErr:     false,
+			wantWarning: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &Result{Valid: true}
+			validateJSONColumns(tc.columns, "test", r)
+
+			if tc.wantErr && r.Valid {
+				t.Error("expected error but result is valid")
+			}
+			if !tc.wantErr && !r.Valid {
+				t.Errorf("unexpected errors: %v", r.Errors)
+			}
+			if tc.wantWarning && len(r.Warnings) == 0 {
+				t.Error("expected warning but got none")
+			}
+			if !tc.wantWarning && len(r.Warnings) > 0 {
+				t.Errorf("unexpected warnings: %v", r.Warnings)
+			}
+		})
+	}
+}
+
+// TestValidateQueries_JSONColumns tests json_columns in full query validation
+func TestValidateQueries_JSONColumns(t *testing.T) {
+	cfg := &config.Config{
+		Databases: []config.DatabaseConfig{
+			{Name: "test", Type: "sqlite", Path: ":memory:"},
+		},
+		Queries: []config.QueryConfig{
+			{
+				Name:        "test_query",
+				Database:    "test",
+				Path:        "/api/test",
+				Method:      "GET",
+				SQL:         "SELECT id, data FROM configs",
+				JSONColumns: []string{"data", "metadata"},
+			},
+		},
+	}
+
+	r := &Result{Valid: true}
+	validateQueries(cfg, r)
+
+	if !r.Valid {
+		t.Errorf("expected valid config, got errors: %v", r.Errors)
+	}
+}
+
+// TestValidateQueries_JSONColumns_EmptyColumn tests validation catches empty column name
+func TestValidateQueries_JSONColumns_EmptyColumn(t *testing.T) {
+	cfg := &config.Config{
+		Databases: []config.DatabaseConfig{
+			{Name: "test", Type: "sqlite", Path: ":memory:"},
+		},
+		Queries: []config.QueryConfig{
+			{
+				Name:        "test_query",
+				Database:    "test",
+				Path:        "/api/test",
+				Method:      "GET",
+				SQL:         "SELECT id, data FROM configs",
+				JSONColumns: []string{"data", ""},
+			},
+		},
+	}
+
+	r := &Result{Valid: true}
+	validateQueries(cfg, r)
+
+	if r.Valid {
+		t.Error("expected invalid config due to empty column name")
+	}
+
+	// Check error message mentions json_columns
+	found := false
+	for _, err := range r.Errors {
+		if strings.Contains(err, "json_columns") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected error about json_columns, got: %v", r.Errors)
 	}
 }

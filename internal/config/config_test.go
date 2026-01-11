@@ -927,3 +927,78 @@ func itoa(i int) string {
 	}
 	return itoa(i/10) + string(rune('0'+i%10))
 }
+
+// TestIsArrayType verifies IsArrayType correctly identifies array types
+func TestIsArrayType(t *testing.T) {
+	tests := []struct {
+		typeName string
+		expected bool
+	}{
+		{"int[]", true},
+		{"string[]", true},
+		{"float[]", true},
+		{"bool[]", true},
+		{"int", false},
+		{"string", false},
+		{"json", false},
+		{"[]", false}, // Too short to be a valid array type
+		{"a[]", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.typeName, func(t *testing.T) {
+			result := IsArrayType(tt.typeName)
+			if result != tt.expected {
+				t.Errorf("IsArrayType(%q) = %v, want %v", tt.typeName, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestArrayBaseType verifies ArrayBaseType extracts the base type from array types
+func TestArrayBaseType(t *testing.T) {
+	tests := []struct {
+		typeName string
+		expected string
+	}{
+		{"int[]", "int"},
+		{"string[]", "string"},
+		{"float[]", "float"},
+		{"bool[]", "bool"},
+		{"int", "int"},       // Non-array returns as-is
+		{"string", "string"}, // Non-array returns as-is
+		{"json", "json"},     // Non-array returns as-is
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.typeName, func(t *testing.T) {
+			result := ArrayBaseType(tt.typeName)
+			if result != tt.expected {
+				t.Errorf("ArrayBaseType(%q) = %q, want %q", tt.typeName, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestValidParameterTypes verifies all expected parameter types are in ValidParameterTypes
+func TestValidParameterTypes(t *testing.T) {
+	expectedTypes := []string{
+		"string", "int", "integer", "float", "double",
+		"bool", "boolean", "datetime", "date",
+		"json", "int[]", "string[]", "float[]", "bool[]",
+	}
+
+	for _, typ := range expectedTypes {
+		if !ValidParameterTypes[typ] {
+			t.Errorf("ValidParameterTypes missing expected type: %s", typ)
+		}
+	}
+
+	// Verify invalid types are not in the map
+	invalidTypes := []string{"object", "array", "map", "list", "unknown"}
+	for _, typ := range invalidTypes {
+		if ValidParameterTypes[typ] {
+			t.Errorf("ValidParameterTypes should not contain: %s", typ)
+		}
+	}
+}

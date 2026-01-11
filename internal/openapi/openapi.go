@@ -309,6 +309,31 @@ func paramTypeToSchema(typeName string, defaultVal string) map[string]any {
 		if defaultVal != "" {
 			schema["default"] = defaultVal
 		}
+	case "json":
+		// JSON type accepts any JSON value (object, array, primitive)
+		// Passed to SQL as a JSON string for use with JSON_VALUE/json_extract
+		schema["type"] = "string"
+		schema["description"] = "JSON value (object, array, or primitive). Use JSON functions in SQL to extract fields."
+		if defaultVal != "" {
+			schema["default"] = defaultVal
+		}
+	case "int[]":
+		// Array of integers, passed as JSON array string
+		schema["type"] = "array"
+		schema["items"] = map[string]any{"type": "integer"}
+		schema["description"] = "Array of integers. Passed as JSON array for use with json_each (SQLite) or OPENJSON (SQL Server)."
+	case "string[]":
+		schema["type"] = "array"
+		schema["items"] = map[string]any{"type": "string"}
+		schema["description"] = "Array of strings. Passed as JSON array for use with json_each (SQLite) or OPENJSON (SQL Server)."
+	case "float[]":
+		schema["type"] = "array"
+		schema["items"] = map[string]any{"type": "number"}
+		schema["description"] = "Array of numbers. Passed as JSON array for use with json_each (SQLite) or OPENJSON (SQL Server)."
+	case "bool[]":
+		schema["type"] = "array"
+		schema["items"] = map[string]any{"type": "boolean"}
+		schema["description"] = "Array of booleans. Passed as JSON array for use with json_each (SQLite) or OPENJSON (SQL Server)."
 	default: // string
 		schema["type"] = "string"
 		if defaultVal != "" {

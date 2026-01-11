@@ -282,6 +282,11 @@ func validateQueries(cfg *config.Config, r *Result) {
 		if q.Cache != nil {
 			validateCache(q.Cache, prefix, r)
 		}
+
+		// Validate json_columns if present
+		if len(q.JSONColumns) > 0 {
+			validateJSONColumns(q.JSONColumns, prefix, r)
+		}
 	}
 
 	// Warn about unused database connections
@@ -307,6 +312,18 @@ func validateParams(q config.QueryConfig, prefix string, r *Result) {
 
 		if p.Name == "_timeout" {
 			r.addError("%s: '_timeout' is a reserved parameter name", prefix)
+		}
+		if p.Name == "_nocache" {
+			r.addError("%s: '_nocache' is a reserved parameter name", prefix)
+		}
+
+		// Validate parameter type
+		paramType := strings.ToLower(p.Type)
+		if paramType == "" {
+			paramType = "string" // Default type
+		}
+		if !config.ValidParameterTypes[paramType] {
+			r.addError("%s: parameter '%s' has invalid type '%s'", prefix, p.Name, p.Type)
 		}
 	}
 
@@ -428,6 +445,20 @@ func validateWebhookBody(b *config.WebhookBodyConfig, prefix string, r *Result) 
 func validateTemplate(tmpl string) error {
 	_, err := template.New("").Funcs(webhook.TemplateFuncMap).Parse(tmpl)
 	return err
+}
+
+func validateJSONColumns(columns []string, prefix string, r *Result) {
+	seen := make(map[string]bool)
+	for _, col := range columns {
+		if col == "" {
+			r.addError("%s: json_columns contains empty column name", prefix)
+			continue
+		}
+		if seen[col] {
+			r.addWarning("%s: json_columns contains duplicate column '%s'", prefix, col)
+		}
+		seen[col] = true
+	}
 }
 
 func validateCache(c *config.QueryCacheConfig, prefix string, r *Result) {

@@ -978,18 +978,154 @@ curl -X POST http://localhost:8081/api/reports \
 ```
 
 **Important notes:**
-- JSON body must be flat (no nested objects or arrays)
+- JSON body must be flat unless parameter type is `json` or an array type
 - Query parameters override JSON body values
 - Maximum request body size: 1MB
-- Nested objects/arrays are rejected with 400 error
+- Nested objects/arrays are rejected for scalar types (string, int, etc.)
+
+### Parameter Types
+
+The following parameter types are supported:
+
+| Type | Description | Example Value |
+|------|-------------|---------------|
+| `string` | Text value (default) | `"hello"` |
+| `int`, `integer` | Integer number | `42` |
+| `float`, `double` | Floating point number | `3.14` |
+| `bool`, `boolean` | Boolean value | `true`, `false`, `1`, `0` |
+| `datetime`, `date` | Date/time value | `"2024-01-15"`, `"2024-01-15T10:30:00Z"` |
+| `json` | Any JSON value (serialized to string) | `{"key": "value"}` |
+| `int[]` | Array of integers | `[1, 2, 3]` |
+| `string[]` | Array of strings | `["a", "b", "c"]` |
+| `float[]` | Array of numbers | `[1.5, 2.5]` |
+| `bool[]` | Array of booleans | `[true, false]` |
+
+### JSON Type Parameter
+
+Use `json` type when you need to accept nested objects or arbitrary JSON. The value is serialized to a JSON string for use with SQL JSON functions:
+
+```yaml
+queries:
+  - name: "save_config"
+    path: "/api/config"
+    method: "POST"
+    sql: |
+      INSERT INTO configs (name, data) VALUES (@name, @data)
+    parameters:
+      - name: "name"
+        type: "string"
+        required: true
+      - name: "data"
+        type: "json"
+        required: true
+```
 
 ```bash
-# This will fail (nested object)
-curl -X POST http://localhost:8081/api/reports \
+# Send nested JSON object
+curl -X POST http://localhost:8081/api/config \
   -H "Content-Type: application/json" \
-  -d '{"filter": {"status": "active"}}'
-# Error: "nested objects not supported: parameter 'filter' contains an object"
+  -d '{"name": "settings", "data": {"theme": "dark", "notifications": {"email": true}}}'
 ```
+
+In SQL, use JSON functions to extract values:
+
+```sql
+-- SQL Server: JSON_VALUE
+SELECT name, JSON_VALUE(data, '$.theme') AS theme FROM configs
+
+-- SQLite: json_extract
+SELECT name, json_extract(data, '$.theme') AS theme FROM configs
+```
+
+### Array Type Parameters
+
+Use array types (`int[]`, `string[]`, etc.) for IN clause queries. Arrays are serialized to JSON strings and used with `json_each` (SQLite) or `OPENJSON` (SQL Server):
+
+```yaml
+queries:
+  - name: "get_users_by_ids"
+    path: "/api/users/batch"
+    method: "POST"
+    sql: |
+      SELECT * FROM users
+      WHERE id IN (SELECT value FROM json_each(@ids))
+    parameters:
+      - name: "ids"
+        type: "int[]"
+        required: true
+
+  - name: "filter_by_status"
+    path: "/api/users/filter"
+    method: "POST"
+    sql: |
+      SELECT * FROM users
+      WHERE status IN (SELECT value FROM json_each(@statuses))
+    parameters:
+      - name: "statuses"
+        type: "string[]"
+        required: true
+```
+
+```bash
+# Get users with IDs 1, 2, and 3
+curl -X POST http://localhost:8081/api/users/batch \
+  -H "Content-Type: application/json" \
+  -d '{"ids": [1, 2, 3]}'
+
+# Filter by multiple statuses
+curl -X POST http://localhost:8081/api/users/filter \
+  -H "Content-Type: application/json" \
+  -d '{"statuses": ["active", "pending"]}'
+```
+
+For SQL Server, use `OPENJSON`:
+
+```sql
+SELECT * FROM users
+WHERE id IN (SELECT CAST(value AS INT) FROM OPENJSON(@ids))
+```
+
+**Array type validation:**
+- Array elements must match the declared base type
+- Mixed types are rejected (e.g., `[1, "two"]` for `int[]`)
+
+### JSON Column Output
+
+By default, JSON stored in database columns is returned as escaped strings. Use `json_columns` to parse them as objects in the response:
+
+```yaml
+queries:
+  - name: "get_config"
+    path: "/api/config"
+    method: "GET"
+    database: "primary"
+    sql: "SELECT id, name, data FROM configs WHERE name = @name"
+    json_columns: ["data"]   # Parse 'data' column as JSON
+    parameters:
+      - name: "name"
+        type: "string"
+        required: true
+```
+
+**Without `json_columns`** (default):
+```json
+{
+  "data": [{"id": 1, "name": "settings", "data": "{\"theme\":\"dark\"}"}]
+}
+```
+
+**With `json_columns: ["data"]`**:
+```json
+{
+  "data": [{"id": 1, "name": "settings", "data": {"theme": "dark"}}]
+}
+```
+
+**Notes:**
+- Only string columns are parsed; other types are left unchanged
+- Empty strings are left as empty strings
+- Invalid JSON in a configured column returns a 500 error
+- Non-existent columns are silently ignored
 
 ## Request Tracing
 

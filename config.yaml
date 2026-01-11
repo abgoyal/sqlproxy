@@ -402,3 +402,128 @@ queries:
   # Item context: row fields (e.g., .MachineName), plus ._index (0-based) and ._count (total)
   # Functions: add, mod, json, jsonIndent
   # Conditionals: {{if eq ._index 0}}first{{end}}, {{if .Success}}ok{{else}}fail{{end}}
+
+  # ============================================================================
+  # PARAMETER TYPE EXAMPLES
+  # ============================================================================
+  # Supported types: string, int, integer, float, double, bool, boolean,
+  #                  datetime, date, json, int[], string[], float[], bool[]
+
+  # Example: JSON type parameter for storing/querying JSON data
+  # - name: "save_config"
+  #   database: "primary"
+  #   path: "/api/config"
+  #   method: "POST"
+  #   description: "Save configuration with nested JSON data"
+  #   sql: |
+  #     INSERT INTO configs (name, data, updated_at)
+  #     VALUES (@name, @data, GETDATE())
+  #   parameters:
+  #     - name: "name"
+  #       type: "string"
+  #       required: true
+  #     - name: "data"
+  #       type: "json"         # Accepts any JSON: objects, arrays, primitives
+  #       required: true
+  #   # Usage: curl -X POST -H "Content-Type: application/json" \
+  #   #   -d '{"name": "settings", "data": {"theme": "dark", "notifications": {"email": true}}}' \
+  #   #   http://localhost:8081/api/config
+
+  # Example: Query JSON data using SQL Server JSON_VALUE
+  # - name: "get_config_theme"
+  #   database: "primary"
+  #   path: "/api/config/theme"
+  #   method: "GET"
+  #   sql: |
+  #     SELECT name, JSON_VALUE(data, '$.theme') AS theme
+  #     FROM configs
+  #     WHERE name = @name
+
+  # Example: Integer array for IN clause queries (SQL Server)
+  # - name: "get_machines_by_ids"
+  #   database: "primary"
+  #   path: "/api/machines/batch"
+  #   method: "POST"
+  #   description: "Get multiple machines by ID list"
+  #   sql: |
+  #     SELECT MachineId, MachineName, IsOnline
+  #     FROM Machines
+  #     WHERE MachineId IN (SELECT CAST(value AS INT) FROM OPENJSON(@ids))
+  #   parameters:
+  #     - name: "ids"
+  #       type: "int[]"        # Array of integers: [1, 2, 3]
+  #       required: true
+  #   # Usage: curl -X POST -H "Content-Type: application/json" \
+  #   #   -d '{"ids": [1, 2, 3, 5, 8]}' \
+  #   #   http://localhost:8081/api/machines/batch
+
+  # Example: String array for filtering by multiple values (SQL Server)
+  # - name: "filter_by_status"
+  #   database: "primary"
+  #   path: "/api/machines/filter"
+  #   method: "POST"
+  #   description: "Filter machines by multiple status values"
+  #   sql: |
+  #     SELECT MachineId, MachineName, Status
+  #     FROM Machines
+  #     WHERE Status IN (SELECT value FROM OPENJSON(@statuses))
+  #   parameters:
+  #     - name: "statuses"
+  #       type: "string[]"     # Array of strings: ["active", "maintenance"]
+  #       required: true
+  #   # Usage: curl -X POST -H "Content-Type: application/json" \
+  #   #   -d '{"statuses": ["active", "pending", "maintenance"]}' \
+  #   #   http://localhost:8081/api/machines/filter
+
+  # Example: SQLite array query using json_each
+  # - name: "get_users_by_ids"
+  #   database: "test_db"      # SQLite database
+  #   path: "/api/users/batch"
+  #   method: "POST"
+  #   sql: |
+  #     SELECT * FROM users
+  #     WHERE id IN (SELECT value FROM json_each(@ids))
+  #   parameters:
+  #     - name: "ids"
+  #       type: "int[]"
+  #       required: true
+
+  # ============================================================================
+  # JSON COLUMN OUTPUT EXAMPLES
+  # ============================================================================
+  # By default, JSON stored in database columns is returned as escaped strings.
+  # Use json_columns to parse specified columns as JSON objects in the response.
+
+  # Example: Parse JSON column in response
+  # - name: "get_config"
+  #   database: "primary"
+  #   path: "/api/config"
+  #   method: "GET"
+  #   description: "Get configuration with parsed JSON data column"
+  #   sql: |
+  #     SELECT id, name, data FROM configs WHERE name = @name
+  #   json_columns: ["data"]     # Parse 'data' column as JSON object
+  #   parameters:
+  #     - name: "name"
+  #       type: "string"
+  #       required: true
+  #   # Without json_columns: {"data": "{\"theme\":\"dark\"}"}
+  #   # With json_columns:    {"data": {"theme": "dark"}}
+
+  # Example: Parse multiple JSON columns
+  # - name: "get_user_with_settings"
+  #   database: "primary"
+  #   path: "/api/user/full"
+  #   method: "GET"
+  #   sql: |
+  #     SELECT id, name, settings, preferences FROM users WHERE id = @id
+  #   json_columns: ["settings", "preferences"]   # Parse both columns
+  #   parameters:
+  #     - name: "id"
+  #       type: "int"
+  #       required: true
+
+  # Note: json_columns only affects columns that contain valid JSON strings.
+  # - Non-string values are left unchanged
+  # - Empty strings are left as empty strings
+  # - Invalid JSON in a configured column returns a 500 error

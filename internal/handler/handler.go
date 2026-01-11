@@ -242,6 +242,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Parse JSON columns if configured
+	if len(h.queryConfig.JSONColumns) > 0 {
+		if err := parseJSONColumns(results, h.queryConfig.JSONColumns); err != nil {
+			m.TotalDuration = time.Since(startTime)
+			m.StatusCode = http.StatusInternalServerError
+			m.Error = "failed to parse JSON columns"
+			logFields["error"] = err.Error()
+			logging.Error("json_column_parse_failed", logFields)
+			h.finishRequest(w, m, logFields, http.StatusInternalServerError, "failed to parse JSON columns", requestID, timeoutSec)
+			return
+		}
+	}
+
 	// Store in cache if enabled
 	if cacheEnabled && !noCache && cacheKey != "" {
 		ttl := time.Duration(h.queryConfig.Cache.TTLSec) * time.Second
@@ -324,6 +337,12 @@ func (h *Handler) resolveTimeout(r *http.Request) int {
 func (h *Handler) parseParameters(r *http.Request) (map[string]any, error) {
 	params := make(map[string]any)
 
+	// Build a map of parameter names to their types for validation
+	paramTypes := make(map[string]string)
+	for _, p := range h.queryConfig.Parameters {
+		paramTypes[p.Name] = strings.ToLower(p.Type)
+	}
+
 	// Parse JSON body if Content-Type is application/json
 	var jsonParams map[string]any
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") && r.Body != nil {
@@ -332,17 +351,23 @@ func (h *Handler) parseParameters(r *http.Request) (map[string]any, error) {
 			return nil, fmt.Errorf("failed to parse JSON body: %w", err)
 		}
 
-		// Validate flat structure (reject nested objects/arrays)
+		// Validate structure based on parameter types
 		jsonParams = make(map[string]any)
 		for k, v := range rawJSON {
+			paramType := paramTypes[k]
+
+			// Allow nested objects/arrays only for json and array types
 			switch v.(type) {
 			case map[string]any:
-				return nil, fmt.Errorf("nested objects not supported: parameter '%s' contains an object", k)
+				if paramType != "json" {
+					return nil, fmt.Errorf("nested objects not supported: parameter '%s' requires type 'json' for object values", k)
+				}
 			case []any:
-				return nil, fmt.Errorf("nested arrays not supported: parameter '%s' contains an array", k)
-			default:
-				jsonParams[k] = v
+				if paramType != "json" && !config.IsArrayType(paramType) {
+					return nil, fmt.Errorf("arrays not supported: parameter '%s' requires type 'json' or array type (e.g., 'int[]') for array values", k)
+				}
 			}
+			jsonParams[k] = v
 		}
 	}
 
@@ -391,8 +416,38 @@ func (h *Handler) parseParameters(r *http.Request) (map[string]any, error) {
 
 // convertJSONValue converts a JSON-decoded value to the appropriate type.
 // JSON numbers are float64, strings are strings, bools are bools.
+// For json and array types, values are serialized to JSON strings.
 func convertJSONValue(v any, typeName string) (any, error) {
-	switch strings.ToLower(typeName) {
+	lowerType := strings.ToLower(typeName)
+
+	// Handle json type - serialize any value to JSON string
+	if lowerType == "json" {
+		jsonBytes, err := json.Marshal(v)
+		if err != nil {
+			return nil, fmt.Errorf("failed to serialize JSON: %w", err)
+		}
+		return string(jsonBytes), nil
+	}
+
+	// Handle array types - validate elements and serialize to JSON array string
+	if config.IsArrayType(lowerType) {
+		arr, ok := v.([]any)
+		if !ok {
+			return nil, fmt.Errorf("expected array, got %T", v)
+		}
+		baseType := config.ArrayBaseType(lowerType)
+		validated, err := validateArrayElements(arr, baseType)
+		if err != nil {
+			return nil, err
+		}
+		jsonBytes, err := json.Marshal(validated)
+		if err != nil {
+			return nil, fmt.Errorf("failed to serialize array: %w", err)
+		}
+		return string(jsonBytes), nil
+	}
+
+	switch lowerType {
 	case "int", "integer":
 		switch val := v.(type) {
 		case float64:
@@ -454,8 +509,84 @@ func convertJSONValue(v any, typeName string) (any, error) {
 	}
 }
 
+// validateArrayElements validates each element in an array matches the expected base type
+func validateArrayElements(arr []any, baseType string) ([]any, error) {
+	result := make([]any, len(arr))
+	for i, elem := range arr {
+		switch baseType {
+		case "int", "integer":
+			switch val := elem.(type) {
+			case float64:
+				result[i] = int(val)
+			default:
+				return nil, fmt.Errorf("array element %d: expected integer, got %T", i, elem)
+			}
+		case "float", "double":
+			switch val := elem.(type) {
+			case float64:
+				result[i] = val
+			default:
+				return nil, fmt.Errorf("array element %d: expected number, got %T", i, elem)
+			}
+		case "bool", "boolean":
+			switch val := elem.(type) {
+			case bool:
+				result[i] = val
+			default:
+				return nil, fmt.Errorf("array element %d: expected boolean, got %T", i, elem)
+			}
+		case "string":
+			switch val := elem.(type) {
+			case string:
+				result[i] = val
+			default:
+				return nil, fmt.Errorf("array element %d: expected string, got %T", i, elem)
+			}
+		default:
+			result[i] = elem
+		}
+	}
+	return result, nil
+}
+
 func convertValue(value, typeName string) (any, error) {
-	switch strings.ToLower(typeName) {
+	lowerType := strings.ToLower(typeName)
+
+	// Handle json type - validate it's valid JSON and pass through as string
+	if lowerType == "json" {
+		// Validate it's valid JSON by parsing it
+		var parsed any
+		if err := json.Unmarshal([]byte(value), &parsed); err != nil {
+			return nil, fmt.Errorf("invalid JSON: %w", err)
+		}
+		// Re-serialize for consistent formatting
+		jsonBytes, err := json.Marshal(parsed)
+		if err != nil {
+			return nil, fmt.Errorf("failed to serialize JSON: %w", err)
+		}
+		return string(jsonBytes), nil
+	}
+
+	// Handle array types - parse JSON array string, validate elements
+	if config.IsArrayType(lowerType) {
+		var arr []any
+		if err := json.Unmarshal([]byte(value), &arr); err != nil {
+			return nil, fmt.Errorf("expected JSON array: %w", err)
+		}
+		baseType := config.ArrayBaseType(lowerType)
+		validated, err := validateArrayElements(arr, baseType)
+		if err != nil {
+			return nil, err
+		}
+		// Re-serialize for consistent formatting
+		jsonBytes, err := json.Marshal(validated)
+		if err != nil {
+			return nil, fmt.Errorf("failed to serialize array: %w", err)
+		}
+		return string(jsonBytes), nil
+	}
+
+	switch lowerType {
 	case "int", "integer":
 		return strconv.Atoi(value)
 	case "bool", "boolean":
@@ -519,4 +650,44 @@ func (h *Handler) writeError(w http.ResponseWriter, status int, message string, 
 			"error":      err.Error(),
 		})
 	}
+}
+
+// parseJSONColumns parses specified columns from strings to JSON objects in-place.
+// If a column value is a string containing valid JSON, it's replaced with the parsed value.
+// If the column doesn't exist or isn't a string, it's silently skipped.
+// Returns an error only if JSON parsing fails for a string value.
+func parseJSONColumns(results []map[string]any, columns []string) error {
+	// Build a set for O(1) lookup
+	colSet := make(map[string]struct{}, len(columns))
+	for _, col := range columns {
+		colSet[col] = struct{}{}
+	}
+
+	for _, row := range results {
+		for col := range colSet {
+			val, exists := row[col]
+			if !exists {
+				continue
+			}
+
+			// Only parse string values
+			strVal, ok := val.(string)
+			if !ok {
+				continue
+			}
+
+			// Skip empty strings
+			if strVal == "" {
+				continue
+			}
+
+			// Try to parse as JSON
+			var parsed any
+			if err := json.Unmarshal([]byte(strVal), &parsed); err != nil {
+				return fmt.Errorf("column '%s': invalid JSON: %w", col, err)
+			}
+			row[col] = parsed
+		}
+	}
+	return nil
 }

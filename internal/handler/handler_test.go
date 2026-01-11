@@ -978,8 +978,8 @@ func TestHandler_ServeHTTP_JSONBody(t *testing.T) {
 	}
 }
 
-// TestHandler_ServeHTTP_JSONBody_RejectsNested tests that nested JSON objects are rejected
-func TestHandler_ServeHTTP_JSONBody_RejectsNested(t *testing.T) {
+// TestHandler_ServeHTTP_JSONBody_RejectsNestedForNonJSONType tests that nested JSON is rejected for non-json types
+func TestHandler_ServeHTTP_JSONBody_RejectsNestedForNonJSONType(t *testing.T) {
 	manager := createTestManager(t)
 	defer manager.Close()
 
@@ -1007,14 +1007,14 @@ func TestHandler_ServeHTTP_JSONBody_RejectsNested(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "nested object",
+			name:    "nested object for string type",
 			body:    `{"data": {"nested": "value"}}`,
 			wantErr: "nested objects not supported",
 		},
 		{
-			name:    "nested array",
+			name:    "array for string type",
 			body:    `{"data": [1, 2, 3]}`,
-			wantErr: "nested arrays not supported",
+			wantErr: "arrays not supported",
 		},
 	}
 
@@ -1037,6 +1037,209 @@ func TestHandler_ServeHTTP_JSONBody_RejectsNested(t *testing.T) {
 				t.Errorf("expected error containing %q, got %q", tt.wantErr, resp.Error)
 			}
 		})
+	}
+}
+
+// TestHandler_ServeHTTP_JSONTypeParam tests json type parameter accepts nested objects
+func TestHandler_ServeHTTP_JSONTypeParam(t *testing.T) {
+	manager := createTestManager(t)
+	defer manager.Close()
+
+	// Create a table with JSON column
+	driver, _ := manager.Get("test")
+	ctx := context.Background()
+	sessCfg := config.SessionConfig{}
+
+	_, err := driver.Query(ctx, sessCfg, `
+		CREATE TABLE configs (
+			id INTEGER PRIMARY KEY,
+			name TEXT,
+			data TEXT
+		)
+	`, nil)
+	if err != nil {
+		t.Fatalf("failed to create configs table: %v", err)
+	}
+
+	queryCfg := config.QueryConfig{
+		Name:     "save_config",
+		Database: "test",
+		Path:     "/api/config",
+		Method:   "POST",
+		SQL:      "INSERT INTO configs (name, data) VALUES (@name, @data)",
+		Parameters: []config.ParamConfig{
+			{Name: "name", Type: "string", Required: true},
+			{Name: "data", Type: "json", Required: true},
+		},
+	}
+
+	serverCfg := config.ServerConfig{
+		DefaultTimeoutSec: 30,
+		MaxTimeoutSec:     300,
+	}
+
+	handler := New(manager, nil, queryCfg, serverCfg)
+
+	// Test with nested JSON object
+	jsonBody := `{"name": "test_config", "data": {"key": "value", "nested": {"a": 1}}}`
+	req := httptest.NewRequest("POST", "/api/config", strings.NewReader(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp Response
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	if !resp.Success {
+		t.Errorf("expected success, got error: %s", resp.Error)
+	}
+}
+
+// TestHandler_ServeHTTP_ArrayTypeParam tests array type parameters (int[], string[], etc.)
+func TestHandler_ServeHTTP_ArrayTypeParam(t *testing.T) {
+	manager := createTestManager(t)
+	defer manager.Close()
+
+	// SQLite with json_each for array parameter
+	queryCfg := config.QueryConfig{
+		Name:     "get_users_by_ids",
+		Database: "test",
+		Path:     "/api/users/batch",
+		Method:   "POST",
+		SQL:      "SELECT * FROM users WHERE id IN (SELECT value FROM json_each(@ids))",
+		Parameters: []config.ParamConfig{
+			{Name: "ids", Type: "int[]", Required: true},
+		},
+	}
+
+	serverCfg := config.ServerConfig{
+		DefaultTimeoutSec: 30,
+		MaxTimeoutSec:     300,
+	}
+
+	handler := New(manager, nil, queryCfg, serverCfg)
+
+	// Test with JSON body containing int array
+	jsonBody := `{"ids": [1, 2]}`
+	req := httptest.NewRequest("POST", "/api/users/batch", strings.NewReader(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp Response
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	if !resp.Success {
+		t.Errorf("expected success, got error: %s", resp.Error)
+	}
+
+	// Should return users with id 1 and 2 (Alice and Bob)
+	if resp.Count != 2 {
+		t.Errorf("expected 2 users, got %d", resp.Count)
+	}
+}
+
+// TestHandler_ServeHTTP_ArrayTypeParam_InvalidElement tests array type rejects wrong element types
+func TestHandler_ServeHTTP_ArrayTypeParam_InvalidElement(t *testing.T) {
+	manager := createTestManager(t)
+	defer manager.Close()
+
+	queryCfg := config.QueryConfig{
+		Name:     "get_users_by_ids",
+		Database: "test",
+		Path:     "/api/users/batch",
+		Method:   "POST",
+		SQL:      "SELECT * FROM users WHERE id IN (SELECT value FROM json_each(@ids))",
+		Parameters: []config.ParamConfig{
+			{Name: "ids", Type: "int[]", Required: true},
+		},
+	}
+
+	serverCfg := config.ServerConfig{
+		DefaultTimeoutSec: 30,
+		MaxTimeoutSec:     300,
+	}
+
+	handler := New(manager, nil, queryCfg, serverCfg)
+
+	// Test with wrong element type (strings instead of ints)
+	jsonBody := `{"ids": ["not", "integers"]}`
+	req := httptest.NewRequest("POST", "/api/users/batch", strings.NewReader(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", w.Code)
+	}
+
+	var resp Response
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	if resp.Success {
+		t.Error("expected error for wrong element type")
+	}
+
+	if !strings.Contains(resp.Error, "expected integer") {
+		t.Errorf("expected error about integer type, got: %s", resp.Error)
+	}
+}
+
+// TestHandler_ServeHTTP_StringArrayParam tests string[] type parameter
+func TestHandler_ServeHTTP_StringArrayParam(t *testing.T) {
+	manager := createTestManager(t)
+	defer manager.Close()
+
+	queryCfg := config.QueryConfig{
+		Name:     "get_users_by_status",
+		Database: "test",
+		Path:     "/api/users/filter",
+		Method:   "POST",
+		SQL:      "SELECT * FROM users WHERE status IN (SELECT value FROM json_each(@statuses))",
+		Parameters: []config.ParamConfig{
+			{Name: "statuses", Type: "string[]", Required: true},
+		},
+	}
+
+	serverCfg := config.ServerConfig{
+		DefaultTimeoutSec: 30,
+		MaxTimeoutSec:     300,
+	}
+
+	handler := New(manager, nil, queryCfg, serverCfg)
+
+	jsonBody := `{"statuses": ["active", "inactive"]}`
+	req := httptest.NewRequest("POST", "/api/users/filter", strings.NewReader(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp Response
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	if !resp.Success {
+		t.Errorf("expected success, got error: %s", resp.Error)
+	}
+
+	// Should return all 3 users (2 active + 1 inactive)
+	if resp.Count != 3 {
+		t.Errorf("expected 3 users, got %d", resp.Count)
 	}
 }
 
@@ -1081,5 +1284,564 @@ func TestConvertJSONValue(t *testing.T) {
 				t.Errorf("expected %v (%T), got %v (%T)", tt.wantValue, tt.wantValue, result, result)
 			}
 		})
+	}
+}
+
+// TestConvertJSONValue_JSONType tests json type serializes to JSON string
+func TestConvertJSONValue_JSONType(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     any
+		wantJSON  string
+	}{
+		{"object", map[string]any{"key": "value"}, `{"key":"value"}`},
+		{"array", []any{1.0, 2.0, 3.0}, `[1,2,3]`},
+		{"nested", map[string]any{"a": map[string]any{"b": 1.0}}, `{"a":{"b":1}}`},
+		{"string", "hello", `"hello"`},
+		{"number", float64(42), `42`},
+		{"bool", true, `true`},
+		{"null", nil, `null`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := convertJSONValue(tt.value, "json")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			strResult, ok := result.(string)
+			if !ok {
+				t.Fatalf("expected string result, got %T", result)
+			}
+
+			if strResult != tt.wantJSON {
+				t.Errorf("expected %s, got %s", tt.wantJSON, strResult)
+			}
+		})
+	}
+}
+
+// TestConvertJSONValue_ArrayTypes tests array types serialize to JSON array string
+func TestConvertJSONValue_ArrayTypes(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    any
+		typeName string
+		wantJSON string
+		wantErr  bool
+	}{
+		{"int array", []any{float64(1), float64(2), float64(3)}, "int[]", `[1,2,3]`, false},
+		{"string array", []any{"a", "b", "c"}, "string[]", `["a","b","c"]`, false},
+		{"float array", []any{1.5, 2.5}, "float[]", `[1.5,2.5]`, false},
+		{"bool array", []any{true, false}, "bool[]", `[true,false]`, false},
+		{"not an array", "not array", "int[]", "", true},
+		{"wrong element type", []any{"a", "b"}, "int[]", "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := convertJSONValue(tt.value, tt.typeName)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			strResult, ok := result.(string)
+			if !ok {
+				t.Fatalf("expected string result, got %T", result)
+			}
+
+			if strResult != tt.wantJSON {
+				t.Errorf("expected %s, got %s", tt.wantJSON, strResult)
+			}
+		})
+	}
+}
+
+// TestConvertValue_JSONType tests json type from query string
+func TestConvertValue_JSONType(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    string
+		wantJSON string
+		wantErr  bool
+	}{
+		{"object", `{"key":"value"}`, `{"key":"value"}`, false},
+		{"array", `[1,2,3]`, `[1,2,3]`, false},
+		{"string", `"hello"`, `"hello"`, false},
+		{"number", `42`, `42`, false},
+		{"invalid json", `{not valid`, "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := convertValue(tt.value, "json")
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			strResult, ok := result.(string)
+			if !ok {
+				t.Fatalf("expected string result, got %T", result)
+			}
+
+			if strResult != tt.wantJSON {
+				t.Errorf("expected %s, got %s", tt.wantJSON, strResult)
+			}
+		})
+	}
+}
+
+// TestConvertValue_ArrayTypes tests array types from query string
+func TestConvertValue_ArrayTypes(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    string
+		typeName string
+		wantJSON string
+		wantErr  bool
+	}{
+		{"int array", `[1,2,3]`, "int[]", `[1,2,3]`, false},
+		{"string array", `["a","b","c"]`, "string[]", `["a","b","c"]`, false},
+		{"float array", `[1.5,2.5]`, "float[]", `[1.5,2.5]`, false},
+		{"bool array", `[true,false]`, "bool[]", `[true,false]`, false},
+		{"not json array", `not an array`, "int[]", "", true},
+		{"wrong element type", `["a","b"]`, "int[]", "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := convertValue(tt.value, tt.typeName)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			strResult, ok := result.(string)
+			if !ok {
+				t.Fatalf("expected string result, got %T", result)
+			}
+
+			if strResult != tt.wantJSON {
+				t.Errorf("expected %s, got %s", tt.wantJSON, strResult)
+			}
+		})
+	}
+}
+
+// TestValidateArrayElements tests array element validation
+func TestValidateArrayElements(t *testing.T) {
+	tests := []struct {
+		name     string
+		arr      []any
+		baseType string
+		wantLen  int
+		wantErr  bool
+	}{
+		{"int array", []any{float64(1), float64(2)}, "int", 2, false},
+		{"string array", []any{"a", "b"}, "string", 2, false},
+		{"float array", []any{1.5, 2.5}, "float", 2, false},
+		{"bool array", []any{true, false}, "bool", 2, false},
+		{"mixed int fails", []any{float64(1), "two"}, "int", 0, true},
+		{"mixed string fails", []any{"a", float64(2)}, "string", 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := validateArrayElements(tt.arr, tt.baseType)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if len(result) != tt.wantLen {
+				t.Errorf("expected %d elements, got %d", tt.wantLen, len(result))
+			}
+		})
+	}
+}
+
+// TestParseJSONColumns tests parsing JSON string columns into objects
+func TestParseJSONColumns(t *testing.T) {
+	tests := []struct {
+		name    string
+		results []map[string]any
+		columns []string
+		wantErr bool
+		check   func(t *testing.T, results []map[string]any)
+	}{
+		{
+			name: "parses JSON object column",
+			results: []map[string]any{
+				{"id": 1, "data": `{"theme":"dark","count":42}`},
+			},
+			columns: []string{"data"},
+			wantErr: false,
+			check: func(t *testing.T, results []map[string]any) {
+				data, ok := results[0]["data"].(map[string]any)
+				if !ok {
+					t.Fatalf("expected data to be map, got %T", results[0]["data"])
+				}
+				if data["theme"] != "dark" {
+					t.Errorf("expected theme=dark, got %v", data["theme"])
+				}
+				if data["count"] != float64(42) {
+					t.Errorf("expected count=42, got %v", data["count"])
+				}
+			},
+		},
+		{
+			name: "parses JSON array column",
+			results: []map[string]any{
+				{"id": 1, "tags": `["a","b","c"]`},
+			},
+			columns: []string{"tags"},
+			wantErr: false,
+			check: func(t *testing.T, results []map[string]any) {
+				tags, ok := results[0]["tags"].([]any)
+				if !ok {
+					t.Fatalf("expected tags to be array, got %T", results[0]["tags"])
+				}
+				if len(tags) != 3 {
+					t.Errorf("expected 3 tags, got %d", len(tags))
+				}
+			},
+		},
+		{
+			name: "parses nested JSON",
+			results: []map[string]any{
+				{"id": 1, "config": `{"db":{"host":"localhost","port":5432}}`},
+			},
+			columns: []string{"config"},
+			wantErr: false,
+			check: func(t *testing.T, results []map[string]any) {
+				config, ok := results[0]["config"].(map[string]any)
+				if !ok {
+					t.Fatalf("expected config to be map, got %T", results[0]["config"])
+				}
+				db, ok := config["db"].(map[string]any)
+				if !ok {
+					t.Fatalf("expected db to be map, got %T", config["db"])
+				}
+				if db["host"] != "localhost" {
+					t.Errorf("expected host=localhost, got %v", db["host"])
+				}
+			},
+		},
+		{
+			name: "skips non-existent columns",
+			results: []map[string]any{
+				{"id": 1, "name": "test"},
+			},
+			columns: []string{"data"}, // doesn't exist
+			wantErr: false,
+			check: func(t *testing.T, results []map[string]any) {
+				// Should not modify anything
+				if results[0]["name"] != "test" {
+					t.Errorf("name should remain test")
+				}
+			},
+		},
+		{
+			name: "skips non-string values",
+			results: []map[string]any{
+				{"id": 1, "count": 42}, // int, not string
+			},
+			columns: []string{"count"},
+			wantErr: false,
+			check: func(t *testing.T, results []map[string]any) {
+				// Should remain as int
+				if results[0]["count"] != 42 {
+					t.Errorf("count should remain 42")
+				}
+			},
+		},
+		{
+			name: "skips empty strings",
+			results: []map[string]any{
+				{"id": 1, "data": ""},
+			},
+			columns: []string{"data"},
+			wantErr: false,
+			check: func(t *testing.T, results []map[string]any) {
+				if results[0]["data"] != "" {
+					t.Errorf("data should remain empty string")
+				}
+			},
+		},
+		{
+			name: "fails on invalid JSON",
+			results: []map[string]any{
+				{"id": 1, "data": `{invalid json}`},
+			},
+			columns: []string{"data"},
+			wantErr: true,
+			check:   nil,
+		},
+		{
+			name: "parses multiple columns",
+			results: []map[string]any{
+				{"id": 1, "meta": `{"a":1}`, "tags": `["x"]`},
+			},
+			columns: []string{"meta", "tags"},
+			wantErr: false,
+			check: func(t *testing.T, results []map[string]any) {
+				meta, ok := results[0]["meta"].(map[string]any)
+				if !ok {
+					t.Fatalf("expected meta to be map")
+				}
+				if meta["a"] != float64(1) {
+					t.Errorf("expected a=1")
+				}
+				tags, ok := results[0]["tags"].([]any)
+				if !ok {
+					t.Fatalf("expected tags to be array")
+				}
+				if len(tags) != 1 {
+					t.Errorf("expected 1 tag")
+				}
+			},
+		},
+		{
+			name: "parses multiple rows",
+			results: []map[string]any{
+				{"id": 1, "data": `{"x":1}`},
+				{"id": 2, "data": `{"x":2}`},
+			},
+			columns: []string{"data"},
+			wantErr: false,
+			check: func(t *testing.T, results []map[string]any) {
+				for i, row := range results {
+					data, ok := row["data"].(map[string]any)
+					if !ok {
+						t.Fatalf("row %d: expected map", i)
+					}
+					if data["x"] != float64(i+1) {
+						t.Errorf("row %d: expected x=%d", i, i+1)
+					}
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := parseJSONColumns(tt.results, tt.columns)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if tt.check != nil {
+				tt.check(t, tt.results)
+			}
+		})
+	}
+}
+
+// TestHandler_ServeHTTP_JSONColumns tests json_columns config parses JSON in response
+func TestHandler_ServeHTTP_JSONColumns(t *testing.T) {
+	manager := createTestManager(t)
+	defer manager.Close()
+
+	// Create table with JSON column
+	driver, _ := manager.Get("test")
+	ctx := context.Background()
+	sessCfg := config.SessionConfig{}
+
+	_, err := driver.Query(ctx, sessCfg, `
+		CREATE TABLE configs (
+			id INTEGER PRIMARY KEY,
+			name TEXT,
+			data TEXT
+		)
+	`, nil)
+	if err != nil {
+		t.Fatalf("failed to create configs table: %v", err)
+	}
+
+	// Insert JSON data
+	_, err = driver.Query(ctx, sessCfg,
+		"INSERT INTO configs (name, data) VALUES (@name, @data)",
+		map[string]any{"name": "settings", "data": `{"theme":"dark","notifications":{"email":true}}`},
+	)
+	if err != nil {
+		t.Fatalf("failed to insert config: %v", err)
+	}
+
+	queryCfg := config.QueryConfig{
+		Name:        "get_config",
+		Database:    "test",
+		Path:        "/api/config",
+		Method:      "GET",
+		SQL:         "SELECT id, name, data FROM configs WHERE name = @name",
+		JSONColumns: []string{"data"}, // Parse this column
+		Parameters: []config.ParamConfig{
+			{Name: "name", Type: "string", Required: true},
+		},
+	}
+
+	serverCfg := config.ServerConfig{
+		DefaultTimeoutSec: 30,
+		MaxTimeoutSec:     300,
+	}
+
+	handler := New(manager, nil, queryCfg, serverCfg)
+
+	req := httptest.NewRequest("GET", "/api/config?name=settings", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp Response
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Count != 1 {
+		t.Fatalf("expected 1 row, got %d", resp.Count)
+	}
+
+	// Check that data was parsed as JSON object, not string
+	rows, ok := resp.Data.([]any)
+	if !ok {
+		t.Fatalf("expected Data to be array, got %T", resp.Data)
+	}
+
+	row, ok := rows[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected row to be map, got %T", rows[0])
+	}
+
+	data, ok := row["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected data to be parsed JSON object, got %T (value: %v)", row["data"], row["data"])
+	}
+
+	if data["theme"] != "dark" {
+		t.Errorf("expected theme=dark, got %v", data["theme"])
+	}
+
+	// Check nested object
+	notifications, ok := data["notifications"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected notifications to be map, got %T", data["notifications"])
+	}
+
+	if notifications["email"] != true {
+		t.Errorf("expected notifications.email=true, got %v", notifications["email"])
+	}
+}
+
+// TestHandler_ServeHTTP_JSONColumns_WithoutConfig tests default behavior (no json_columns)
+func TestHandler_ServeHTTP_JSONColumns_WithoutConfig(t *testing.T) {
+	manager := createTestManager(t)
+	defer manager.Close()
+
+	// Create table with JSON column
+	driver, _ := manager.Get("test")
+	ctx := context.Background()
+	sessCfg := config.SessionConfig{}
+
+	_, err := driver.Query(ctx, sessCfg, `
+		CREATE TABLE configs2 (
+			id INTEGER PRIMARY KEY,
+			data TEXT
+		)
+	`, nil)
+	if err != nil {
+		t.Fatalf("failed to create configs2 table: %v", err)
+	}
+
+	// Insert JSON data
+	_, err = driver.Query(ctx, sessCfg,
+		"INSERT INTO configs2 (data) VALUES (@data)",
+		map[string]any{"data": `{"key":"value"}`},
+	)
+	if err != nil {
+		t.Fatalf("failed to insert: %v", err)
+	}
+
+	// NO json_columns configured - should return as string
+	queryCfg := config.QueryConfig{
+		Name:     "get_config2",
+		Database: "test",
+		Path:     "/api/config2",
+		Method:   "GET",
+		SQL:      "SELECT data FROM configs2",
+		// JSONColumns not set
+	}
+
+	serverCfg := config.ServerConfig{
+		DefaultTimeoutSec: 30,
+		MaxTimeoutSec:     300,
+	}
+
+	handler := New(manager, nil, queryCfg, serverCfg)
+
+	req := httptest.NewRequest("GET", "/api/config2", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+
+	var resp Response
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	rows := resp.Data.([]any)
+	row := rows[0].(map[string]any)
+
+	// Without json_columns, data should be a string
+	dataStr, ok := row["data"].(string)
+	if !ok {
+		t.Fatalf("expected data to be string (not parsed), got %T", row["data"])
+	}
+
+	if dataStr != `{"key":"value"}` {
+		t.Errorf("expected JSON string, got %s", dataStr)
 	}
 }
