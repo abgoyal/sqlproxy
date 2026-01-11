@@ -11,7 +11,7 @@ A lightweight, production-grade Go service that exposes predefined SQL queries a
 - **Scheduled Queries** - Run queries on cron schedule with retry
 - **Rate Limiting** - Per-endpoint and per-client rate limiting with token bucket
 - **Structured Logging** - JSON logs with automatic rotation
-- **Metrics Endpoint** - `/metrics` for monitoring
+- **Metrics Endpoint** - `/_/metrics` for monitoring
 - **Request Tracing** - Wide events with request IDs
 - **Runtime Config** - Change log level without restart
 - **Auto-Recovery** - Automatic database reconnection
@@ -24,7 +24,7 @@ This service is designed for long-running, fire-and-forget operation:
 | Feature | Description |
 |---------|-------------|
 | **Log Rotation** | Automatic rotation by size, age retention, compression |
-| **Metrics Endpoint** | `/metrics` endpoint for monitoring |
+| **Metrics Endpoint** | `/_/metrics` endpoint for monitoring |
 | **Scheduled Queries** | Cron-based execution with retry and backoff |
 | **DB Health Checks** | Every 30s, auto-reconnect after 3 failures |
 | **Panic Recovery** | Catches panics, logs them, returns 500 |
@@ -923,21 +923,21 @@ No restart required:
 
 ```bash
 # Check current level
-curl http://localhost:8081/config/loglevel
+curl http://localhost:8081/_/config/loglevel
 
 # Change to debug
-curl -X POST "http://localhost:8081/config/loglevel?level=debug"
+curl -X POST "http://localhost:8081/_/config/loglevel?level=debug"
 
 # Back to info for production
-curl -X POST "http://localhost:8081/config/loglevel?level=info"
+curl -X POST "http://localhost:8081/_/config/loglevel?level=info"
 ```
 
 ## Metrics
 
-Get metrics via the `/metrics` endpoint:
+Get metrics via the `/_/metrics` endpoint:
 
 ```bash
-curl http://localhost:8081/metrics
+curl http://localhost:8081/_/metrics
 ```
 
 Response:
@@ -1002,15 +1002,18 @@ Response:
 
 ### Service Endpoints
 
+All internal service endpoints use the `/_/` prefix (reserved, user queries cannot use this prefix).
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/` | GET | List all query endpoints with parameters |
-| `/health` | GET | Aggregate health check (always 200, parse `status` field) |
-| `/health/{dbname}` | GET | Per-database health check (200 or 404 if not found) |
-| `/metrics` | GET | Current metrics snapshot |
-| `/openapi.json` | GET | OpenAPI 3.0 specification |
-| `/config/loglevel` | GET/POST | View/change log level |
-| `/cache/clear` | POST/DELETE | Clear cache (all or specific endpoint via `?endpoint=/api/path`) |
+| `/_/health` | GET | Aggregate health check (always 200, parse `status` field) |
+| `/_/health/{dbname}` | GET | Per-database health check (200 or 404 if not found) |
+| `/_/metrics` | GET | Current metrics snapshot |
+| `/_/openapi.json` | GET | OpenAPI 3.0 specification |
+| `/_/config/loglevel` | GET/POST | View/change log level |
+| `/_/cache/clear` | POST/DELETE | Clear cache (all or specific endpoint via `?endpoint=/api/path`) |
+| `/_/ratelimits` | GET | Rate limit pool status and metrics |
 
 ### Health Check Design
 
@@ -1019,7 +1022,7 @@ Health endpoints always return HTTP 200 with status details in the response body
 - Allows clients to always receive health details
 - Enables monitoring tools to parse JSON for actual status
 
-**Aggregate health (`/health`):**
+**Aggregate health (`/_/health`):**
 ```json
 {
   "status": "healthy",
@@ -1036,7 +1039,7 @@ Status values:
 - `degraded` - Some databases connected, some disconnected
 - `unhealthy` - All databases disconnected
 
-**Per-database health (`/health/{dbname}`):**
+**Per-database health (`/_/health/{dbname}`):**
 ```json
 {
   "database": "primary",
@@ -1053,12 +1056,12 @@ Returns 404 only if the database name doesn't exist in configuration.
 The service auto-generates an OpenAPI 3.0 spec at runtime:
 
 ```bash
-curl http://localhost:8081/openapi.json
+curl http://localhost:8081/_/openapi.json
 ```
 
 You can use this with:
 - **Swagger UI** - Paste URL into https://petstore.swagger.io or run Swagger UI locally
-- **Postman** - Import > Link > `http://localhost:8081/openapi.json`
+- **Postman** - Import > Link > `http://localhost:8081/_/openapi.json`
 - **Code generators** - Generate client SDKs for any language
 
 The spec includes all configured query endpoints with their parameters, types, and response schemas.
@@ -1350,7 +1353,7 @@ your-domain.com {
 - Check file permissions on config and log directories
 
 ### Database connection issues (SQL Server)
-- Check `/health` endpoint for status
+- Check `/_/health` endpoint for status
 - Look for `health_check_failed` in logs
 - Verify security group allows port 1433
 - Check credentials in config
@@ -1380,7 +1383,7 @@ your-domain.com {
 - Add indexes for frequently-queried columns
 
 ### High latency
-- Check `/metrics` for `avg_duration_ms` and `max_duration_ms`
+- Check `/_/metrics` for `avg_duration_ms` and `max_duration_ms`
 - Look for `slow_query` warnings in logs
 - Consider adding indexes on SQL Server side
 - Increase `timeout_sec` for known slow queries
@@ -1391,7 +1394,7 @@ your-domain.com {
 
 ### Changing configuration
 - Most changes require service restart
-- Log level can be changed at runtime via `/config/loglevel`
+- Log level can be changed at runtime via `/_/config/loglevel`
 
 ### Updating the service
 
@@ -1400,7 +1403,7 @@ your-domain.com {
 sql-proxy.exe -stop
 copy /Y sql-proxy-new.exe C:\Services\SQLProxy\sql-proxy.exe
 sql-proxy.exe -start
-curl http://localhost:8081/health
+curl http://localhost:8081/_/health
 ```
 
 **Linux:**
@@ -1409,7 +1412,7 @@ sudo systemctl stop sql-proxy
 sudo cp sql-proxy-new /opt/sql-proxy/sql-proxy
 sudo chown sqlproxy:sqlproxy /opt/sql-proxy/sql-proxy
 sudo systemctl start sql-proxy
-curl http://localhost:8081/health
+curl http://localhost:8081/_/health
 ```
 
 **macOS:**
@@ -1417,7 +1420,7 @@ curl http://localhost:8081/health
 sudo launchctl unload /Library/LaunchDaemons/com.sqlproxy.plist
 sudo cp sql-proxy-new /usr/local/bin/sql-proxy
 sudo launchctl load /Library/LaunchDaemons/com.sqlproxy.plist
-curl http://localhost:8081/health
+curl http://localhost:8081/_/health
 ```
 
 For config changes only, just restart the service (no binary replacement needed).
@@ -1435,7 +1438,7 @@ Before deploying to production:
 ```bash
 ./sql-proxy -config config.yaml
 # In another terminal:
-curl http://localhost:8081/health
+curl http://localhost:8081/_/health
 curl http://localhost:8081/
 curl "http://localhost:8081/api/your-endpoint?param=value"
 ```
@@ -1470,8 +1473,8 @@ sudo launchctl load /Library/LaunchDaemons/com.sqlproxy.sql-proxy.plist
 
 ### 4. Verify and monitor
 ```bash
-curl http://localhost:8081/health
-curl http://localhost:8081/metrics
+curl http://localhost:8081/_/health
+curl http://localhost:8081/_/metrics
 ```
 
 Check logs:
@@ -1482,8 +1485,8 @@ Check logs:
 ### Production Recommendations
 
 - **Caddy/nginx in front**: Don't expose sql-proxy directly to the internet
-- **Monitor `/health`**: Set up alerting on 503 responses
-- **Review metrics**: Check `/metrics` endpoint for slow queries
+- **Monitor `/_/health`**: Set up alerting on unhealthy status
+- **Review metrics**: Check `/_/metrics` endpoint for slow queries
 - **Log level**: Use `info` in production, `debug` only for troubleshooting
 - **Backup config**: Keep config.yaml in version control
 

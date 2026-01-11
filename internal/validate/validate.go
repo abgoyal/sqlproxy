@@ -226,6 +226,11 @@ func validateRateLimits(cfg *config.Config, r *Result) {
 		}
 		names[pool.Name] = true
 
+		// Prevent conflicts with internal inline pool naming convention
+		if strings.HasPrefix(pool.Name, "_inline:") {
+			r.addError("%s: pool name cannot start with '_inline:' (reserved for internal use)", prefix)
+		}
+
 		// RequestsPerSecond and Burst are required
 		if pool.RequestsPerSecond <= 0 {
 			r.addError("%s: requests_per_second must be positive", prefix)
@@ -571,7 +576,12 @@ func validateQueryRateLimits(limits []config.QueryRateLimitConfig, pools map[str
 		}
 
 		if !limit.IsPoolReference() && !limit.IsInline() {
-			r.addError("%s: must specify either 'pool' or inline rate limit settings", limitPrefix)
+			// Check for partial inline config to give better error message
+			if limit.RequestsPerSecond > 0 || limit.Burst > 0 || limit.Key != "" {
+				r.addError("%s: incomplete inline rate limit - both requests_per_second and burst must be positive", limitPrefix)
+			} else {
+				r.addError("%s: must specify either 'pool' or inline rate limit settings", limitPrefix)
+			}
 			continue
 		}
 
@@ -588,10 +598,9 @@ func validateQueryRateLimits(limits []config.QueryRateLimitConfig, pools map[str
 			if limit.Burst <= 0 {
 				r.addError("%s: burst must be positive", limitPrefix)
 			}
-			if limit.Key == "" {
-				r.addError("%s: key template is required for inline rate limit", limitPrefix)
-			} else {
-				// Validate key template syntax
+			// Key is optional - defaults to {{.ClientIP}} at runtime
+			if limit.Key != "" {
+				// Validate key template syntax if provided
 				if err := tmplEngine.Validate(limit.Key, tmpl.UsagePreQuery); err != nil {
 					r.addError("%s: invalid key template: %v", limitPrefix, err)
 				}

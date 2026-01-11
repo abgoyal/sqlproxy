@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -35,12 +36,13 @@ type Handler struct {
 }
 
 type Response struct {
-	Success    bool   `json:"success"`
-	Data       any    `json:"data,omitempty"`
-	Error      string `json:"error,omitempty"`
-	Count      int    `json:"count,omitempty"`
-	TimeoutSec int    `json:"timeout_sec,omitempty"`
-	RequestID  string `json:"request_id,omitempty"`
+	Success       bool   `json:"success"`
+	Data          any    `json:"data,omitempty"`
+	Error         string `json:"error,omitempty"`
+	Count         int    `json:"count,omitempty"`
+	TimeoutSec    int    `json:"timeout_sec,omitempty"`
+	RequestID     string `json:"request_id,omitempty"`
+	RetryAfterSec int    `json:"retry_after_sec,omitempty"` // Only set for 429 responses
 }
 
 func New(dbManager *db.Manager, c *cache.Cache, rl *ratelimit.Limiter, ctxBuilder *tmpl.ContextBuilder, queryCfg config.QueryConfig, serverCfg config.ServerConfig) *Handler {
@@ -171,7 +173,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Check rate limits (before expensive operations)
 	if h.rateLimiter != nil && len(h.queryConfig.RateLimit) > 0 && h.ctxBuilder != nil {
 		tmplCtx := h.ctxBuilder.Build(r, params)
-		allowed, err := h.rateLimiter.Allow(h.queryConfig.RateLimit, tmplCtx)
+		allowed, retryAfter, err := h.rateLimiter.Allow(h.queryConfig.RateLimit, tmplCtx)
 		if err != nil {
 			// Template error - log and reject (config bug that should be caught at load time)
 			m.StatusCode = http.StatusInternalServerError
@@ -186,10 +188,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			m.StatusCode = http.StatusTooManyRequests
 			m.Error = "rate limit exceeded"
 			m.TotalDuration = time.Since(startTime)
+			retryAfterSec := int(retryAfter.Seconds())
+			if retryAfterSec < 1 {
+				retryAfterSec = 1 // Minimum 1 second
+			}
 			logFields["rate_limited"] = true
+			logFields["retry_after_sec"] = retryAfterSec
 			logging.Warn("rate_limit_exceeded", logFields)
-			w.Header().Set("Retry-After", "1")
-			h.finishRequest(w, m, logFields, http.StatusTooManyRequests, "rate limit exceeded", requestID, 0)
+			metrics.Record(m)
+			h.writeRateLimitError(w, "rate limit exceeded", requestID, retryAfterSec)
 			return
 		}
 	}
@@ -230,7 +237,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Compute function for cache miss
 	var queryDuration time.Duration
-	var queryErr error
 	computeQuery := func() ([]map[string]any, error) {
 		logging.Debug("query_starting", logFields)
 		queryStart := time.Now()
@@ -240,7 +246,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		results, err := database.Query(ctx, sessionCfg, h.queryConfig.SQL, params)
 		queryDuration = time.Since(queryStart)
-		queryErr = err
 
 		if err != nil {
 			return nil, err
@@ -276,8 +281,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.TotalDuration = time.Since(startTime)
 		logFields["error"] = err.Error()
 
-		// Check if it was a timeout (from context deadline)
-		if queryErr != nil && r.Context().Err() == context.DeadlineExceeded {
+		// Check if it was a timeout (context deadline exceeded)
+		// errors.Is handles wrapped errors correctly
+		if errors.Is(err, context.DeadlineExceeded) {
 			m.StatusCode = http.StatusGatewayTimeout
 			m.Error = fmt.Sprintf("query timed out after %d seconds", timeoutSec)
 			logging.Warn("query_timeout", logFields)
@@ -674,6 +680,23 @@ func (h *Handler) writeError(w http.ResponseWriter, status int, message string, 
 		RequestID: requestID,
 	}
 	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		logging.Error("response_encode_failed", map[string]any{
+			"request_id": requestID,
+			"error":      err.Error(),
+		})
+	}
+}
+
+func (h *Handler) writeRateLimitError(w http.ResponseWriter, message string, requestID string, retryAfterSec int) {
+	resp := Response{
+		Success:       false,
+		Error:         message,
+		RequestID:     requestID,
+		RetryAfterSec: retryAfterSec,
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSec))
+	w.WriteHeader(http.StatusTooManyRequests)
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		logging.Error("response_encode_failed", map[string]any{
 			"request_id": requestID,

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1095,6 +1096,117 @@ func TestServer_RateLimitsHandler_NotConfigured(t *testing.T) {
 	// Should return error when not configured
 	if _, ok := result["error"]; !ok {
 		t.Error("expected error field when rate limiting not configured")
+	}
+}
+
+// TestServer_RateLimitResponse tests that 429 response includes retry_after_sec
+func TestServer_RateLimitResponse(t *testing.T) {
+	readOnly := false
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Host:              "127.0.0.1",
+			Port:              8080,
+			DefaultTimeoutSec: 30,
+			MaxTimeoutSec:     300,
+		},
+		Databases: []config.DatabaseConfig{
+			{
+				Name:     "test",
+				Type:     "sqlite",
+				Path:     ":memory:",
+				ReadOnly: &readOnly,
+			},
+		},
+		Logging: config.LoggingConfig{
+			Level: "error",
+		},
+		Metrics: config.MetricsConfig{
+			Enabled: false,
+		},
+		RateLimits: []config.RateLimitPoolConfig{
+			{
+				Name:              "strict",
+				RequestsPerSecond: 1,
+				Burst:             1, // Only 1 request allowed
+				Key:               "{{.ClientIP}}",
+			},
+		},
+		Queries: []config.QueryConfig{
+			{
+				Name:     "rate_limited",
+				Database: "test",
+				Path:     "/api/limited",
+				Method:   "GET",
+				SQL:      "SELECT 1",
+				RateLimit: []config.QueryRateLimitConfig{
+					{Pool: "strict"},
+				},
+			},
+		},
+	}
+
+	srv, err := New(cfg, true)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	ts := httptest.NewServer(srv.httpServer.Handler)
+	defer ts.Close()
+
+	// First request should succeed
+	resp1, err := http.Get(ts.URL + "/api/limited")
+	if err != nil {
+		t.Fatalf("first request failed: %v", err)
+	}
+	resp1.Body.Close()
+
+	if resp1.StatusCode != http.StatusOK {
+		t.Errorf("expected first request to succeed with 200, got %d", resp1.StatusCode)
+	}
+
+	// Second request should be rate limited
+	resp2, err := http.Get(ts.URL + "/api/limited")
+	if err != nil {
+		t.Fatalf("second request failed: %v", err)
+	}
+	defer resp2.Body.Close()
+
+	if resp2.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("expected 429, got %d", resp2.StatusCode)
+	}
+
+	// Check Retry-After header
+	retryAfterHeader := resp2.Header.Get("Retry-After")
+	if retryAfterHeader == "" {
+		t.Error("expected Retry-After header")
+	}
+
+	// Check response body
+	var result map[string]any
+	if err := json.NewDecoder(resp2.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Check that response includes retry_after_sec
+	if result["success"] != false {
+		t.Error("expected success=false")
+	}
+	if result["error"] != "rate limit exceeded" {
+		t.Errorf("expected error='rate limit exceeded', got %v", result["error"])
+	}
+	retryAfterSec, ok := result["retry_after_sec"].(float64)
+	if !ok {
+		t.Error("expected retry_after_sec in response body")
+	}
+	if retryAfterSec <= 0 {
+		t.Errorf("expected retry_after_sec > 0, got %v", retryAfterSec)
+	}
+
+	// Verify retry_after_sec matches Retry-After header
+	headerVal, _ := strconv.Atoi(retryAfterHeader)
+	if int(retryAfterSec) != headerVal {
+		t.Errorf("retry_after_sec (%v) doesn't match Retry-After header (%s)", retryAfterSec, retryAfterHeader)
 	}
 }
 

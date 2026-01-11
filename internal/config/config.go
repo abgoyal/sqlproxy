@@ -72,9 +72,11 @@ func (r *QueryRateLimitConfig) IsPoolReference() bool {
 	return r.Pool != ""
 }
 
-// IsInline returns true if this config defines inline rate limit settings
+// IsInline returns true if this config defines valid inline rate limit settings.
+// An inline config requires both RequestsPerSecond and Burst to be positive.
+// Key is optional (defaults to ClientIP).
 func (r *QueryRateLimitConfig) IsInline() bool {
-	return r.RequestsPerSecond > 0 || r.Burst > 0 || r.Key != ""
+	return r.RequestsPerSecond > 0 && r.Burst > 0
 }
 
 type DatabaseConfig struct {

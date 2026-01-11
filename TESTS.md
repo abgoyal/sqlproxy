@@ -296,6 +296,7 @@ Run `make test-cover` for current coverage statistics.
 - **TestServer_Integration_CacheMetrics**: TestServer_Integration_CacheMetrics tests cache stats appear in metrics snapshot
 - **TestServer_RateLimitsHandler**: TestServer_RateLimitsHandler tests the /_/ratelimits endpoint
 - **TestServer_RateLimitsHandler_NotConfigured**: TestServer_RateLimitsHandler_NotConfigured tests the endpoint when rate limiting is disabled
+- **TestServer_RateLimitResponse**: TestServer_RateLimitResponse tests that 429 response includes retry_after_sec
 
 
 ---
@@ -590,6 +591,7 @@ Run `make test-cover` for current coverage statistics.
 - **TestAllow_MissingTemplateData**: Allow MissingTemplateData
 - **TestAllow_NonexistentPool**: Allow NonexistentPool
 - **TestMetrics**: Metrics
+- **TestMetrics_InlinePool**: TestMetrics_InlinePool tests that inline rate limits also track metrics
 - **TestPoolNames**: PoolNames
 - **TestGetPool**: GetPool
 - **TestBucketCleanup**: BucketCleanup

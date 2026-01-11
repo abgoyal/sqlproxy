@@ -1727,6 +1727,14 @@ func TestValidateRateLimits(t *testing.T) {
 			wantErr: true,
 			errMsg:  "invalid key template",
 		},
+		{
+			name: "reserved _inline: prefix",
+			rateLimits: []config.RateLimitPoolConfig{
+				{Name: "_inline:test", RequestsPerSecond: 100, Burst: 200, Key: "{{.ClientIP}}"},
+			},
+			wantErr: true,
+			errMsg:  "reserved for internal use",
+		},
 	}
 
 	for _, tc := range tests {
@@ -1816,7 +1824,7 @@ func TestValidateQueryRateLimits(t *testing.T) {
 				{Burst: 20, Key: "{{.ClientIP}}"},
 			},
 			wantErr: true,
-			errMsg:  "requests_per_second must be positive",
+			errMsg:  "incomplete inline rate limit",
 		},
 		{
 			name: "inline missing burst",
@@ -1824,15 +1832,14 @@ func TestValidateQueryRateLimits(t *testing.T) {
 				{RequestsPerSecond: 10, Key: "{{.ClientIP}}"},
 			},
 			wantErr: true,
-			errMsg:  "burst must be positive",
+			errMsg:  "incomplete inline rate limit",
 		},
 		{
 			name: "inline missing key",
 			limits: []config.QueryRateLimitConfig{
 				{RequestsPerSecond: 10, Burst: 20},
 			},
-			wantErr: true,
-			errMsg:  "key template is required",
+			wantErr: false, // Key is optional - defaults to ClientIP
 		},
 		{
 			name: "inline invalid key template",

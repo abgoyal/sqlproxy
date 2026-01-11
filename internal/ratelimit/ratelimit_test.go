@@ -119,7 +119,7 @@ func TestAllow_NoLimits(t *testing.T) {
 
 	ctx := &tmpl.Context{ClientIP: "192.168.1.1"}
 
-	allowed, err := l.Allow(nil, ctx)
+	allowed, _, err := l.Allow(nil, ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestAllow_NoLimits(t *testing.T) {
 		t.Error("expected allowed with no limits")
 	}
 
-	allowed, err = l.Allow([]config.QueryRateLimitConfig{}, ctx)
+	allowed, _, err = l.Allow([]config.QueryRateLimitConfig{}, ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestAllow_NamedPool(t *testing.T) {
 
 	// First two requests should be allowed (burst=2)
 	for i := 0; i < 2; i++ {
-		allowed, err := l.Allow(limits, ctx)
+		allowed, _, err := l.Allow(limits, ctx)
 		if err != nil {
 			t.Fatalf("request %d: unexpected error: %v", i, err)
 		}
@@ -163,12 +163,15 @@ func TestAllow_NamedPool(t *testing.T) {
 	}
 
 	// Third request should be denied (burst exhausted)
-	allowed, err := l.Allow(limits, ctx)
+	allowed, retryAfter, err := l.Allow(limits, ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if allowed {
 		t.Error("expected denied after burst exhausted")
+	}
+	if retryAfter <= 0 {
+		t.Error("expected positive retryAfter when denied")
 	}
 }
 
@@ -185,7 +188,7 @@ func TestAllow_InlineConfig(t *testing.T) {
 	}
 
 	// First request allowed
-	allowed, err := l.Allow(limits, ctx)
+	allowed, _, err := l.Allow(limits, ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -194,7 +197,7 @@ func TestAllow_InlineConfig(t *testing.T) {
 	}
 
 	// Second request denied
-	allowed, err = l.Allow(limits, ctx)
+	allowed, _, err = l.Allow(limits, ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -223,7 +226,7 @@ func TestAllow_MultiplePools(t *testing.T) {
 	}
 
 	// First request allowed (both pools pass)
-	allowed, err := l.Allow(limits, ctx)
+	allowed, _, err := l.Allow(limits, ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -232,7 +235,7 @@ func TestAllow_MultiplePools(t *testing.T) {
 	}
 
 	// Second request denied (pool2 exhausted, even though pool1 has capacity)
-	allowed, err = l.Allow(limits, ctx)
+	allowed, _, err = l.Allow(limits, ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -257,7 +260,7 @@ func TestAllow_DifferentClients(t *testing.T) {
 
 	// Client 1 makes a request
 	ctx1 := &tmpl.Context{ClientIP: "192.168.1.1"}
-	allowed, err := l.Allow(limits, ctx1)
+	allowed, _, err := l.Allow(limits, ctx1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -266,7 +269,7 @@ func TestAllow_DifferentClients(t *testing.T) {
 	}
 
 	// Client 1 is now limited
-	allowed, err = l.Allow(limits, ctx1)
+	allowed, _, err = l.Allow(limits, ctx1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -276,7 +279,7 @@ func TestAllow_DifferentClients(t *testing.T) {
 
 	// Client 2 should still be allowed (separate bucket)
 	ctx2 := &tmpl.Context{ClientIP: "192.168.1.2"}
-	allowed, err = l.Allow(limits, ctx2)
+	allowed, _, err = l.Allow(limits, ctx2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -305,7 +308,7 @@ func TestAllow_HeaderBasedKey(t *testing.T) {
 		ClientIP: "192.168.1.1",
 		Header:   map[string]string{"X-Api-Key": "key1"},
 	}
-	allowed, err := l.Allow(limits, ctx1)
+	allowed, _, err := l.Allow(limits, ctx1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -314,7 +317,7 @@ func TestAllow_HeaderBasedKey(t *testing.T) {
 	}
 
 	// Same API key is limited
-	allowed, err = l.Allow(limits, ctx1)
+	allowed, _, err = l.Allow(limits, ctx1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -327,7 +330,7 @@ func TestAllow_HeaderBasedKey(t *testing.T) {
 		ClientIP: "192.168.1.1", // Same IP but different API key
 		Header:   map[string]string{"X-Api-Key": "key2"},
 	}
-	allowed, err = l.Allow(limits, ctx2)
+	allowed, _, err = l.Allow(limits, ctx2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -356,7 +359,7 @@ func TestAllow_MissingTemplateData(t *testing.T) {
 		ClientIP: "192.168.1.1",
 		Header:   map[string]string{}, // No X-Api-Key
 	}
-	_, err = l.Allow(limits, ctx)
+	_, _, err = l.Allow(limits, ctx)
 	if err == nil {
 		t.Error("expected error for missing template data")
 	}
@@ -374,7 +377,7 @@ func TestAllow_NonexistentPool(t *testing.T) {
 		{Pool: "nonexistent"},
 	}
 
-	_, err = l.Allow(limits, ctx)
+	_, _, err = l.Allow(limits, ctx)
 	if err == nil {
 		t.Error("expected error for nonexistent pool")
 	}
@@ -397,7 +400,7 @@ func TestMetrics(t *testing.T) {
 
 	// Make 3 requests: 2 allowed, 1 denied
 	for i := 0; i < 3; i++ {
-		l.Allow(limits, ctx)
+		_, _, _ = l.Allow(limits, ctx)
 	}
 
 	snap := l.Snapshot()
@@ -420,6 +423,54 @@ func TestMetrics(t *testing.T) {
 	}
 	if poolMetrics.ActiveBuckets != 1 {
 		t.Errorf("expected 1 active bucket, got %d", poolMetrics.ActiveBuckets)
+	}
+}
+
+// TestMetrics_InlinePool tests that inline rate limits also track metrics
+func TestMetrics_InlinePool(t *testing.T) {
+	engine := tmpl.New()
+	// No named pools - use inline config
+	l, err := New(nil, engine)
+	if err != nil {
+		t.Fatalf("failed to create limiter: %v", err)
+	}
+
+	ctx := &tmpl.Context{ClientIP: "192.168.1.1"}
+	// Inline rate limit config
+	limits := []config.QueryRateLimitConfig{
+		{RequestsPerSecond: 1, Burst: 2, Key: "{{.ClientIP}}"},
+	}
+
+	// Make 3 requests: 2 allowed, 1 denied
+	for i := 0; i < 3; i++ {
+		_, _, _ = l.Allow(limits, ctx)
+	}
+
+	snap := l.Snapshot()
+	if snap.TotalAllowed != 2 {
+		t.Errorf("expected 2 allowed, got %d", snap.TotalAllowed)
+	}
+	if snap.TotalDenied != 1 {
+		t.Errorf("expected 1 denied, got %d", snap.TotalDenied)
+	}
+
+	// Find the inline pool metrics (name starts with "_inline:")
+	var inlinePoolMetrics *PoolMetrics
+	for name, pm := range snap.Pools {
+		if len(name) > 8 && name[:8] == "_inline:" {
+			inlinePoolMetrics = pm
+			break
+		}
+	}
+
+	if inlinePoolMetrics == nil {
+		t.Fatal("missing inline pool metrics")
+	}
+	if inlinePoolMetrics.Allowed != 2 {
+		t.Errorf("expected inline pool allowed=2, got %d", inlinePoolMetrics.Allowed)
+	}
+	if inlinePoolMetrics.Denied != 1 {
+		t.Errorf("expected inline pool denied=1, got %d", inlinePoolMetrics.Denied)
 	}
 }
 
@@ -487,7 +538,7 @@ func TestBucketCleanup(t *testing.T) {
 	limits := []config.QueryRateLimitConfig{{Pool: "default"}}
 
 	// Create a bucket
-	l.Allow(limits, ctx)
+	_, _, _ = l.Allow(limits, ctx)
 
 	pool.bucketsMu.RLock()
 	if len(pool.buckets) != 1 {
