@@ -171,7 +171,7 @@ func New(cfg *config.Config, interactive bool) (*Server, error) {
 
 	// Initialize metrics
 	if cfg.Metrics.Enabled {
-		metrics.Init(s.checkDBHealth)
+		metrics.Init(s.checkDBHealth, cfg.Server.Version, cfg.Server.BuildTime)
 		// Set cache snapshot provider for metrics
 		if s.cache != nil {
 			metrics.SetCacheSnapshotProvider(func() any {

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -73,12 +74,12 @@ func Close() error {
 }
 
 func parseLevel(s string) slog.Level {
-	switch s {
-	case "debug", "DEBUG":
+	switch strings.ToLower(s) {
+	case "debug":
 		return slog.LevelDebug
-	case "warn", "WARN", "warning", "WARNING":
+	case "warn", "warning":
 		return slog.LevelWarn
-	case "error", "ERROR":
+	case "error":
 		return slog.LevelError
 	default:
 		return slog.LevelInfo

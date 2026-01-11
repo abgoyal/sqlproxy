@@ -1628,6 +1628,86 @@ func TestParseJSONColumns(t *testing.T) {
 			check:   nil,
 		},
 		{
+			name: "fails on truncated JSON",
+			results: []map[string]any{
+				{"id": 1, "data": `{"key": "value`},
+			},
+			columns: []string{"data"},
+			wantErr: true,
+			check:   nil,
+		},
+		{
+			name: "fails on invalid JSON in second row",
+			results: []map[string]any{
+				{"id": 1, "data": `{"valid": true}`},
+				{"id": 2, "data": `{not valid}`},
+			},
+			columns: []string{"data"},
+			wantErr: true,
+			check:   nil,
+		},
+		{
+			name: "fails on invalid JSON in one of multiple columns",
+			results: []map[string]any{
+				{"id": 1, "meta": `{"ok": 1}`, "data": `{bad}`},
+			},
+			columns: []string{"meta", "data"},
+			wantErr: true,
+			check:   nil,
+		},
+		{
+			name: "handles null JSON value",
+			results: []map[string]any{
+				{"id": 1, "data": `null`},
+			},
+			columns: []string{"data"},
+			wantErr: false,
+			check: func(t *testing.T, results []map[string]any) {
+				if results[0]["data"] != nil {
+					t.Errorf("expected nil, got %v", results[0]["data"])
+				}
+			},
+		},
+		{
+			name: "handles JSON primitive string",
+			results: []map[string]any{
+				{"id": 1, "data": `"just a string"`},
+			},
+			columns: []string{"data"},
+			wantErr: false,
+			check: func(t *testing.T, results []map[string]any) {
+				if results[0]["data"] != "just a string" {
+					t.Errorf("expected 'just a string', got %v", results[0]["data"])
+				}
+			},
+		},
+		{
+			name: "handles JSON primitive number",
+			results: []map[string]any{
+				{"id": 1, "data": `42.5`},
+			},
+			columns: []string{"data"},
+			wantErr: false,
+			check: func(t *testing.T, results []map[string]any) {
+				if results[0]["data"] != 42.5 {
+					t.Errorf("expected 42.5, got %v", results[0]["data"])
+				}
+			},
+		},
+		{
+			name: "handles JSON primitive boolean",
+			results: []map[string]any{
+				{"id": 1, "data": `true`},
+			},
+			columns: []string{"data"},
+			wantErr: false,
+			check: func(t *testing.T, results []map[string]any) {
+				if results[0]["data"] != true {
+					t.Errorf("expected true, got %v", results[0]["data"])
+				}
+			},
+		},
+		{
 			name: "parses multiple columns",
 			results: []map[string]any{
 				{"id": 1, "meta": `{"a":1}`, "tags": `["x"]`},

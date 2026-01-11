@@ -409,6 +409,122 @@ func TestManager_ConcurrentAccess(t *testing.T) {
 	}
 }
 
+// TestManager_ConcurrentReconnect tests concurrent Reconnect calls to prevent race conditions
+func TestManager_ConcurrentReconnect(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	readOnly := false
+	cfg := []config.DatabaseConfig{
+		{
+			Name:     "test",
+			Type:     "sqlite",
+			Path:     tmpDir + "/test.db",
+			ReadOnly: &readOnly,
+		},
+	}
+
+	manager, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("failed to create manager: %v", err)
+	}
+	defer manager.Close()
+
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	errors := make(chan error, 100)
+
+	// Launch concurrent reconnect attempts
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := manager.Reconnect("test"); err != nil {
+				errors <- err
+			}
+		}()
+	}
+
+	// Interleave with Get and Ping operations
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := manager.Get("test"); err != nil {
+				errors <- err
+			}
+		}()
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			manager.Ping(ctx)
+		}()
+	}
+
+	wg.Wait()
+	close(errors)
+
+	for err := range errors {
+		t.Errorf("concurrent reconnect error: %v", err)
+	}
+
+	// Verify connection is still functional after all reconnects
+	if !manager.PingAll(ctx) {
+		t.Error("connection unhealthy after concurrent reconnects")
+	}
+}
+
+// TestManager_ConcurrentReconnectAll tests concurrent ReconnectAll calls
+func TestManager_ConcurrentReconnectAll(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	readOnly := false
+	cfg := []config.DatabaseConfig{
+		{
+			Name:     "db1",
+			Type:     "sqlite",
+			Path:     tmpDir + "/db1.db",
+			ReadOnly: &readOnly,
+		},
+		{
+			Name:     "db2",
+			Type:     "sqlite",
+			Path:     tmpDir + "/db2.db",
+			ReadOnly: &readOnly,
+		},
+	}
+
+	manager, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("failed to create manager: %v", err)
+	}
+	defer manager.Close()
+
+	ctx := context.Background()
+	var wg sync.WaitGroup
+
+	// Launch concurrent ReconnectAll calls
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results := manager.ReconnectAll()
+			for name, err := range results {
+				if err != nil {
+					t.Errorf("reconnect failed for %s: %v", name, err)
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	// Verify all connections are healthy
+	if !manager.PingAll(ctx) {
+		t.Error("connections unhealthy after concurrent ReconnectAll")
+	}
+}
+
 // TestManager_MixedDatabaseTypes manages SQLite connections with different readonly/settings
 func TestManager_MixedDatabaseTypes(t *testing.T) {
 	tmpDir := t.TempDir()

@@ -99,7 +99,7 @@ func (s *Scheduler) executeJob(q config.QueryConfig) {
 	var results []map[string]any
 
 	// Retry with exponential backoff: 1s, 5s, 25s
-	backoffs := []time.Duration{0, 1 * time.Second, 5 * time.Second, 25 * time.Second}
+	backoffs := []time.Duration{1 * time.Second, 5 * time.Second, 25 * time.Second}
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		if attempt > 1 {
@@ -113,7 +113,7 @@ func (s *Scheduler) executeJob(q config.QueryConfig) {
 					"reason":     "scheduler stopping",
 				})
 				return
-			case <-time.After(backoffs[attempt-1]):
+			case <-time.After(backoffs[attempt-2]):
 				// Backoff completed, continue with retry
 			}
 			logging.Debug("scheduled_query_retry", map[string]any{

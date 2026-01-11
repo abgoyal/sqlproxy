@@ -33,7 +33,8 @@ type ServerConfig struct {
 	DefaultTimeoutSec int          `yaml:"default_timeout_sec"` // Default query timeout (can be overridden per-query or per-request)
 	MaxTimeoutSec     int          `yaml:"max_timeout_sec"`     // Maximum allowed timeout (caps request overrides)
 	Cache             *CacheConfig `yaml:"cache"`               // Optional cache configuration
-	Version           string       `yaml:"-"`                   // Set at runtime, not from config file
+	APIVersion        string       `yaml:"api_version"`         // API version for OpenAPI spec (e.g., "1.0.0")
+	Version           string       `yaml:"-"`                   // Server version, set at runtime, not from config file
 	BuildTime         string       `yaml:"-"`                   // Set at runtime, not from config file
 }
 

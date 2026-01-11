@@ -204,21 +204,27 @@ The validator checks:
    sudo chown -R sqlproxy:sqlproxy /var/log/sql-proxy
    ```
 
-3. Install systemd unit:
+3. Generate the systemd unit file:
    ```bash
-   sudo cp sql-proxy.service /etc/systemd/system/
-   sudo systemctl daemon-reload
+   # Generate the unit file from template with your config path
+   /opt/sql-proxy/sql-proxy -install -config /opt/sql-proxy/config.yaml
+
+   # For multiple instances, use -service-name:
+   # /opt/sql-proxy/sql-proxy -install -service-name sql-proxy-prod -config /opt/sql-proxy/prod.yaml
+   # /opt/sql-proxy/sql-proxy -install -service-name sql-proxy-staging -config /opt/sql-proxy/staging.yaml
    ```
 
-4. Edit the unit file if needed:
+   This generates a templated systemd unit file with your executable path, config path, and service name embedded. Follow the printed instructions to create the service file.
+
+4. Install and enable:
    ```bash
-   sudo systemctl edit --full sql-proxy
+   sudo systemctl daemon-reload
+   sudo systemctl enable sql-proxy   # Enable auto-start
+   sudo systemctl start sql-proxy    # Start the service
    ```
 
 5. Manage the service:
    ```bash
-   sudo systemctl enable sql-proxy   # Enable auto-start
-   sudo systemctl start sql-proxy    # Start the service
    sudo systemctl stop sql-proxy     # Stop the service
    sudo systemctl restart sql-proxy  # Restart the service
    sudo systemctl status sql-proxy   # Check status
@@ -245,18 +251,23 @@ The validator checks:
    sudo dscl . -create /Users/_sqlproxy PrimaryGroupID 299
    ```
 
-3. Install launchd plist:
+3. Generate the launchd plist file:
    ```bash
-   sudo cp com.sqlproxy.plist /Library/LaunchDaemons/
-   sudo chown root:wheel /Library/LaunchDaemons/com.sqlproxy.plist
+   # Generate the plist file from template with your config path
+   /usr/local/bin/sql-proxy -install -config /usr/local/etc/sql-proxy/config.yaml
+
+   # For multiple instances, use -service-name:
+   # /usr/local/bin/sql-proxy -install -service-name sql-proxy-prod -config /usr/local/etc/sql-proxy/prod.yaml
    ```
+
+   This generates a templated launchd plist with your executable path, config path, and service name embedded. Follow the printed instructions to create the plist file.
 
 4. Manage the service:
    ```bash
-   sudo launchctl load /Library/LaunchDaemons/com.sqlproxy.plist     # Start
-   sudo launchctl unload /Library/LaunchDaemons/com.sqlproxy.plist   # Stop
-   sudo launchctl list | grep sqlproxy                                # Status
-   tail -f /usr/local/var/log/sql-proxy/sql-proxy.log                # View logs
+   sudo launchctl load /Library/LaunchDaemons/com.sqlproxy.sql-proxy.plist     # Start
+   sudo launchctl unload /Library/LaunchDaemons/com.sqlproxy.sql-proxy.plist   # Stop
+   sudo launchctl list | grep sqlproxy                                          # Status
+   tail -f /usr/local/var/log/sql-proxy/sql-proxy.log                          # View logs
    ```
 
 ## Configuration
@@ -280,7 +291,7 @@ databases:
     user: "sqlproxy_reader"
     password: "${DB_PASSWORD}"
     database: "YourDB"
-    readonly: true
+    readonly: true                # Defaults to true if omitted
 
 logging:
   level: "info"
@@ -841,6 +852,8 @@ Response:
 ```json
 {
   "timestamp": "2024-01-15T10:35:00Z",
+  "version": "1.0.0",
+  "build_time": "2024-01-15T10:30:00Z",
   "uptime_sec": 86400,
   "total_requests": 15234,
   "total_errors": 12,
@@ -1346,7 +1359,9 @@ sql-proxy.exe -status
 
 **Linux:**
 ```bash
-sudo cp sql-proxy.service /etc/systemd/system/
+# Generate systemd unit file from template
+/opt/sql-proxy/sql-proxy -install -config /opt/sql-proxy/config.yaml
+# Follow printed instructions, then:
 sudo systemctl daemon-reload
 sudo systemctl enable sql-proxy
 sudo systemctl start sql-proxy
@@ -1355,8 +1370,10 @@ sudo systemctl status sql-proxy
 
 **macOS:**
 ```bash
-sudo cp com.sqlproxy.plist /Library/LaunchDaemons/
-sudo launchctl load /Library/LaunchDaemons/com.sqlproxy.plist
+# Generate launchd plist from template
+/usr/local/bin/sql-proxy -install -config /usr/local/etc/sql-proxy/config.yaml
+# Follow printed instructions, then:
+sudo launchctl load /Library/LaunchDaemons/com.sqlproxy.sql-proxy.plist
 ```
 
 ### 4. Verify and monitor

@@ -170,41 +170,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cacheEnabled := h.cache != nil && h.queryConfig.Cache != nil && h.queryConfig.Cache.Enabled
 	noCache := r.URL.Query().Get("_nocache") == "1"
 	var cacheKey string
+	var cacheHit bool
 
+	// Build cache key early (needed for GetOrCompute)
 	if cacheEnabled && !noCache {
 		var keyErr error
 		cacheKey, keyErr = cache.BuildKey(h.queryConfig.Cache.Key, params)
-		if keyErr == nil {
-			if cached, hit := h.cache.Get(h.queryConfig.Path, cacheKey); hit {
-				m.TotalDuration = time.Since(startTime)
-				m.RowCount = len(cached)
-				m.CacheHit = true
-				logFields["cache_hit"] = true
-				logFields["cache_key"] = cacheKey
-				logFields["row_count"] = len(cached)
-				logFields["total_duration_ms"] = m.TotalDuration.Milliseconds()
-
-				metrics.Record(m)
-				logging.Info("request_completed", logFields)
-
-				// Add cache headers
-				w.Header().Set("X-Cache", "HIT")
-				w.Header().Set("X-Cache-Key", sanitizeHeaderValue(cacheKey))
-				if ttlRemaining := h.cache.GetTTLRemaining(h.queryConfig.Path, cacheKey); ttlRemaining > 0 {
-					w.Header().Set("X-Cache-TTL", fmt.Sprintf("%d", int(ttlRemaining.Seconds())))
-				}
-
-				h.writeSuccess(w, cached, timeoutSec, requestID)
-				return
-			}
+		if keyErr != nil {
+			cacheKey = "" // Fall back to no caching on key build error
 		}
-		logFields["cache_hit"] = false
 	}
-
-	// Build query params
-	queryParams := h.buildQueryParams(params)
-
-	query := h.queryConfig.SQL
 
 	// Get database connection
 	database, err := h.dbManager.Get(h.dbName)
@@ -221,24 +196,56 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sessionCfg := config.ResolveSessionConfig(database.Config(), h.queryConfig)
 	logFields["isolation"] = sessionCfg.Isolation
 
-	// Execute query
-	logging.Debug("query_starting", logFields)
-	queryStart := time.Now()
+	// Compute function for cache miss
+	var queryDuration time.Duration
+	var queryErr error
+	computeQuery := func() ([]map[string]any, error) {
+		logging.Debug("query_starting", logFields)
+		queryStart := time.Now()
 
-	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutSec)*time.Second)
-	defer cancel()
+		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutSec)*time.Second)
+		defer cancel()
 
-	results, err := database.Query(ctx, sessionCfg, query, queryParams)
-	queryDuration := time.Since(queryStart)
+		results, err := database.Query(ctx, sessionCfg, h.queryConfig.SQL, params)
+		queryDuration = time.Since(queryStart)
+		queryErr = err
+
+		if err != nil {
+			return nil, err
+		}
+
+		// Parse JSON columns if configured
+		if len(h.queryConfig.JSONColumns) > 0 {
+			if err := parseJSONColumns(results, h.queryConfig.JSONColumns); err != nil {
+				return nil, err
+			}
+		}
+
+		return results, nil
+	}
+
+	// Execute with cache (uses singleflight to prevent stampede)
+	var results []map[string]any
+
+	if cacheEnabled && !noCache && cacheKey != "" {
+		cacheTTL := time.Duration(h.queryConfig.Cache.TTLSec) * time.Second
+		if cacheTTL == 0 {
+			cacheTTL = h.defaultCacheTTL
+		}
+		results, cacheHit, err = h.cache.GetOrCompute(h.queryConfig.Path, cacheKey, cacheTTL, computeQuery)
+	} else {
+		results, err = computeQuery()
+	}
+
 	m.QueryDuration = queryDuration
-
 	logFields["query_duration_ms"] = queryDuration.Milliseconds()
 
 	if err != nil {
 		m.TotalDuration = time.Since(startTime)
 		logFields["error"] = err.Error()
 
-		if ctx.Err() == context.DeadlineExceeded {
+		// Check if it was a timeout (from context deadline)
+		if queryErr != nil && r.Context().Err() == context.DeadlineExceeded {
 			m.StatusCode = http.StatusGatewayTimeout
 			m.Error = fmt.Sprintf("query timed out after %d seconds", timeoutSec)
 			logging.Warn("query_timeout", logFields)
@@ -253,35 +260,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse JSON columns if configured
-	if len(h.queryConfig.JSONColumns) > 0 {
-		if err := parseJSONColumns(results, h.queryConfig.JSONColumns); err != nil {
-			m.TotalDuration = time.Since(startTime)
-			m.StatusCode = http.StatusInternalServerError
-			m.Error = "failed to parse JSON columns"
-			logFields["error"] = err.Error()
-			logging.Error("json_column_parse_failed", logFields)
-			h.finishRequest(w, m, logFields, http.StatusInternalServerError, "failed to parse JSON columns", requestID, timeoutSec)
-			return
-		}
-	}
-
-	// Store in cache if enabled
-	if cacheEnabled && !noCache && cacheKey != "" {
-		ttl := time.Duration(h.queryConfig.Cache.TTLSec) * time.Second
-		if ttl == 0 {
-			ttl = h.defaultCacheTTL
-		}
-		h.cache.Set(h.queryConfig.Path, cacheKey, results, ttl)
-		logFields["cache_key"] = cacheKey
-		logFields["cache_ttl_sec"] = int(ttl.Seconds())
-	}
-
 	m.RowCount = len(results)
+	m.CacheHit = cacheHit
 	m.TotalDuration = time.Since(startTime)
 
 	logFields["row_count"] = len(results)
 	logFields["total_duration_ms"] = m.TotalDuration.Milliseconds()
+	logFields["cache_hit"] = cacheHit
+
+	if cacheKey != "" {
+		logFields["cache_key"] = cacheKey
+	}
 
 	// Warn on slow queries (>80% of timeout)
 	if queryDuration > time.Duration(timeoutSec*800)*time.Millisecond {
@@ -297,6 +286,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if cacheEnabled {
 		if noCache {
 			w.Header().Set("X-Cache", "BYPASS")
+		} else if cacheHit {
+			w.Header().Set("X-Cache", "HIT")
+			w.Header().Set("X-Cache-Key", sanitizeHeaderValue(cacheKey))
+			if ttlRemaining := h.cache.GetTTLRemaining(h.queryConfig.Path, cacheKey); ttlRemaining > 0 {
+				w.Header().Set("X-Cache-TTL", fmt.Sprintf("%d", int(ttlRemaining.Seconds())))
+			}
 		} else if cacheKey != "" {
 			w.Header().Set("X-Cache", "MISS")
 			w.Header().Set("X-Cache-Key", sanitizeHeaderValue(cacheKey))
@@ -622,14 +617,6 @@ func convertValue(value, typeName string) (any, error) {
 	}
 }
 
-// buildQueryParams builds the parameter map for the query.
-// The driver handles parameter translation to its native syntax.
-func (h *Handler) buildQueryParams(params map[string]any) map[string]any {
-	// The params map from parseParameters already has all provided values.
-	// For optional params not provided, the driver will pass nil.
-	// We just return what was parsed.
-	return params
-}
 
 func (h *Handler) writeSuccess(w http.ResponseWriter, data []map[string]any, timeoutSec int, requestID string) {
 	resp := Response{

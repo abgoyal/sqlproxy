@@ -7,6 +7,7 @@ server:
   port: 8081               # HTTP port
   default_timeout_sec: 30  # Default query timeout (seconds)
   max_timeout_sec: 300     # Maximum allowed timeout (caps _timeout param)
+  # api_version: "1.0.0"   # API version shown in OpenAPI spec (version your query config changes)
   # Cache configuration (optional)
   # cache:
   #   enabled: true
@@ -22,7 +23,7 @@ databases:
     user: "${DB_USER}"             # Database user
     password: "${DB_PASSWORD}"     # Database password
     database: "${DB_NAME}"         # Database name
-    readonly: true                 # Connection routing: ApplicationIntent=ReadOnly
+    readonly: true                 # Defaults to true if omitted; sets ApplicationIntent=ReadOnly
     # Session defaults (optional - these are the implicit defaults for readonly: true)
     # isolation: "read_uncommitted"   # read_uncommitted, read_committed, repeatable_read, serializable, snapshot
     # lock_timeout_ms: 5000           # Lock wait timeout in milliseconds
@@ -31,7 +32,7 @@ databases:
     # max_open_conns: 10             # Max open connections (default: 5)
     # max_idle_conns: 5              # Max idle connections (default: 2)
     # conn_max_lifetime: 300         # Max connection lifetime in seconds (default: 300)
-    # conn_max_idle_time: 60         # Max idle time before closing in seconds (default: 120)
+    # conn_max_idle_time: 120        # Max idle time before closing in seconds (default: 120)
 
   # Example: SQLite database (useful for testing)
   # - name: "test_db"
@@ -42,9 +43,9 @@ databases:
   #   # busy_timeout_ms: 5000       # Busy timeout in milliseconds (default: 5000)
   #   # Connection pool settings (optional - applies to all database types)
   #   # max_open_conns: 5
-  #   # max_idle_conns: 5
+  #   # max_idle_conns: 2
   #   # conn_max_lifetime: 300
-  #   # conn_max_idle_time: 60
+  #   # conn_max_idle_time: 120
 
 # Logging Configuration
 logging:
@@ -396,6 +397,12 @@ queries:
   #         on_empty: "send"    # Send even with empty results
   #         empty: |
   #           {"query": "{{.Query}}", "timestamp": "{{.DurationMs}}ms", "data": [], "message": "No new records"}
+  #       retry:                  # Retry configuration (optional)
+  #         enabled: true         # Enable retries (default: true)
+  #         max_attempts: 3       # Maximum retry attempts (default: 3)
+  #         initial_backoff_sec: 1  # Initial backoff in seconds (default: 1)
+  #         max_backoff_sec: 30   # Maximum backoff in seconds (default: 30)
+  #                               # Backoff doubles each retry: 1s, 2s, 4s... capped at max
 
   # Template Reference:
   # Header/Footer context: .Query, .Count, .Success, .DurationMs, .Params, .Data, .Error

@@ -52,6 +52,8 @@ type CacheSnapshotProvider func() any
 // Snapshot represents metrics at a point in time
 type Snapshot struct {
 	Timestamp     time.Time                 `json:"timestamp"`
+	Version       string                    `json:"version,omitempty"`
+	BuildTime     string                    `json:"build_time,omitempty"`
 	UptimeSec     int64                     `json:"uptime_sec"`
 	TotalRequests int64                     `json:"total_requests"`
 	TotalErrors   int64                     `json:"total_errors"`
@@ -64,8 +66,10 @@ type Snapshot struct {
 
 // Collector collects metrics
 type Collector struct {
-	startTime            time.Time
-	dbHealthChecker      func() bool
+	startTime             time.Time
+	version               string
+	buildTime             string
+	dbHealthChecker       func() bool
 	cacheSnapshotProvider CacheSnapshotProvider
 
 	mu            sync.RWMutex
@@ -90,9 +94,11 @@ type endpointData struct {
 var defaultCollector *Collector
 
 // Init initializes the global metrics collector
-func Init(dbHealthChecker func() bool) {
+func Init(dbHealthChecker func() bool, version, buildTime string) {
 	defaultCollector = &Collector{
 		startTime:       time.Now(),
+		version:         version,
+		buildTime:       buildTime,
 		dbHealthChecker: dbHealthChecker,
 		endpoints:       make(map[string]*endpointData),
 	}
@@ -103,6 +109,25 @@ func SetCacheSnapshotProvider(provider CacheSnapshotProvider) {
 	if defaultCollector != nil {
 		defaultCollector.cacheSnapshotProvider = provider
 	}
+}
+
+// Reset clears all metrics counters while preserving configuration.
+// This is useful for operational purposes like starting fresh metrics
+// after a maintenance window.
+func Reset() {
+	if defaultCollector == nil {
+		return
+	}
+	c := defaultCollector
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.startTime = time.Now()
+	c.totalRequests = 0
+	c.totalErrors = 0
+	c.totalTimeouts = 0
+	c.endpoints = make(map[string]*endpointData)
 }
 
 // Record records metrics for a completed request
@@ -171,6 +196,8 @@ func GetSnapshot() *Snapshot {
 
 	snap := &Snapshot{
 		Timestamp:     now,
+		Version:       c.version,
+		BuildTime:     c.buildTime,
 		UptimeSec:     int64(now.Sub(c.startTime).Seconds()),
 		TotalRequests: c.totalRequests,
 		TotalErrors:   c.totalErrors,

@@ -3,6 +3,7 @@ package validate
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"text/template"
 	"time"
@@ -312,7 +313,7 @@ func validateQueries(cfg *config.Config, r *Result) {
 
 		// Validate cache if present
 		if q.Cache != nil {
-			validateCache(q.Cache, prefix, r)
+			validateCache(q.Cache, q.Parameters, prefix, r)
 		}
 
 		// Validate json_columns if present
@@ -493,7 +494,10 @@ func validateJSONColumns(columns []string, prefix string, r *Result) {
 	}
 }
 
-func validateCache(c *config.QueryCacheConfig, prefix string, r *Result) {
+// cacheKeyFieldRegex matches template field references like {{.fieldName}} or {{.fieldName | ...}}
+var cacheKeyFieldRegex = regexp.MustCompile(`\{\{\s*\.([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:\||\}\})`)
+
+func validateCache(c *config.QueryCacheConfig, params []config.ParamConfig, prefix string, r *Result) {
 	cachePrefix := prefix + ".cache"
 
 	if !c.Enabled {
@@ -507,6 +511,9 @@ func validateCache(c *config.QueryCacheConfig, prefix string, r *Result) {
 		// Validate key template syntax using same FuncMap as cache package
 		if _, err := template.New("").Funcs(cache.KeyFuncMap).Parse(c.Key); err != nil {
 			r.addError("%s: invalid key template: %v", cachePrefix, err)
+		} else {
+			// Check that template field references match defined parameters
+			validateCacheKeyParams(c.Key, params, cachePrefix, r)
 		}
 	}
 
@@ -525,6 +532,26 @@ func validateCache(c *config.QueryCacheConfig, prefix string, r *Result) {
 		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 		if _, err := parser.Parse(c.EvictCron); err != nil {
 			r.addError("%s: invalid evict_cron expression '%s': %v", cachePrefix, c.EvictCron, err)
+		}
+	}
+}
+
+// validateCacheKeyParams checks that all field references in a cache key template
+// correspond to defined query parameters.
+func validateCacheKeyParams(keyTmpl string, params []config.ParamConfig, prefix string, r *Result) {
+	// Build set of defined parameter names
+	paramNames := make(map[string]bool)
+	for _, p := range params {
+		paramNames[p.Name] = true
+	}
+
+	// Find all field references in the template
+	matches := cacheKeyFieldRegex.FindAllStringSubmatch(keyTmpl, -1)
+	for _, m := range matches {
+		fieldName := m[1]
+		if !paramNames[fieldName] {
+			r.addWarning("%s: key template references '{{.%s}}' but no parameter '%s' is defined",
+				prefix, fieldName, fieldName)
 		}
 	}
 }

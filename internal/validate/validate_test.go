@@ -1272,20 +1272,21 @@ func TestValidateScheduleWithWebhook(t *testing.T) {
 // TestValidateCache tests cache configuration validation
 func TestValidateCache(t *testing.T) {
 	tests := []struct {
-		name    string
-		cache   *config.QueryCacheConfig
-		wantErr bool
-		errMsg  string
+		name     string
+		cache    *config.QueryCacheConfig
+		params   []config.ParamConfig
+		wantErr  bool
+		wantWarn bool
+		errMsg   string
 	}{
 		{
-			name:    "valid cache config",
-			cache:   &config.QueryCacheConfig{Enabled: true, Key: "user:{{.id}}", TTLSec: 300},
-			wantErr: false,
+			name:   "valid cache config with matching param",
+			cache:  &config.QueryCacheConfig{Enabled: true, Key: "user:{{.id}}", TTLSec: 300},
+			params: []config.ParamConfig{{Name: "id", Type: "int"}},
 		},
 		{
-			name:    "disabled cache skips validation",
-			cache:   &config.QueryCacheConfig{Enabled: false, Key: ""}, // Empty key ok when disabled
-			wantErr: false,
+			name:  "disabled cache skips validation",
+			cache: &config.QueryCacheConfig{Enabled: false, Key: ""}, // Empty key ok when disabled
 		},
 		{
 			name:    "missing key when enabled",
@@ -1312,9 +1313,8 @@ func TestValidateCache(t *testing.T) {
 			errMsg:  "max_size_mb cannot be negative",
 		},
 		{
-			name:    "valid evict cron",
-			cache:   &config.QueryCacheConfig{Enabled: true, Key: "test", EvictCron: "0 * * * *"},
-			wantErr: false,
+			name:  "valid evict cron",
+			cache: &config.QueryCacheConfig{Enabled: true, Key: "test", EvictCron: "0 * * * *"},
 		},
 		{
 			name:    "invalid evict cron",
@@ -1323,25 +1323,45 @@ func TestValidateCache(t *testing.T) {
 			errMsg:  "invalid evict_cron",
 		},
 		{
-			name:    "key with default function",
-			cache:   &config.QueryCacheConfig{Enabled: true, Key: `items:{{.status | default "all"}}`},
-			wantErr: false,
+			name:   "key with default function",
+			cache:  &config.QueryCacheConfig{Enabled: true, Key: `items:{{.status | default "all"}}`},
+			params: []config.ParamConfig{{Name: "status", Type: "string"}},
+		},
+		{
+			name:     "key references undefined param",
+			cache:    &config.QueryCacheConfig{Enabled: true, Key: "user:{{.userId}}"},
+			params:   []config.ParamConfig{{Name: "id", Type: "int"}}, // Different name
+			wantWarn: true,
+			errMsg:   "no parameter 'userId' is defined",
+		},
+		{
+			name:     "key references multiple undefined params",
+			cache:    &config.QueryCacheConfig{Enabled: true, Key: "{{.foo}}:{{.bar}}"},
+			params:   []config.ParamConfig{},
+			wantWarn: true,
+			errMsg:   "no parameter 'foo' is defined",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			r := &Result{Valid: true}
-			validateCache(tc.cache, "queries[0]", r)
+			validateCache(tc.cache, tc.params, "queries[0]", r)
 
 			if tc.wantErr && r.Valid {
 				t.Error("expected error but got none")
 			}
-			if !tc.wantErr && !r.Valid {
+			if !tc.wantErr && !tc.wantWarn && !r.Valid {
 				t.Errorf("unexpected error: %v", r.Errors)
 			}
 			if tc.wantErr && !strings.Contains(strings.Join(r.Errors, " "), tc.errMsg) {
 				t.Errorf("expected error containing %q, got %v", tc.errMsg, r.Errors)
+			}
+			if tc.wantWarn && len(r.Warnings) == 0 {
+				t.Error("expected warning but got none")
+			}
+			if tc.wantWarn && !strings.Contains(strings.Join(r.Warnings, " "), tc.errMsg) {
+				t.Errorf("expected warning containing %q, got %v", tc.errMsg, r.Warnings)
 			}
 		})
 	}

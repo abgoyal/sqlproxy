@@ -8,12 +8,18 @@ import (
 
 // Spec generates an OpenAPI 3.0 specification from the config
 func Spec(cfg *config.Config) map[string]any {
+	// Use configured API version, default to "1.0.0" if not set
+	apiVersion := cfg.Server.APIVersion
+	if apiVersion == "" {
+		apiVersion = "1.0.0"
+	}
+
 	spec := map[string]any{
 		"openapi": "3.0.3",
 		"info": map[string]any{
 			"title":       "SQL Proxy API",
 			"description": "Auto-generated API for database query endpoints (SQL Server, SQLite)",
-			"version":     "1.0.0",
+			"version":     apiVersion,
 		},
 		"servers": []map[string]any{
 			{"url": "/", "description": "Current server"},
@@ -32,19 +38,16 @@ func buildPaths(cfg *config.Config) map[string]any {
 	paths["/health"] = map[string]any{
 		"get": map[string]any{
 			"summary":     "Health check",
-			"description": "Returns service and database health status",
+			"description": "Returns service and database health status. Always returns 200; parse the 'status' field (healthy/degraded/unhealthy) for actual state.",
 			"tags":        []string{"System"},
 			"responses": map[string]any{
 				"200": map[string]any{
-					"description": "Service is healthy",
+					"description": "Health status (check 'status' field for healthy/degraded/unhealthy)",
 					"content": map[string]any{
 						"application/json": map[string]any{
 							"schema": map[string]any{"$ref": "#/components/schemas/HealthResponse"},
 						},
 					},
-				},
-				"503": map[string]any{
-					"description": "Service is degraded (database disconnected)",
 				},
 			},
 		},
@@ -53,7 +56,7 @@ func buildPaths(cfg *config.Config) map[string]any {
 	paths["/health/{dbname}"] = map[string]any{
 		"get": map[string]any{
 			"summary":     "Per-database health check",
-			"description": "Returns health status for a specific database connection",
+			"description": "Returns health status for a specific database connection. Always returns 200 if database exists; parse 'status' field (connected/disconnected).",
 			"tags":        []string{"System"},
 			"parameters": []map[string]any{
 				{
@@ -68,7 +71,7 @@ func buildPaths(cfg *config.Config) map[string]any {
 			},
 			"responses": map[string]any{
 				"200": map[string]any{
-					"description": "Database is connected",
+					"description": "Database status (check 'status' field for connected/disconnected)",
 					"content": map[string]any{
 						"application/json": map[string]any{
 							"schema": map[string]any{"$ref": "#/components/schemas/DbHealthResponse"},
@@ -76,10 +79,7 @@ func buildPaths(cfg *config.Config) map[string]any {
 					},
 				},
 				"404": map[string]any{
-					"description": "Database not found",
-				},
-				"503": map[string]any{
-					"description": "Database is disconnected",
+					"description": "Database not found in configuration",
 				},
 			},
 		},
@@ -137,31 +137,33 @@ func buildPaths(cfg *config.Config) map[string]any {
 		},
 	}
 
-	paths["/cache/clear"] = map[string]any{
-		"post": map[string]any{
-			"summary":     "Clear cache",
-			"description": "Clear all cache entries or entries for a specific endpoint",
-			"tags":        []string{"System"},
-			"parameters": []map[string]any{
-				{
-					"name":        "endpoint",
-					"in":          "query",
-					"required":    false,
-					"description": "Endpoint path to clear cache for (e.g., /api/machines). If omitted, clears all cache.",
-					"schema": map[string]any{
-						"type": "string",
-					},
-				},
-			},
-			"responses": map[string]any{
-				"200": map[string]any{
-					"description": "Cache cleared successfully",
-				},
-				"404": map[string]any{
-					"description": "Cache not enabled",
+	cacheClearOp := map[string]any{
+		"summary":     "Clear cache",
+		"description": "Clear all cache entries or entries for a specific endpoint",
+		"tags":        []string{"System"},
+		"parameters": []map[string]any{
+			{
+				"name":        "endpoint",
+				"in":          "query",
+				"required":    false,
+				"description": "Endpoint path to clear cache for (e.g., /api/machines). If omitted, clears all cache.",
+				"schema": map[string]any{
+					"type": "string",
 				},
 			},
 		},
+		"responses": map[string]any{
+			"200": map[string]any{
+				"description": "Cache cleared successfully",
+			},
+			"404": map[string]any{
+				"description": "Cache not enabled",
+			},
+		},
+	}
+	paths["/cache/clear"] = map[string]any{
+		"post":   cacheClearOp,
+		"delete": cacheClearOp,
 	}
 
 	// Add query endpoints (skip schedule-only queries without HTTP paths)
@@ -395,7 +397,7 @@ func buildComponents() map[string]any {
 				"properties": map[string]any{
 					"status": map[string]any{
 						"type": "string",
-						"enum": []string{"healthy", "degraded"},
+						"enum": []string{"healthy", "degraded", "unhealthy"},
 					},
 					"databases": map[string]any{
 						"type":        "object",

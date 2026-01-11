@@ -39,6 +39,12 @@ type serviceTemplateData struct {
 const shutdownTimeout = 30 * time.Second
 const defaultServiceName = "sql-proxy"
 
+// SetServiceName is a no-op on non-Windows platforms.
+// On Windows, this sets the service name for Windows Service mode.
+func SetServiceName(_ string) {
+	// No-op on non-Windows platforms
+}
+
 // Run starts the server.
 // If interactive is true, runs in foreground with signal handling and output.
 // If interactive is false (daemon mode), runs quietly for systemd/launchd.

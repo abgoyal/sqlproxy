@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -914,6 +915,126 @@ func TestExecute_CustomRetryConfig(t *testing.T) {
 	// Should succeed on 3rd attempt
 	if attempts != 3 {
 		t.Errorf("expected 3 attempts, got %d", attempts)
+	}
+}
+
+// TestExecute_BackoffTiming tests exponential backoff with cap
+func TestExecute_BackoffTiming(t *testing.T) {
+	// Track timing between requests
+	var requestTimes []time.Time
+	var mu sync.Mutex
+
+	// Server that always returns 500 to force retries
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestTimes = append(requestTimes, time.Now())
+		mu.Unlock()
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("error"))
+	}))
+	defer server.Close()
+
+	enabled := true
+	webhookCfg := &config.WebhookConfig{
+		URL: server.URL,
+		Retry: &config.WebhookRetryConfig{
+			Enabled:           &enabled,
+			MaxAttempts:       3, // 1 initial + 3 retries = 4 total attempts
+			InitialBackoffSec: 1,
+			MaxBackoffSec:     4, // Cap at 4 seconds
+		},
+	}
+
+	start := time.Now()
+	_ = Execute(context.Background(), webhookCfg, &ExecutionContext{})
+	elapsed := time.Since(start)
+
+	mu.Lock()
+	times := requestTimes
+	mu.Unlock()
+
+	// Should have 4 attempts (1 initial + 3 retries)
+	if len(times) != 4 {
+		t.Errorf("expected 4 attempts, got %d", len(times))
+	}
+
+	// Expected backoff pattern: 1s, 2s, 4s (capped from 8s)
+	// Total minimum wait time: 1 + 2 + 4 = 7 seconds
+	// With some tolerance for test timing
+	expectedMinWait := 6 * time.Second // Allow some slack
+	expectedMaxWait := 10 * time.Second
+
+	if elapsed < expectedMinWait || elapsed > expectedMaxWait {
+		t.Errorf("total elapsed time %v outside expected range %v-%v",
+			elapsed, expectedMinWait, expectedMaxWait)
+	}
+
+	// Verify intervals roughly match expected backoff
+	if len(times) >= 4 {
+		// Check first interval (~1s)
+		interval1 := times[1].Sub(times[0])
+		if interval1 < 900*time.Millisecond || interval1 > 1500*time.Millisecond {
+			t.Errorf("first backoff interval %v, expected ~1s", interval1)
+		}
+
+		// Check second interval (~2s)
+		interval2 := times[2].Sub(times[1])
+		if interval2 < 1900*time.Millisecond || interval2 > 2500*time.Millisecond {
+			t.Errorf("second backoff interval %v, expected ~2s", interval2)
+		}
+
+		// Check third interval (~4s, capped)
+		interval3 := times[3].Sub(times[2])
+		if interval3 < 3900*time.Millisecond || interval3 > 4500*time.Millisecond {
+			t.Errorf("third backoff interval %v, expected ~4s (capped)", interval3)
+		}
+	}
+}
+
+// TestExecute_BackoffCapping tests that backoff is capped at MaxBackoff
+func TestExecute_BackoffCapping(t *testing.T) {
+	// Track timing between requests
+	var requestTimes []time.Time
+	var mu sync.Mutex
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestTimes = append(requestTimes, time.Now())
+		mu.Unlock()
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	enabled := true
+	webhookCfg := &config.WebhookConfig{
+		URL: server.URL,
+		Retry: &config.WebhookRetryConfig{
+			Enabled:           &enabled,
+			MaxAttempts:       2,
+			InitialBackoffSec: 1,
+			MaxBackoffSec:     1, // Cap at initial value - all backoffs should be 1s
+		},
+	}
+
+	_ = Execute(context.Background(), webhookCfg, &ExecutionContext{})
+
+	mu.Lock()
+	times := requestTimes
+	mu.Unlock()
+
+	if len(times) < 3 {
+		t.Fatalf("expected 3 attempts, got %d", len(times))
+	}
+
+	// Both intervals should be ~1s (capped)
+	interval1 := times[1].Sub(times[0])
+	interval2 := times[2].Sub(times[1])
+
+	if interval1 < 900*time.Millisecond || interval1 > 1500*time.Millisecond {
+		t.Errorf("first interval %v, expected ~1s", interval1)
+	}
+	if interval2 < 900*time.Millisecond || interval2 > 1500*time.Millisecond {
+		t.Errorf("second interval %v, expected ~1s (capped)", interval2)
 	}
 }
 

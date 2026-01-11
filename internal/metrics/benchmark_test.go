@@ -8,7 +8,7 @@ import (
 // BenchmarkRecord measures single metric recording throughput
 func BenchmarkRecord(b *testing.B) {
 	defaultCollector = nil
-	Init(func() bool { return true })
+	Init(func() bool { return true }, "", "")
 
 	m := RequestMetrics{
 		Endpoint:      "/api/test",
@@ -28,7 +28,7 @@ func BenchmarkRecord(b *testing.B) {
 // BenchmarkRecord_Concurrent measures parallel metric recording with RunParallel
 func BenchmarkRecord_Concurrent(b *testing.B) {
 	defaultCollector = nil
-	Init(func() bool { return true })
+	Init(func() bool { return true }, "", "")
 
 	m := RequestMetrics{
 		Endpoint:      "/api/test",
@@ -50,7 +50,7 @@ func BenchmarkRecord_Concurrent(b *testing.B) {
 // BenchmarkRecord_MultipleEndpoints measures recording across 5 different endpoints
 func BenchmarkRecord_MultipleEndpoints(b *testing.B) {
 	defaultCollector = nil
-	Init(func() bool { return true })
+	Init(func() bool { return true }, "", "")
 
 	endpoints := []string{"/api/a", "/api/b", "/api/c", "/api/d", "/api/e"}
 
@@ -70,7 +70,7 @@ func BenchmarkRecord_MultipleEndpoints(b *testing.B) {
 // BenchmarkGetSnapshot measures snapshot retrieval with 10 pre-populated endpoints
 func BenchmarkGetSnapshot(b *testing.B) {
 	defaultCollector = nil
-	Init(func() bool { return true })
+	Init(func() bool { return true }, "", "")
 
 	// Pre-populate with some data
 	for i := 0; i < 10; i++ {
@@ -92,7 +92,7 @@ func BenchmarkGetSnapshot(b *testing.B) {
 // BenchmarkGetSnapshot_Concurrent measures parallel snapshot reads under load
 func BenchmarkGetSnapshot_Concurrent(b *testing.B) {
 	defaultCollector = nil
-	Init(func() bool { return true })
+	Init(func() bool { return true }, "", "")
 
 	// Pre-populate with some data
 	for i := 0; i < 10; i++ {
@@ -116,7 +116,7 @@ func BenchmarkGetSnapshot_Concurrent(b *testing.B) {
 // BenchmarkRecord_WithError measures error metric recording with status 500
 func BenchmarkRecord_WithError(b *testing.B) {
 	defaultCollector = nil
-	Init(func() bool { return true })
+	Init(func() bool { return true }, "", "")
 
 	m := RequestMetrics{
 		Endpoint:      "/api/error",
@@ -135,7 +135,7 @@ func BenchmarkRecord_WithError(b *testing.B) {
 // BenchmarkRecord_WithTimeout measures timeout metric recording with status 504
 func BenchmarkRecord_WithTimeout(b *testing.B) {
 	defaultCollector = nil
-	Init(func() bool { return true })
+	Init(func() bool { return true }, "", "")
 
 	m := RequestMetrics{
 		Endpoint:      "/api/slow",
@@ -158,14 +158,14 @@ func BenchmarkInit(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		defaultCollector = nil
-		Init(checker)
+		Init(checker, "", "")
 	}
 }
 
 // BenchmarkMixedWorkload simulates real-world usage: 90% success, 10% error, 1% snapshots
 func BenchmarkMixedWorkload(b *testing.B) {
 	defaultCollector = nil
-	Init(func() bool { return true })
+	Init(func() bool { return true }, "", "")
 
 	endpoints := []string{"/api/users", "/api/products", "/api/orders"}
 

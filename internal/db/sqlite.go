@@ -48,16 +48,13 @@ type SQLiteDriver struct {
 	readOnly bool
 }
 
-// NewSQLiteDriver creates a new SQLite driver
-func NewSQLiteDriver(cfg config.DatabaseConfig) (*SQLiteDriver, error) {
-	readOnly := cfg.IsReadOnly()
-
-	// Build connection string (DSN)
-	// SQLite uses file path as connection string
-	dsn := cfg.Path
-	if dsn == "" {
-		return nil, fmt.Errorf("sqlite path is required")
+// buildSQLiteDSN constructs the DSN string with appropriate parameters
+func buildSQLiteDSN(path string, readOnly bool) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("sqlite path is required")
 	}
+
+	dsn := path
 
 	// Add DSN parameters for better concurrency
 	// - _txlock=immediate: Acquire write lock at transaction start, prevents deadlocks
@@ -67,7 +64,7 @@ func NewSQLiteDriver(cfg config.DatabaseConfig) (*SQLiteDriver, error) {
 		// For write connections, use immediate locking to prevent deadlocks
 		params = append(params, "_txlock=immediate")
 	}
-	if readOnly && dsn != ":memory:" {
+	if readOnly && path != ":memory:" {
 		params = append(params, "mode=ro")
 	}
 
@@ -77,6 +74,18 @@ func NewSQLiteDriver(cfg config.DatabaseConfig) (*SQLiteDriver, error) {
 			separator = "&"
 		}
 		dsn += separator + strings.Join(params, "&")
+	}
+
+	return dsn, nil
+}
+
+// NewSQLiteDriver creates a new SQLite driver
+func NewSQLiteDriver(cfg config.DatabaseConfig) (*SQLiteDriver, error) {
+	readOnly := cfg.IsReadOnly()
+
+	dsn, err := buildSQLiteDSN(cfg.Path, readOnly)
+	if err != nil {
+		return nil, err
 	}
 
 	conn, err := sql.Open("sqlite", dsn)
@@ -228,22 +237,9 @@ func (d *SQLiteDriver) Reconnect() error {
 		d.conn = nil
 	}
 
-	// Build connection string with DSN parameters
-	dsn := d.path
-	var params []string
-	if !d.readOnly {
-		params = append(params, "_txlock=immediate")
-	}
-	if d.readOnly && dsn != ":memory:" {
-		params = append(params, "mode=ro")
-	}
-
-	if len(params) > 0 {
-		separator := "?"
-		if strings.Contains(dsn, "?") {
-			separator = "&"
-		}
-		dsn += separator + strings.Join(params, "&")
+	dsn, err := buildSQLiteDSN(d.path, d.readOnly)
+	if err != nil {
+		return err
 	}
 
 	conn, err := sql.Open("sqlite", dsn)

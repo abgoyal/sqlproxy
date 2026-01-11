@@ -127,6 +127,9 @@ func main() {
 		fmt.Printf("Loaded %d query endpoints\n", len(cfg.Queries))
 	}
 
+	// Set service name before running (needed for Windows service mode)
+	service.SetServiceName(*serviceName)
+
 	// Run the service
 	if err := service.Run(cfg, interactive); err != nil {
 		log.Fatalf("Service error: %v", err)

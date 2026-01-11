@@ -108,12 +108,13 @@ func (m *Manager) PingAll(ctx context.Context) bool {
 	return true
 }
 
-// Reconnect attempts to reconnect a specific database
+// Reconnect attempts to reconnect a specific database.
+// Uses full lock to prevent concurrent reconnect attempts to the same database.
 func (m *Manager) Reconnect(name string) error {
-	m.mu.RLock()
-	driver, ok := m.connections[name]
-	m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
+	driver, ok := m.connections[name]
 	if !ok {
 		return fmt.Errorf("unknown database connection: %s", name)
 	}
@@ -123,9 +124,10 @@ func (m *Manager) Reconnect(name string) error {
 // ReconnectAll attempts to reconnect all databases.
 // Useful for administrative operations like recovering from network outages.
 // Returns a map of connection name -> error (nil if reconnection succeeded).
+// Uses full lock to prevent concurrent reconnect attempts.
 func (m *Manager) ReconnectAll() map[string]error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	results := make(map[string]error)
 	for name, driver := range m.connections {

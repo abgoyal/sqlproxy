@@ -13,7 +13,7 @@ func TestInit(t *testing.T) {
 	defaultCollector = nil
 
 	checker := func() bool { return true }
-	Init(checker)
+	Init(checker, "1.0.0", "2024-01-01T00:00:00Z")
 
 	if defaultCollector == nil {
 		t.Fatal("expected collector to be initialized")
@@ -46,7 +46,7 @@ func TestRecord_NoCollector(t *testing.T) {
 // TestRecord tests request metric recording and snapshot retrieval
 func TestRecord(t *testing.T) {
 	defaultCollector = nil
-	Init(func() bool { return true })
+	Init(func() bool { return true }, "1.0.0", "2024-01-01T00:00:00Z")
 
 	// Record first request
 	Record(RequestMetrics{
@@ -81,7 +81,7 @@ func TestRecord(t *testing.T) {
 // TestRecord_Error tests error counter increment on 500 status
 func TestRecord_Error(t *testing.T) {
 	defaultCollector = nil
-	Init(func() bool { return true })
+	Init(func() bool { return true }, "1.0.0", "2024-01-01T00:00:00Z")
 
 	Record(RequestMetrics{
 		Endpoint:      "/api/error",
@@ -108,7 +108,7 @@ func TestRecord_Error(t *testing.T) {
 // TestRecord_Timeout tests timeout counter increment on 504 status
 func TestRecord_Timeout(t *testing.T) {
 	defaultCollector = nil
-	Init(func() bool { return true })
+	Init(func() bool { return true }, "1.0.0", "2024-01-01T00:00:00Z")
 
 	Record(RequestMetrics{
 		Endpoint:      "/api/slow",
@@ -135,7 +135,7 @@ func TestRecord_Timeout(t *testing.T) {
 // TestRecord_MinMaxDuration tests min/max duration tracking across requests
 func TestRecord_MinMaxDuration(t *testing.T) {
 	defaultCollector = nil
-	Init(func() bool { return true })
+	Init(func() bool { return true }, "1.0.0", "2024-01-01T00:00:00Z")
 
 	// Record multiple requests with different durations
 	durations := []time.Duration{
@@ -170,7 +170,7 @@ func TestRecord_MinMaxDuration(t *testing.T) {
 // TestRecord_Averages tests average duration calculation for total and query times
 func TestRecord_Averages(t *testing.T) {
 	defaultCollector = nil
-	Init(func() bool { return true })
+	Init(func() bool { return true }, "1.0.0", "2024-01-01T00:00:00Z")
 
 	// Record two requests: 100ms and 200ms total, 50ms and 100ms query
 	Record(RequestMetrics{
@@ -215,7 +215,7 @@ func TestGetSnapshot_NoCollector(t *testing.T) {
 // TestGetSnapshot_RuntimeStats verifies Go runtime stats in snapshot
 func TestGetSnapshot_RuntimeStats(t *testing.T) {
 	defaultCollector = nil
-	Init(func() bool { return true })
+	Init(func() bool { return true }, "1.0.0", "2024-01-01T00:00:00Z")
 
 	snap := GetSnapshot()
 
@@ -236,7 +236,7 @@ func TestGetSnapshot_RuntimeStats(t *testing.T) {
 // TestGetSnapshot_Uptime tests uptime calculation in snapshot
 func TestGetSnapshot_Uptime(t *testing.T) {
 	defaultCollector = nil
-	Init(func() bool { return true })
+	Init(func() bool { return true }, "1.0.0", "2024-01-01T00:00:00Z")
 
 	// Wait a bit
 	time.Sleep(time.Millisecond * 100)
@@ -251,7 +251,7 @@ func TestGetSnapshot_Uptime(t *testing.T) {
 func TestGetSnapshot_DBHealth(t *testing.T) {
 	// Test with healthy DB
 	defaultCollector = nil
-	Init(func() bool { return true })
+	Init(func() bool { return true }, "1.0.0", "2024-01-01T00:00:00Z")
 
 	snap := GetSnapshot()
 	if !snap.DBHealthy {
@@ -260,7 +260,7 @@ func TestGetSnapshot_DBHealth(t *testing.T) {
 
 	// Test with unhealthy DB
 	defaultCollector = nil
-	Init(func() bool { return false })
+	Init(func() bool { return false }, "1.0.0", "2024-01-01T00:00:00Z")
 
 	snap = GetSnapshot()
 	if snap.DBHealthy {
@@ -269,7 +269,7 @@ func TestGetSnapshot_DBHealth(t *testing.T) {
 
 	// Test with nil checker
 	defaultCollector = nil
-	Init(nil)
+	Init(nil, "", "")
 
 	snap = GetSnapshot()
 	if snap.DBHealthy {
@@ -280,7 +280,7 @@ func TestGetSnapshot_DBHealth(t *testing.T) {
 // TestRecord_Concurrent tests thread-safe metric recording with 100 goroutines
 func TestRecord_Concurrent(t *testing.T) {
 	defaultCollector = nil
-	Init(func() bool { return true })
+	Init(func() bool { return true }, "1.0.0", "2024-01-01T00:00:00Z")
 
 	var wg sync.WaitGroup
 	numGoroutines := 100
@@ -323,7 +323,7 @@ func TestRecord_Concurrent(t *testing.T) {
 // TestRecord_MultipleEndpoints tests separate stats tracking per endpoint
 func TestRecord_MultipleEndpoints(t *testing.T) {
 	defaultCollector = nil
-	Init(func() bool { return true })
+	Init(func() bool { return true }, "1.0.0", "2024-01-01T00:00:00Z")
 
 	endpoints := []string{"/api/a", "/api/b", "/api/c"}
 
@@ -355,7 +355,7 @@ func TestRecord_MultipleEndpoints(t *testing.T) {
 // TestEndpointStats_Fields verifies all endpoint stat fields are populated
 func TestEndpointStats_Fields(t *testing.T) {
 	defaultCollector = nil
-	Init(func() bool { return true })
+	Init(func() bool { return true }, "1.0.0", "2024-01-01T00:00:00Z")
 
 	Record(RequestMetrics{
 		Endpoint:      "/api/fields",
@@ -383,7 +383,7 @@ func TestEndpointStats_Fields(t *testing.T) {
 // TestSnapshot_Timestamp verifies snapshot timestamp is set correctly
 func TestSnapshot_Timestamp(t *testing.T) {
 	defaultCollector = nil
-	Init(func() bool { return true })
+	Init(func() bool { return true }, "1.0.0", "2024-01-01T00:00:00Z")
 
 	before := time.Now()
 	snap := GetSnapshot()
@@ -392,4 +392,80 @@ func TestSnapshot_Timestamp(t *testing.T) {
 	if snap.Timestamp.Before(before) || snap.Timestamp.After(after) {
 		t.Errorf("snapshot timestamp %v not between %v and %v", snap.Timestamp, before, after)
 	}
+}
+
+// TestSnapshot_Version verifies version and buildTime are included in snapshot
+func TestSnapshot_Version(t *testing.T) {
+	defaultCollector = nil
+	Init(func() bool { return true }, "2.0.0", "2024-06-15T12:00:00Z")
+
+	snap := GetSnapshot()
+	if snap.Version != "2.0.0" {
+		t.Errorf("expected Version=2.0.0, got %s", snap.Version)
+	}
+	if snap.BuildTime != "2024-06-15T12:00:00Z" {
+		t.Errorf("expected BuildTime=2024-06-15T12:00:00Z, got %s", snap.BuildTime)
+	}
+}
+
+// TestSnapshot_EmptyVersion verifies empty version/buildTime are handled correctly
+func TestSnapshot_EmptyVersion(t *testing.T) {
+	defaultCollector = nil
+	Init(func() bool { return true }, "", "")
+
+	snap := GetSnapshot()
+	if snap.Version != "" {
+		t.Errorf("expected empty Version, got %s", snap.Version)
+	}
+	if snap.BuildTime != "" {
+		t.Errorf("expected empty BuildTime, got %s", snap.BuildTime)
+	}
+}
+
+// TestReset verifies metrics are cleared while preserving configuration
+func TestReset(t *testing.T) {
+	defaultCollector = nil
+	Init(func() bool { return true }, "1.0.0", "2024-01-01T00:00:00Z")
+
+	// Record some requests
+	for i := 0; i < 10; i++ {
+		Record(RequestMetrics{
+			Endpoint:      "/api/test",
+			QueryName:     "test",
+			TotalDuration: time.Millisecond * 100,
+			RowCount:      5,
+			StatusCode:    200,
+		})
+	}
+
+	snap := GetSnapshot()
+	if snap.TotalRequests != 10 {
+		t.Errorf("expected 10 requests before reset, got %d", snap.TotalRequests)
+	}
+
+	// Reset metrics
+	Reset()
+
+	snap = GetSnapshot()
+	if snap.TotalRequests != 0 {
+		t.Errorf("expected 0 requests after reset, got %d", snap.TotalRequests)
+	}
+	if len(snap.Endpoints) != 0 {
+		t.Errorf("expected 0 endpoints after reset, got %d", len(snap.Endpoints))
+	}
+	// Version should be preserved
+	if snap.Version != "1.0.0" {
+		t.Errorf("expected version to be preserved, got %s", snap.Version)
+	}
+	// Uptime should be reset (close to 0)
+	if snap.UptimeSec > 1 {
+		t.Errorf("expected uptime to be reset, got %d", snap.UptimeSec)
+	}
+}
+
+// TestReset_NoCollector verifies Reset handles nil collector
+func TestReset_NoCollector(t *testing.T) {
+	defaultCollector = nil
+	// Should not panic
+	Reset()
 }

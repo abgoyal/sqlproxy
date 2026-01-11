@@ -27,6 +27,12 @@ const shutdownTimeout = 30 * time.Second
 // runningServiceName is set when running as a Windows service
 var runningServiceName string
 
+// SetServiceName sets the service name for Windows service mode.
+// Must be called before Run() when running as a Windows service.
+func SetServiceName(name string) {
+	runningServiceName = name
+}
+
 type windowsService struct {
 	server *server.Server
 }
