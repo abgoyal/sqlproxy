@@ -116,7 +116,7 @@ func New(cfg *config.Config, interactive bool) (*Server, error) {
 	}
 
 	logging.Info("service_starting", map[string]any{
-		"version":   "1.0.0",
+		"version":   cfg.Server.Version,
 		"log_level": cfg.Logging.Level,
 		"queries":   len(cfg.Queries),
 		"databases": len(cfg.Databases),
@@ -599,6 +599,8 @@ func (s *Server) listEndpointsHandler(w http.ResponseWriter, r *http.Request) {
 
 	response := map[string]any{
 		"service":             "sql-proxy",
+		"version":             s.config.Server.Version,
+		"build_time":          s.config.Server.BuildTime,
 		"default_timeout_sec": s.config.Server.DefaultTimeoutSec,
 		"max_timeout_sec":     s.config.Server.MaxTimeoutSec,
 		"databases":           s.dbManager.Names(),

@@ -33,6 +33,8 @@ type ServerConfig struct {
 	DefaultTimeoutSec int          `yaml:"default_timeout_sec"` // Default query timeout (can be overridden per-query or per-request)
 	MaxTimeoutSec     int          `yaml:"max_timeout_sec"`     // Maximum allowed timeout (caps request overrides)
 	Cache             *CacheConfig `yaml:"cache"`               // Optional cache configuration
+	Version           string       `yaml:"-"`                   // Set at runtime, not from config file
+	BuildTime         string       `yaml:"-"`                   // Set at runtime, not from config file
 }
 
 // CacheConfig is server-level cache configuration
@@ -127,10 +129,19 @@ type ScheduleConfig struct {
 
 // WebhookConfig defines an outgoing webhook to call after query execution
 type WebhookConfig struct {
-	URL     string            `yaml:"url"`     // Target URL (supports templates: {{.query}}, {{.count}})
-	Method  string            `yaml:"method"`  // HTTP method (default: POST)
-	Headers map[string]string `yaml:"headers"` // HTTP headers (supports env vars: ${TOKEN})
-	Body    *WebhookBodyConfig `yaml:"body"`   // Body template config (if nil, sends raw query results)
+	URL     string              `yaml:"url"`     // Target URL (supports templates: {{.query}}, {{.count}})
+	Method  string              `yaml:"method"`  // HTTP method (default: POST)
+	Headers map[string]string   `yaml:"headers"` // HTTP headers (supports env vars: ${TOKEN})
+	Body    *WebhookBodyConfig  `yaml:"body"`    // Body template config (if nil, sends raw query results)
+	Retry   *WebhookRetryConfig `yaml:"retry"`   // Retry configuration (default: enabled with 3 retries)
+}
+
+// WebhookRetryConfig defines retry behavior for failed webhooks
+type WebhookRetryConfig struct {
+	Enabled           *bool `yaml:"enabled"`             // Whether retries are enabled (default: true)
+	MaxAttempts       int   `yaml:"max_attempts"`        // Max retry attempts, 0 = no retries (default: 3)
+	InitialBackoffSec int   `yaml:"initial_backoff_sec"` // Initial backoff delay in seconds (default: 1)
+	MaxBackoffSec     int   `yaml:"max_backoff_sec"`     // Maximum backoff delay in seconds (default: 30)
 }
 
 // WebhookBodyConfig defines the body template structure
@@ -268,6 +279,8 @@ func ResolveSessionConfig(dbCfg DatabaseConfig, queryCfg QueryConfig) SessionCon
 	return cfg
 }
 
+// Load parses a YAML config file, expanding environment variables.
+// Use validate.Run() for comprehensive validation after loading.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -282,136 +295,5 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	// Basic structural validation (required fields)
-	if err := cfg.validateRequired(); err != nil {
-		return nil, err
-	}
-
 	return &cfg, nil
-}
-
-// validateRequired checks structural requirements for config loading.
-// Full validation with warnings is done by validate.Run().
-func (c *Config) validateRequired() error {
-	// Server basics
-	if c.Server.Host == "" {
-		return fmt.Errorf("server.host is required")
-	}
-	if c.Server.Port == 0 {
-		return fmt.Errorf("server.port is required")
-	}
-	if c.Server.Port < 0 || c.Server.Port > 65535 {
-		return fmt.Errorf("server.port must be 1-65535")
-	}
-	if c.Server.DefaultTimeoutSec == 0 {
-		return fmt.Errorf("server.default_timeout_sec is required")
-	}
-	if c.Server.MaxTimeoutSec == 0 {
-		return fmt.Errorf("server.max_timeout_sec is required")
-	}
-	if c.Server.MaxTimeoutSec < c.Server.DefaultTimeoutSec {
-		return fmt.Errorf("server.max_timeout_sec must be >= server.default_timeout_sec")
-	}
-
-	// Logging basics
-	if c.Logging.Level == "" {
-		return fmt.Errorf("logging.level is required")
-	}
-	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
-	if !validLevels[c.Logging.Level] {
-		return fmt.Errorf("logging.level must be debug, info, warn, or error")
-	}
-	if c.Logging.MaxSizeMB == 0 {
-		return fmt.Errorf("logging.max_size_mb is required")
-	}
-	if c.Logging.MaxBackups == 0 {
-		return fmt.Errorf("logging.max_backups is required")
-	}
-	if c.Logging.MaxAgeDays == 0 {
-		return fmt.Errorf("logging.max_age_days is required")
-	}
-
-	// At least one database
-	if len(c.Databases) == 0 {
-		return fmt.Errorf("at least one database connection is required in 'databases'")
-	}
-
-	// Database validation
-	dbNames := make(map[string]bool)
-	for i, db := range c.Databases {
-		if db.Name == "" {
-			return fmt.Errorf("databases[%d].name is required", i)
-		}
-		if dbNames[db.Name] {
-			return fmt.Errorf("databases[%d]: duplicate database name '%s'", i, db.Name)
-		}
-		dbNames[db.Name] = true
-
-		// Validate database type (default to sqlserver)
-		dbType := db.Type
-		if dbType == "" {
-			dbType = "sqlserver"
-		}
-		if !ValidDatabaseTypes[dbType] {
-			return fmt.Errorf("databases[%d] (%s): invalid type '%s' (must be sqlserver or sqlite)", i, db.Name, db.Type)
-		}
-
-		// Type-specific validation
-		switch dbType {
-		case "sqlserver":
-			if db.Host == "" {
-				return fmt.Errorf("databases[%d] (%s): host is required for sqlserver", i, db.Name)
-			}
-			if db.Port == 0 {
-				return fmt.Errorf("databases[%d] (%s): port is required for sqlserver", i, db.Name)
-			}
-			if db.User == "" {
-				return fmt.Errorf("databases[%d] (%s): user is required for sqlserver", i, db.Name)
-			}
-			if db.Password == "" {
-				return fmt.Errorf("databases[%d] (%s): password is required for sqlserver", i, db.Name)
-			}
-			if db.Database == "" {
-				return fmt.Errorf("databases[%d] (%s): database is required for sqlserver", i, db.Name)
-			}
-		case "sqlite":
-			if db.Path == "" {
-				return fmt.Errorf("databases[%d] (%s): path is required for sqlite", i, db.Name)
-			}
-		}
-
-		// Validate isolation level if specified
-		if db.Isolation != "" && !ValidIsolationLevels[db.Isolation] {
-			return fmt.Errorf("databases[%d] (%s): invalid isolation level '%s'", i, db.Name, db.Isolation)
-		}
-	}
-
-	// Query validation
-	for i, q := range c.Queries {
-		if q.Name == "" {
-			return fmt.Errorf("queries[%d]: name is required", i)
-		}
-		if q.Database == "" {
-			return fmt.Errorf("queries[%d] (%s): database is required", i, q.Name)
-		}
-		if !dbNames[q.Database] {
-			return fmt.Errorf("queries[%d] (%s): unknown database '%s'", i, q.Name, q.Database)
-		}
-		if q.SQL == "" {
-			return fmt.Errorf("queries[%d] (%s): sql is required", i, q.Name)
-		}
-		// Method validation only if path is set (HTTP endpoint)
-		if q.Path != "" && q.Method != "GET" && q.Method != "POST" {
-			return fmt.Errorf("queries[%d] (%s): method must be GET or POST", i, q.Name)
-		}
-		if q.TimeoutSec < 0 {
-			return fmt.Errorf("queries[%d] (%s): timeout_sec cannot be negative", i, q.Name)
-		}
-		// Validate query isolation level if specified
-		if q.Isolation != "" && !ValidIsolationLevels[q.Isolation] {
-			return fmt.Errorf("queries[%d] (%s): invalid isolation level '%s'", i, q.Name, q.Isolation)
-		}
-	}
-
-	return nil
 }

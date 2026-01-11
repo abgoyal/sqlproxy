@@ -194,6 +194,8 @@ func (s *Scheduler) sendWebhook(q config.QueryConfig, results []map[string]any, 
 		DurationMs: duration.Milliseconds(),
 		Params:     q.Schedule.Params,
 		Data:       results,
+		Version:    s.serverCfg.Version,
+		BuildTime:  s.serverCfg.BuildTime,
 	}
 	if queryErr != nil {
 		execCtx.Error = queryErr.Error()

@@ -23,6 +23,7 @@ func createTestConfig() *config.Config {
 			Port:              8080,
 			DefaultTimeoutSec: 30,
 			MaxTimeoutSec:     300,
+			Version:           "test",
 		},
 		Databases: []config.DatabaseConfig{
 			{

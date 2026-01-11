@@ -8,6 +8,8 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/sys/windows/svc"
@@ -16,11 +18,14 @@ import (
 
 	"sql-proxy/internal/config"
 	"sql-proxy/internal/server"
+	"sql-proxy/internal/validate"
 )
 
-const serviceName = "SQLProxy"
-const serviceDesc = "SQL Proxy Service - HTTP endpoints for SQL Server and SQLite databases"
+const defaultServiceName = "sql-proxy"
 const shutdownTimeout = 30 * time.Second
+
+// runningServiceName is set when running as a Windows service
+var runningServiceName string
 
 type windowsService struct {
 	server *server.Server
@@ -67,30 +72,37 @@ func (ws *windowsService) Execute(args []string, r <-chan svc.ChangeRequest, cha
 	}
 }
 
-// Run starts the service. If running interactively, it starts the server directly.
-func Run(cfg *config.Config) error {
-	isWindowsService, err := svc.IsWindowsService()
-	if err != nil {
-		return fmt.Errorf("failed to determine if running as service: %w", err)
+// Run starts the service.
+// If interactive is true, runs in foreground with Ctrl+C handling.
+// If interactive is false (daemon mode), runs as Windows service or background process.
+func Run(cfg *config.Config, interactive bool) error {
+	// Validate configuration before starting
+	result := validate.Run(cfg)
+	if !result.Valid {
+		return fmt.Errorf("configuration validation failed:\n  %s", joinErrors(result.Errors))
 	}
 
-	interactive := !isWindowsService
 	srv, err := server.New(cfg, interactive)
 	if err != nil {
 		return err
 	}
 
-	if isWindowsService {
-		// Running as a Windows service
-		ws := &windowsService{server: srv}
-		elog, err := eventlog.Open(serviceName)
-		if err == nil {
-			defer elog.Close()
+	if !interactive {
+		// Daemon mode - check if we're actually running as a Windows service
+		isWindowsService, _ := svc.IsWindowsService()
+		if isWindowsService && runningServiceName != "" {
+			// Running as a Windows service via SCM
+			ws := &windowsService{server: srv}
+			elog, err := eventlog.Open(runningServiceName)
+			if err == nil {
+				defer elog.Close()
+			}
+			return svc.Run(runningServiceName, ws)
 		}
-		return svc.Run(serviceName, ws)
+		// Daemon mode but not via SCM - just run without interactive output
 	}
 
-	// Running interactively - handle Ctrl+C for graceful shutdown
+	// Running interactively or as daemon without SCM - handle Ctrl+C for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt)
 
@@ -103,32 +115,65 @@ func Run(cfg *config.Config) error {
 	case err := <-errChan:
 		return err
 	case <-sigChan:
-		log.Println("Received interrupt, shutting down...")
+		if interactive {
+			log.Println("Received interrupt, shutting down...")
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 		return srv.Shutdown(ctx)
 	}
 }
 
-// Install installs the service
-func Install(exePath, configPath string) error {
+// Install installs the service with the given name
+func Install(name, exePath, configPath string) error {
+	if name == "" {
+		name = defaultServiceName
+	}
+
+	// Get absolute path and verify config file exists
+	absConfigPath, err := filepath.Abs(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve config path: %w", err)
+	}
+	if _, err := os.Stat(absConfigPath); os.IsNotExist(err) {
+		return fmt.Errorf("config file not found: %s", absConfigPath)
+	}
+	configPath = absConfigPath
+
+	// Get absolute path for executable
+	absExePath, err := filepath.Abs(exePath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve executable path: %w", err)
+	}
+	if _, err := os.Stat(absExePath); os.IsNotExist(err) {
+		return fmt.Errorf("executable not found: %s", absExePath)
+	}
+	exePath = absExePath
+
 	m, err := mgr.Connect()
 	if err != nil {
 		return fmt.Errorf("failed to connect to service manager: %w", err)
 	}
 	defer m.Disconnect()
 
-	s, err := m.OpenService(serviceName)
+	s, err := m.OpenService(name)
 	if err == nil {
 		s.Close()
-		return fmt.Errorf("service %s already exists", serviceName)
+		return fmt.Errorf("service %s already exists", name)
 	}
 
-	s, err = m.CreateService(serviceName, exePath, mgr.Config{
-		DisplayName: serviceName,
-		Description: serviceDesc,
+	displayName := "SQL Proxy"
+	if name != defaultServiceName {
+		displayName = fmt.Sprintf("SQL Proxy (%s)", name)
+	}
+	desc := "SQL Proxy Service - HTTP endpoints for SQL Server and SQLite databases"
+
+	// Include --daemon and --service-name flags for proper daemon mode
+	s, err = m.CreateService(name, exePath, mgr.Config{
+		DisplayName: displayName,
+		Description: desc,
 		StartType:   mgr.StartAutomatic,
-	}, "-config", configPath)
+	}, "--daemon", "--service-name", name, "--config", configPath)
 	if err != nil {
 		return fmt.Errorf("failed to create service: %w", err)
 	}
@@ -150,27 +195,32 @@ func Install(exePath, configPath string) error {
 	}
 
 	// Setup event logging
-	err = eventlog.InstallAsEventCreate(serviceName, eventlog.Error|eventlog.Warning|eventlog.Info)
+	err = eventlog.InstallAsEventCreate(name, eventlog.Error|eventlog.Warning|eventlog.Info)
 	if err != nil {
 		s.Delete()
 		return fmt.Errorf("failed to setup event log: %w", err)
 	}
 
-	log.Printf("Service %s installed successfully", serviceName)
+	fmt.Printf("Service '%s' installed successfully\n", name)
+	fmt.Printf("Start with: sc start %s\n", name)
 	return nil
 }
 
-// Uninstall removes the service
-func Uninstall() error {
+// Uninstall removes the service with the given name
+func Uninstall(name string) error {
+	if name == "" {
+		name = defaultServiceName
+	}
+
 	m, err := mgr.Connect()
 	if err != nil {
 		return fmt.Errorf("failed to connect to service manager: %w", err)
 	}
 	defer m.Disconnect()
 
-	s, err := m.OpenService(serviceName)
+	s, err := m.OpenService(name)
 	if err != nil {
-		return fmt.Errorf("service %s not found: %w", serviceName, err)
+		return fmt.Errorf("service %s not found: %w", name, err)
 	}
 	defer s.Close()
 
@@ -179,26 +229,30 @@ func Uninstall() error {
 		return fmt.Errorf("failed to delete service: %w", err)
 	}
 
-	err = eventlog.Remove(serviceName)
+	err = eventlog.Remove(name)
 	if err != nil {
 		log.Printf("Warning: failed to remove event log: %v", err)
 	}
 
-	log.Printf("Service %s uninstalled successfully", serviceName)
+	fmt.Printf("Service '%s' uninstalled successfully\n", name)
 	return nil
 }
 
-// Start starts the Windows service
-func Start() error {
+// Start starts the Windows service with the given name
+func Start(name string) error {
+	if name == "" {
+		name = defaultServiceName
+	}
+
 	m, err := mgr.Connect()
 	if err != nil {
 		return fmt.Errorf("failed to connect to service manager: %w", err)
 	}
 	defer m.Disconnect()
 
-	s, err := m.OpenService(serviceName)
+	s, err := m.OpenService(name)
 	if err != nil {
-		return fmt.Errorf("service %s not found: %w", serviceName, err)
+		return fmt.Errorf("service %s not found: %w", name, err)
 	}
 	defer s.Close()
 
@@ -207,21 +261,25 @@ func Start() error {
 		return fmt.Errorf("failed to start service: %w", err)
 	}
 
-	log.Printf("Service %s started successfully", serviceName)
+	fmt.Printf("Service '%s' started successfully\n", name)
 	return nil
 }
 
-// Stop stops the Windows service
-func Stop() error {
+// Stop stops the Windows service with the given name
+func Stop(name string) error {
+	if name == "" {
+		name = defaultServiceName
+	}
+
 	m, err := mgr.Connect()
 	if err != nil {
 		return fmt.Errorf("failed to connect to service manager: %w", err)
 	}
 	defer m.Disconnect()
 
-	s, err := m.OpenService(serviceName)
+	s, err := m.OpenService(name)
 	if err != nil {
-		return fmt.Errorf("service %s not found: %w", serviceName, err)
+		return fmt.Errorf("service %s not found: %w", name, err)
 	}
 	defer s.Close()
 
@@ -243,28 +301,36 @@ func Stop() error {
 		}
 	}
 
-	log.Printf("Service %s stopped successfully", serviceName)
+	fmt.Printf("Service '%s' stopped successfully\n", name)
 	return nil
 }
 
-// Restart restarts the Windows service
-func Restart() error {
-	if err := Stop(); err != nil {
+// Restart restarts the Windows service with the given name
+func Restart(name string) error {
+	if name == "" {
+		name = defaultServiceName
+	}
+
+	if err := Stop(name); err != nil {
 		// If stop fails because service isn't running, that's OK
 		log.Printf("Note: %v", err)
 	}
-	return Start()
+	return Start(name)
 }
 
-// Status returns the current service status
-func Status() (string, error) {
+// Status returns the current service status for the given name
+func Status(name string) (string, error) {
+	if name == "" {
+		name = defaultServiceName
+	}
+
 	m, err := mgr.Connect()
 	if err != nil {
 		return "", fmt.Errorf("failed to connect to service manager: %w", err)
 	}
 	defer m.Disconnect()
 
-	s, err := m.OpenService(serviceName)
+	s, err := m.OpenService(name)
 	if err != nil {
 		return "not installed", nil
 	}
@@ -295,13 +361,7 @@ func Status() (string, error) {
 	}
 }
 
-// IsWindowsService returns true if running as a Windows service
-func IsWindowsService() bool {
-	isService, _ := svc.IsWindowsService()
-	return isService
-}
-
-// ServiceName returns the service name
-func ServiceName() string {
-	return serviceName
+// joinErrors joins error messages with newline and indentation
+func joinErrors(errors []string) string {
+	return strings.Join(errors, "\n  ")
 }

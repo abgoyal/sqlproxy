@@ -26,6 +26,8 @@ type Handler struct {
 	defaultTimeoutSec int
 	maxTimeoutSec     int
 	defaultCacheTTL   time.Duration
+	version           string
+	buildTime         string
 }
 
 type Response struct {
@@ -51,6 +53,8 @@ func New(dbManager *db.Manager, c *cache.Cache, queryCfg config.QueryConfig, ser
 		defaultTimeoutSec: serverCfg.DefaultTimeoutSec,
 		maxTimeoutSec:     serverCfg.MaxTimeoutSec,
 		defaultCacheTTL:   defaultCacheTTL,
+		version:           serverCfg.Version,
+		buildTime:         serverCfg.BuildTime,
 	}
 }
 
@@ -121,6 +125,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Request-ID", requestID)
+	if h.version != "" {
+		versionHeader := h.version
+		if h.buildTime != "" && h.buildTime != "unknown" {
+			versionHeader = fmt.Sprintf("%s (built %s)", h.version, h.buildTime)
+		}
+		w.Header().Set("X-Server-Version", versionHeader)
+	}
 
 	// Check method
 	if r.Method != h.queryConfig.Method {

@@ -70,6 +70,7 @@ func setupBenchmarkHandler(b *testing.B) (*Handler, func()) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "bench",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)
@@ -136,6 +137,7 @@ func BenchmarkHandler_ServeHTTP_WithParams(b *testing.B) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "bench",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)
@@ -256,6 +258,7 @@ func BenchmarkHandler_ParseParameters_NoParams(b *testing.B) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "bench",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)
@@ -295,6 +298,7 @@ func BenchmarkHandler_ParseParameters_ManyParams(b *testing.B) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "bench",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)
@@ -328,6 +332,7 @@ func BenchmarkHandler_ResolveTimeout(b *testing.B) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "bench",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)

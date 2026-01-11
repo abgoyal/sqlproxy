@@ -15,6 +15,20 @@ import (
 	"sql-proxy/internal/config"
 )
 
+const (
+	// defaultMaxRetries is the number of retry attempts for failed webhooks
+	defaultMaxRetries = 3
+
+	// defaultInitialBackoff is the initial delay between retries
+	defaultInitialBackoff = 1 * time.Second
+
+	// defaultMaxBackoff is the maximum delay between retries
+	defaultMaxBackoff = 30 * time.Second
+
+	// backoffMultiplier is the factor by which backoff increases after each retry
+	backoffMultiplier = 2
+)
+
 // httpClient is a shared client for all webhook requests.
 // Reusing the client allows connection pooling and TLS session reuse.
 var httpClient = &http.Client{
@@ -35,6 +49,8 @@ type ExecutionContext struct {
 	Params     map[string]string `json:"params"`      // Query parameters
 	Data       []map[string]any  `json:"data"`        // Query results
 	Error      string            `json:"error"`       // Error message if failed
+	Version    string            `json:"version"`     // Service version (injectable into templates)
+	BuildTime  string            `json:"build_time"`  // Build timestamp (injectable into templates)
 }
 
 // TemplateFuncMap provides custom template functions for webhook templates.
@@ -58,7 +74,7 @@ var TemplateFuncMap = template.FuncMap{
 	},
 }
 
-// Execute sends a webhook with the given context
+// Execute sends a webhook with the given context, retrying on transient failures.
 func Execute(ctx context.Context, webhookCfg *config.WebhookConfig, execCtx *ExecutionContext) error {
 	if webhookCfg == nil {
 		return nil
@@ -87,37 +103,134 @@ func Execute(ctx context.Context, webhookCfg *config.WebhookConfig, execCtx *Exe
 		method = "POST"
 	}
 
-	// Create request
-	req, err := http.NewRequestWithContext(ctx, method, url, strings.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("creating request: %w", err)
-	}
-
-	// Set default content type
-	req.Header.Set("Content-Type", "application/json")
-
-	// Apply headers (expand env vars)
+	// Build headers map with expanded env vars
+	headers := make(map[string]string)
+	headers["Content-Type"] = "application/json"
 	for key, value := range webhookCfg.Headers {
-		req.Header.Set(key, os.ExpandEnv(value))
+		headers[key] = os.ExpandEnv(value)
 	}
 
-	// Send request using shared client for connection reuse
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("sending webhook: %w", err)
+	// Resolve retry configuration
+	retryCfg := resolveRetryConfig(webhookCfg.Retry)
+
+	// Execute with retry (if enabled)
+	return doWithRetry(ctx, method, url, body, headers, retryCfg)
+}
+
+// RetryConfig holds resolved retry settings
+type RetryConfig struct {
+	Enabled        bool
+	MaxAttempts    int
+	InitialBackoff time.Duration
+	MaxBackoff     time.Duration
+}
+
+// resolveRetryConfig converts WebhookRetryConfig to RetryConfig with defaults
+func resolveRetryConfig(cfg *config.WebhookRetryConfig) RetryConfig {
+	// Default: enabled with standard retry values
+	result := RetryConfig{
+		Enabled:        true,
+		MaxAttempts:    defaultMaxRetries,
+		InitialBackoff: defaultInitialBackoff,
+		MaxBackoff:     defaultMaxBackoff,
 	}
-	defer resp.Body.Close()
 
-	// Read response body (limited) for error reporting, then drain remainder
-	// Full drain is required for connection reuse
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	io.Copy(io.Discard, resp.Body) // Drain any remaining bytes
-
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("webhook returned %d: %s", resp.StatusCode, string(respBody))
+	if cfg == nil {
+		return result
 	}
 
-	return nil
+	// Check if explicitly disabled
+	if cfg.Enabled != nil && !*cfg.Enabled {
+		result.Enabled = false
+		return result
+	}
+
+	// Apply configured values (> 0 means explicitly set)
+	if cfg.MaxAttempts > 0 {
+		result.MaxAttempts = cfg.MaxAttempts
+	}
+
+	if cfg.InitialBackoffSec > 0 {
+		result.InitialBackoff = time.Duration(cfg.InitialBackoffSec) * time.Second
+	}
+
+	if cfg.MaxBackoffSec > 0 {
+		result.MaxBackoff = time.Duration(cfg.MaxBackoffSec) * time.Second
+	}
+
+	return result
+}
+
+// doWithRetry executes an HTTP request with exponential backoff retry on transient failures.
+func doWithRetry(ctx context.Context, method, url, body string, headers map[string]string, retryCfg RetryConfig) error {
+	var lastErr error
+	backoff := retryCfg.InitialBackoff
+
+	// Calculate max attempts: 1 initial + N retries
+	maxAttempts := 1
+	if retryCfg.Enabled {
+		maxAttempts = 1 + retryCfg.MaxAttempts
+	}
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			// Wait before retry, respecting context cancellation
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("webhook cancelled after %d attempts: %w", attempt, ctx.Err())
+			case <-time.After(backoff):
+			}
+
+			// Increase backoff for next attempt, capped at max
+			backoff *= backoffMultiplier
+			if backoff > retryCfg.MaxBackoff {
+				backoff = retryCfg.MaxBackoff
+			}
+		}
+
+		// Create fresh request for each attempt (body reader cannot be reused)
+		req, err := http.NewRequestWithContext(ctx, method, url, strings.NewReader(body))
+		if err != nil {
+			return fmt.Errorf("creating request: %w", err)
+		}
+
+		for key, value := range headers {
+			req.Header.Set(key, value)
+		}
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			// Network error - retryable if retries enabled
+			lastErr = fmt.Errorf("sending webhook: %w", err)
+			if !retryCfg.Enabled {
+				return lastErr
+			}
+			continue
+		}
+
+		// Read response body for error reporting, then drain for connection reuse
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		// Success
+		if resp.StatusCode < 400 {
+			return nil
+		}
+
+		// 4xx client errors are not retryable
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			return fmt.Errorf("webhook returned %d: %s", resp.StatusCode, string(respBody))
+		}
+
+		// 5xx server errors are retryable if retries enabled
+		lastErr = fmt.Errorf("webhook returned %d: %s", resp.StatusCode, string(respBody))
+		if !retryCfg.Enabled {
+			return lastErr
+		}
+	}
+
+	return fmt.Errorf("webhook failed after %d attempts: %w", maxAttempts, lastErr)
 }
 
 // buildBody creates the webhook body based on configuration

@@ -3,7 +3,6 @@ package validate
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
 	"text/template"
 	"time"
@@ -15,9 +14,6 @@ import (
 	"sql-proxy/internal/db"
 	"sql-proxy/internal/webhook"
 )
-
-// sqlParamRegex matches @param style named parameters in SQL queries
-var sqlParamRegex = regexp.MustCompile(`@(\w+)`)
 
 // Result holds validation results
 type Result struct {
@@ -54,14 +50,28 @@ func Run(cfg *config.Config) *Result {
 }
 
 func validateServer(cfg *config.Config, r *Result) {
-	if cfg.Server.Port < 1 || cfg.Server.Port > 65535 {
-		r.addError("Server port must be 1-65535, got: %d", cfg.Server.Port)
+	// Host validation
+	if cfg.Server.Host == "" {
+		r.addError("server.host is required")
 	}
-	if cfg.Server.DefaultTimeoutSec < 1 {
-		r.addError("Default timeout must be at least 1 second")
+
+	// Port validation
+	if cfg.Server.Port == 0 {
+		r.addError("server.port is required")
+	} else if cfg.Server.Port < 0 || cfg.Server.Port > 65535 {
+		r.addError("server.port must be 1-65535, got: %d", cfg.Server.Port)
 	}
-	if cfg.Server.MaxTimeoutSec < cfg.Server.DefaultTimeoutSec {
-		r.addError("Max timeout (%d) must be >= default timeout (%d)",
+
+	// Timeout validation
+	if cfg.Server.DefaultTimeoutSec == 0 {
+		r.addError("server.default_timeout_sec is required")
+	} else if cfg.Server.DefaultTimeoutSec < 1 {
+		r.addError("server.default_timeout_sec must be at least 1 second")
+	}
+	if cfg.Server.MaxTimeoutSec == 0 {
+		r.addError("server.max_timeout_sec is required")
+	} else if cfg.Server.MaxTimeoutSec < cfg.Server.DefaultTimeoutSec {
+		r.addError("server.max_timeout_sec (%d) must be >= server.default_timeout_sec (%d)",
 			cfg.Server.MaxTimeoutSec, cfg.Server.DefaultTimeoutSec)
 	}
 
@@ -161,9 +171,31 @@ func validateDatabase(cfg *config.Config, r *Result) {
 }
 
 func validateLogging(cfg *config.Config, r *Result) {
-	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
-	if !validLevels[strings.ToLower(cfg.Logging.Level)] {
-		r.addError("Invalid log level: %s (must be debug, info, warn, or error)", cfg.Logging.Level)
+	// Level validation
+	if cfg.Logging.Level == "" {
+		r.addError("logging.level is required")
+	} else {
+		validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
+		if !validLevels[strings.ToLower(cfg.Logging.Level)] {
+			r.addError("logging.level must be debug, info, warn, or error, got: %s", cfg.Logging.Level)
+		}
+	}
+
+	// Log rotation settings (required for service mode)
+	if cfg.Logging.MaxSizeMB == 0 {
+		r.addError("logging.max_size_mb is required")
+	} else if cfg.Logging.MaxSizeMB < 0 {
+		r.addError("logging.max_size_mb cannot be negative")
+	}
+	if cfg.Logging.MaxBackups == 0 {
+		r.addError("logging.max_backups is required")
+	} else if cfg.Logging.MaxBackups < 0 {
+		r.addError("logging.max_backups cannot be negative")
+	}
+	if cfg.Logging.MaxAgeDays == 0 {
+		r.addError("logging.max_age_days is required")
+	} else if cfg.Logging.MaxAgeDays < 0 {
+		r.addError("logging.max_age_days cannot be negative")
 	}
 }
 
@@ -298,8 +330,8 @@ func validateQueries(cfg *config.Config, r *Result) {
 }
 
 func validateParams(q config.QueryConfig, prefix string, r *Result) {
-	// Find @params in SQL
-	matches := sqlParamRegex.FindAllStringSubmatch(q.SQL, -1)
+	// Find @params in SQL using shared regex from db package
+	matches := db.ParamRegex.FindAllStringSubmatch(q.SQL, -1)
 
 	sqlParams := make(map[string]bool)
 	for _, m := range matches {

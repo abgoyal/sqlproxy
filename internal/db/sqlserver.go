@@ -4,15 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"regexp"
 	"time"
 
 	_ "github.com/microsoft/go-mssqldb"
 	"sql-proxy/internal/config"
 )
-
-// sqlParamRegex matches @param style named parameters in SQL queries
-var sqlParamRegex = regexp.MustCompile(`@(\w+)`)
 
 const (
 	// sqlserverMaxOpenConns is the max open connections
@@ -241,14 +237,14 @@ func (d *SQLServerDriver) Query(ctx context.Context, sessCfg config.SessionConfi
 	}
 	defer rows.Close()
 
-	return scanRows(rows)
+	return ScanRows(rows)
 }
 
 // buildArgs builds sql.Named arguments from the params map.
 // SQL Server uses @param syntax natively, so we just need to convert
 // the map to sql.Named arguments.
 func (d *SQLServerDriver) buildArgs(query string, params map[string]any) []any {
-	matches := sqlParamRegex.FindAllStringSubmatch(query, -1)
+	matches := ParamRegex.FindAllStringSubmatch(query, -1)
 
 	addedParams := make(map[string]bool)
 	var args []any
@@ -265,48 +261,6 @@ func (d *SQLServerDriver) buildArgs(query string, params map[string]any) []any {
 	}
 
 	return args
-}
-
-// scanRows converts sql.Rows to []map[string]any
-func scanRows(rows *sql.Rows) ([]map[string]any, error) {
-	columns, err := rows.Columns()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get columns: %w", err)
-	}
-
-	var results []map[string]any
-
-	for rows.Next() {
-		values := make([]any, len(columns))
-		valuePtrs := make([]any, len(columns))
-		for i := range values {
-			valuePtrs[i] = &values[i]
-		}
-
-		if err := rows.Scan(valuePtrs...); err != nil {
-			return nil, fmt.Errorf("failed to scan row: %w", err)
-		}
-
-		row := make(map[string]any)
-		for i, col := range columns {
-			val := values[i]
-			switch v := val.(type) {
-			case []byte:
-				row[col] = string(v)
-			case time.Time:
-				row[col] = v.Format(time.RFC3339)
-			default:
-				row[col] = v
-			}
-		}
-		results = append(results, row)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("row iteration error: %w", err)
-	}
-
-	return results, nil
 }
 
 // Ping checks database connectivity

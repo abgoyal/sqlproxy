@@ -1,0 +1,20 @@
+[Unit]
+Description=SQL Proxy Service ({{.Name}})
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={{.ExePath}} --daemon --service-name {{.Name}} --config {{.ConfigPath}}
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

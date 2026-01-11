@@ -89,6 +89,7 @@ func TestHandler_ServeHTTP_SimpleQuery(t *testing.T) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "test",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)
@@ -148,6 +149,7 @@ func TestHandler_ServeHTTP_WithParameters(t *testing.T) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "test",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)
@@ -188,6 +190,7 @@ func TestHandler_ServeHTTP_MissingRequiredParam(t *testing.T) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "test",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)
@@ -232,6 +235,7 @@ func TestHandler_ServeHTTP_DefaultParameter(t *testing.T) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "test",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)
@@ -270,6 +274,7 @@ func TestHandler_ServeHTTP_WrongMethod(t *testing.T) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "test",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)
@@ -303,6 +308,7 @@ func TestHandler_ServeHTTP_InvalidParamType(t *testing.T) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "test",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)
@@ -339,6 +345,7 @@ func TestHandler_ServeHTTP_POSTMethod(t *testing.T) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "test",
 	}
 
 	_ = readOnly // Not used in this test
@@ -375,6 +382,7 @@ func TestHandler_ServeHTTP_CustomRequestID(t *testing.T) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "test",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)
@@ -487,6 +495,7 @@ func TestHandler_ResolveTimeout(t *testing.T) {
 			serverCfg := config.ServerConfig{
 				DefaultTimeoutSec: tt.defaultTimeout,
 				MaxTimeoutSec:     tt.maxTimeout,
+				Version:           "test",
 			}
 
 			handler := New(manager, nil, queryCfg, serverCfg)
@@ -599,6 +608,7 @@ func TestHandler_ParseParameters(t *testing.T) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "test",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)
@@ -672,6 +682,7 @@ func TestHandler_ServeHTTP_EmptyResult(t *testing.T) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "test",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)
@@ -713,6 +724,7 @@ func TestHandler_ServeHTTP_SQLError(t *testing.T) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "test",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)
@@ -777,6 +789,7 @@ func TestHandler_ServeHTTP_DateTimeParam(t *testing.T) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "test",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)
@@ -954,6 +967,7 @@ func TestHandler_ServeHTTP_JSONBody(t *testing.T) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "test",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)
@@ -997,6 +1011,7 @@ func TestHandler_ServeHTTP_JSONBody_RejectsNestedForNonJSONType(t *testing.T) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "test",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)
@@ -1076,6 +1091,7 @@ func TestHandler_ServeHTTP_JSONTypeParam(t *testing.T) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "test",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)
@@ -1120,6 +1136,7 @@ func TestHandler_ServeHTTP_ArrayTypeParam(t *testing.T) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "test",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)
@@ -1168,6 +1185,7 @@ func TestHandler_ServeHTTP_ArrayTypeParam_InvalidElement(t *testing.T) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "test",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)
@@ -1215,6 +1233,7 @@ func TestHandler_ServeHTTP_StringArrayParam(t *testing.T) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "test",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)
@@ -1721,6 +1740,7 @@ func TestHandler_ServeHTTP_JSONColumns(t *testing.T) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "test",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)
@@ -1816,6 +1836,7 @@ func TestHandler_ServeHTTP_JSONColumns_WithoutConfig(t *testing.T) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "test",
 	}
 
 	handler := New(manager, nil, queryCfg, serverCfg)

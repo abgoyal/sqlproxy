@@ -43,6 +43,7 @@ func TestResult_AddWarning(t *testing.T) {
 func TestValidateServer(t *testing.T) {
 	tests := []struct {
 		name       string
+		host       string
 		port       int
 		defTimeout int
 		maxTimeout int
@@ -51,21 +52,33 @@ func TestValidateServer(t *testing.T) {
 	}{
 		{
 			name:       "valid",
+			host:       "localhost",
 			port:       8080,
 			defTimeout: 30,
 			maxTimeout: 300,
 			wantErr:    false,
 		},
 		{
+			name:       "missing host",
+			host:       "",
+			port:       8080,
+			defTimeout: 30,
+			maxTimeout: 300,
+			wantErr:    true,
+			errMsg:     "server.host is required",
+		},
+		{
 			name:       "port 0",
+			host:       "localhost",
 			port:       0,
 			defTimeout: 30,
 			maxTimeout: 300,
 			wantErr:    true,
-			errMsg:     "port must be 1-65535",
+			errMsg:     "server.port is required",
 		},
 		{
 			name:       "port too high",
+			host:       "localhost",
 			port:       70000,
 			defTimeout: 30,
 			maxTimeout: 300,
@@ -74,19 +87,21 @@ func TestValidateServer(t *testing.T) {
 		},
 		{
 			name:       "zero default timeout",
+			host:       "localhost",
 			port:       8080,
 			defTimeout: 0,
 			maxTimeout: 300,
 			wantErr:    true,
-			errMsg:     "at least 1 second",
+			errMsg:     "default_timeout_sec is required",
 		},
 		{
 			name:       "max less than default",
+			host:       "localhost",
 			port:       8080,
 			defTimeout: 60,
 			maxTimeout: 30,
 			wantErr:    true,
-			errMsg:     "must be >= default",
+			errMsg:     "must be >= server.default_timeout_sec",
 		},
 	}
 
@@ -94,6 +109,7 @@ func TestValidateServer(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &config.Config{
 				Server: config.ServerConfig{
+					Host:              tt.host,
 					Port:              tt.port,
 					DefaultTimeoutSec: tt.defTimeout,
 					MaxTimeoutSec:     tt.maxTimeout,
@@ -334,25 +350,39 @@ func TestValidateDatabase_EnvVarWarning(t *testing.T) {
 	}
 }
 
-// TestValidateLogging tests log level validation accepts only debug/info/warn/error
+// TestValidateLogging tests log level and rotation settings validation
 func TestValidateLogging(t *testing.T) {
 	tests := []struct {
-		level   string
-		wantErr bool
+		name       string
+		level      string
+		maxSizeMB  int
+		maxBackups int
+		maxAgeDays int
+		wantErr    bool
+		errMsg     string
 	}{
-		{"debug", false},
-		{"info", false},
-		{"warn", false},
-		{"error", false},
-		{"INFO", false}, // Should be case-insensitive
-		{"invalid", true},
-		{"", true},
+		{"valid debug", "debug", 100, 5, 30, false, ""},
+		{"valid info", "info", 100, 5, 30, false, ""},
+		{"valid warn", "warn", 100, 5, 30, false, ""},
+		{"valid error", "error", 100, 5, 30, false, ""},
+		{"case insensitive", "INFO", 100, 5, 30, false, ""},
+		{"invalid level", "invalid", 100, 5, 30, true, "logging.level must be"},
+		{"empty level", "", 100, 5, 30, true, "logging.level is required"},
+		{"missing max_size", "info", 0, 5, 30, true, "logging.max_size_mb is required"},
+		{"missing max_backups", "info", 100, 0, 30, true, "logging.max_backups is required"},
+		{"missing max_age_days", "info", 100, 5, 0, true, "logging.max_age_days is required"},
+		{"negative max_size", "info", -1, 5, 30, true, "max_size_mb cannot be negative"},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.level, func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			cfg := &config.Config{
-				Logging: config.LoggingConfig{Level: tt.level},
+				Logging: config.LoggingConfig{
+					Level:      tt.level,
+					MaxSizeMB:  tt.maxSizeMB,
+					MaxBackups: tt.maxBackups,
+					MaxAgeDays: tt.maxAgeDays,
+				},
 			}
 
 			r := &Result{Valid: true}
@@ -361,6 +391,18 @@ func TestValidateLogging(t *testing.T) {
 			if tt.wantErr {
 				if r.Valid {
 					t.Error("expected validation to fail")
+				}
+				if tt.errMsg != "" {
+					found := false
+					for _, err := range r.Errors {
+						if strings.Contains(err, tt.errMsg) {
+							found = true
+							break
+						}
+					}
+					if !found {
+						t.Errorf("expected error containing %q, got: %v", tt.errMsg, r.Errors)
+					}
 				}
 			} else {
 				if !r.Valid {
@@ -780,7 +822,7 @@ func TestRun_ValidConfig(t *testing.T) {
 		Databases: []config.DatabaseConfig{
 			{Name: "test", Type: "sqlite", Path: ":memory:"},
 		},
-		Logging: config.LoggingConfig{Level: "info"},
+		Logging: validLoggingConfig(),
 		Queries: []config.QueryConfig{
 			{Name: "q1", Database: "test", Path: "/api/test", Method: "GET", SQL: "SELECT 1"},
 		},
@@ -805,7 +847,7 @@ func TestRun_InvalidConfig(t *testing.T) {
 		Databases: []config.DatabaseConfig{
 			{Name: "test", Type: "sqlite", Path: ":memory:"},
 		},
-		Logging: config.LoggingConfig{Level: "info"},
+		Logging: validLoggingConfig(),
 		Queries: []config.QueryConfig{
 			{Name: "q1", Database: "test", Path: "/api/test", Method: "GET", SQL: "SELECT 1"},
 		},
@@ -831,7 +873,7 @@ func TestRun_DBConnectionTest(t *testing.T) {
 		Databases: []config.DatabaseConfig{
 			{Name: "test", Type: "sqlite", Path: ":memory:"},
 		},
-		Logging: config.LoggingConfig{Level: "info"},
+		Logging: validLoggingConfig(),
 		Queries: []config.QueryConfig{
 			{Name: "q1", Database: "test", Path: "/api/test", Method: "GET", SQL: "SELECT 1"},
 		},
@@ -857,7 +899,7 @@ func TestRun_DBConnectionFail(t *testing.T) {
 		Databases: []config.DatabaseConfig{
 			{Name: "test", Type: "sqlite", Path: "/nonexistent/path/to/db.sqlite"},
 		},
-		Logging: config.LoggingConfig{Level: "info"},
+		Logging: validLoggingConfig(),
 		Queries: []config.QueryConfig{
 			{Name: "q1", Database: "test", Path: "/api/test", Method: "GET", SQL: "SELECT 1"},
 		},
@@ -872,6 +914,16 @@ func TestRun_DBConnectionFail(t *testing.T) {
 
 func intPtr(i int) *int {
 	return &i
+}
+
+// validLoggingConfig returns a valid logging config for tests
+func validLoggingConfig() config.LoggingConfig {
+	return config.LoggingConfig{
+		Level:      "info",
+		MaxSizeMB:  100,
+		MaxBackups: 5,
+		MaxAgeDays: 30,
+	}
 }
 
 // TestRun_SQLServerUnresolvedEnvVar tests that SQL Server with unresolved env vars is skipped during connection test
@@ -895,7 +947,7 @@ func TestRun_SQLServerUnresolvedEnvVar(t *testing.T) {
 				Database: "db",
 			},
 		},
-		Logging: config.LoggingConfig{Level: "info"},
+		Logging: validLoggingConfig(),
 		Queries: []config.QueryConfig{
 			{Name: "q1", Database: "test", Path: "/api/test", Method: "GET", SQL: "SELECT 1"},
 		},
@@ -929,7 +981,7 @@ func TestRun_SQLServerUnresolvedPassword(t *testing.T) {
 				Database: "db",
 			},
 		},
-		Logging: config.LoggingConfig{Level: "info"},
+		Logging: validLoggingConfig(),
 		Queries: []config.QueryConfig{
 			{Name: "q1", Database: "test", Path: "/api/test", Method: "GET", SQL: "SELECT 1"},
 		},
@@ -1336,6 +1388,7 @@ func TestValidateServerCache(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &config.Config{
 				Server: config.ServerConfig{
+					Host:              "localhost",
 					Port:              8080,
 					DefaultTimeoutSec: 30,
 					MaxTimeoutSec:     300,

@@ -4,16 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
 	"sql-proxy/internal/config"
 )
-
-// paramRegex matches @param style named parameters in SQL queries
-var paramRegex = regexp.MustCompile(`@(\w+)`)
 
 const (
 	// sqliteMaxOpenConns is the max open connections for SQLite (single-writer)
@@ -347,13 +343,13 @@ func (d *SQLiteDriver) Query(ctx context.Context, sessCfg config.SessionConfig, 
 	}
 	defer rows.Close()
 
-	return scanRows(rows)
+	return ScanRows(rows)
 }
 
 // translateQuery keeps @param syntax for SQLite and builds args.
 // modernc.org/sqlite supports named parameters with @name syntax using sql.Named().
 func (d *SQLiteDriver) translateQuery(query string, params map[string]any) (string, []any) {
-	matches := paramRegex.FindAllStringSubmatch(query, -1)
+	matches := ParamRegex.FindAllStringSubmatch(query, -1)
 
 	// Keep @param syntax - SQLite driver supports it directly with sql.Named()
 	// No translation needed

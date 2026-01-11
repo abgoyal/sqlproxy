@@ -82,6 +82,7 @@ func TestNew(t *testing.T) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "test",
 	}
 
 	scheduler := New(manager, queries, serverCfg)
@@ -115,6 +116,7 @@ func TestScheduler_StartStop(t *testing.T) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "test",
 	}
 
 	scheduler := New(manager, queries, serverCfg)
@@ -495,6 +497,7 @@ func TestScheduler_InvalidCron(t *testing.T) {
 	serverCfg := config.ServerConfig{
 		DefaultTimeoutSec: 30,
 		MaxTimeoutSec:     300,
+		Version:           "test",
 	}
 
 	// Should not panic, just log error

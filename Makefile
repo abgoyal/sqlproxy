@@ -1,7 +1,16 @@
 # SQL Proxy Makefile
 
 BINARY_NAME := sql-proxy
-LDFLAGS := -ldflags '-s -w'
+
+# Version info from git
+GIT_TAG := $(shell git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+GIT_DIRTY := $(shell git diff --quiet 2>/dev/null || echo "-dirty")
+VERSION := $(GIT_TAG)-$(GIT_COMMIT)$(GIT_DIRTY)
+BUILD_TIME := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+# Build flags with version and build time injection
+LDFLAGS := -ldflags '-s -w -X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME)'
 
 # Build output directory
 BUILD_DIR := build
@@ -30,7 +39,7 @@ PKG_SERVICE := ./internal/service/...
 PKG_WEBHOOK := ./internal/webhook/...
 PKG_CACHE := ./internal/cache/...
 
-.PHONY: all build clean test validate run install deps tidy \
+.PHONY: all build clean test validate run install deps tidy version \
         build-linux build-windows build-darwin build-all \
         build-linux-arm64 build-darwin-arm64 \
         test-config test-db test-handler test-scheduler test-validate \
@@ -41,8 +50,17 @@ PKG_CACHE := ./internal/cache/...
 # Default target
 all: build
 
+# Show version info
+version:
+	@echo "Version: $(VERSION)"
+	@echo "  Tag:    $(GIT_TAG)"
+	@echo "  Commit: $(GIT_COMMIT)"
+	@echo "  Dirty:  $(if $(GIT_DIRTY),yes,no)"
+	@echo "  Built:  $(BUILD_TIME)"
+
 # Build for current platform
 build:
+	@echo "Building $(BINARY_NAME) $(VERSION)"
 	$(GOBUILD) $(LDFLAGS) -o $(BINARY_NAME) .
 
 # ============================================================================

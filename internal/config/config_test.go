@@ -1,10 +1,13 @@
-package config
+package config_test
 
 import (
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"sql-proxy/internal/config"
+	"sql-proxy/internal/validate"
 )
 
 // TestLoad_ValidConfig verifies a complete valid YAML config loads with all fields correctly populated
@@ -163,7 +166,7 @@ func TestLoad_InvalidTimeout(t *testing.T) {
 	}{
 		{"zero_default", 0, 300, "server.default_timeout_sec is required"},
 		{"zero_max", 30, 0, "server.max_timeout_sec is required"},
-		{"max_less_than_default", 60, 30, "server.max_timeout_sec must be >= server.default_timeout_sec"},
+		{"max_less_than_default", 60, 30, "must be >= server.default_timeout_sec"},
 	}
 
 	for _, tt := range tests {
@@ -595,7 +598,7 @@ func TestDatabaseConfig_IsReadOnly(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := DatabaseConfig{ReadOnly: tt.readonly}
+			cfg := config.DatabaseConfig{ReadOnly: tt.readonly}
 			if got := cfg.IsReadOnly(); got != tt.want {
 				t.Errorf("IsReadOnly() = %v, want %v", got, tt.want)
 			}
@@ -630,7 +633,7 @@ func TestDatabaseConfig_DefaultSessionConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := DatabaseConfig{ReadOnly: tt.readonly}
+			cfg := config.DatabaseConfig{ReadOnly: tt.readonly}
 			sess := cfg.DefaultSessionConfig()
 
 			if sess.Isolation != tt.wantIso {
@@ -648,20 +651,20 @@ func TestDatabaseConfig_DefaultSessionConfig(t *testing.T) {
 
 // TestResolveSessionConfig validates priority: query overrides > db overrides > defaults
 func TestResolveSessionConfig(t *testing.T) {
-	dbCfg := DatabaseConfig{
+	dbCfg := config.DatabaseConfig{
 		ReadOnly:         boolPtr(true),
 		Isolation:        "read_committed",    // Override implicit default
 		LockTimeoutMs:    intPtr(10000),       // Override implicit default
 		DeadlockPriority: "",                  // Use implicit default
 	}
 
-	queryCfg := QueryConfig{
+	queryCfg := config.QueryConfig{
 		Isolation:        "repeatable_read",   // Override database setting
 		LockTimeoutMs:    nil,                 // Use database setting
 		DeadlockPriority: "high",              // Override implicit default
 	}
 
-	sess := ResolveSessionConfig(dbCfg, queryCfg)
+	sess := config.ResolveSessionConfig(dbCfg, queryCfg)
 
 	if sess.Isolation != "repeatable_read" {
 		t.Errorf("expected isolation repeatable_read, got %s", sess.Isolation)
@@ -680,12 +683,12 @@ func TestValidIsolationLevels(t *testing.T) {
 	invalid := []string{"", "invalid", "READ_COMMITTED", "ReadCommitted"}
 
 	for _, level := range valid {
-		if !ValidIsolationLevels[level] {
+		if !config.ValidIsolationLevels[level] {
 			t.Errorf("expected %s to be valid", level)
 		}
 	}
 	for _, level := range invalid {
-		if ValidIsolationLevels[level] {
+		if config.ValidIsolationLevels[level] {
 			t.Errorf("expected %s to be invalid", level)
 		}
 	}
@@ -697,12 +700,12 @@ func TestValidDeadlockPriorities(t *testing.T) {
 	invalid := []string{"", "LOW", "medium", "critical"}
 
 	for _, p := range valid {
-		if !ValidDeadlockPriorities[p] {
+		if !config.ValidDeadlockPriorities[p] {
 			t.Errorf("expected %s to be valid", p)
 		}
 	}
 	for _, p := range invalid {
-		if ValidDeadlockPriorities[p] {
+		if config.ValidDeadlockPriorities[p] {
 			t.Errorf("expected %s to be invalid", p)
 		}
 	}
@@ -714,12 +717,12 @@ func TestValidJournalModes(t *testing.T) {
 	invalid := []string{"", "WAL", "persist", "none"}
 
 	for _, mode := range valid {
-		if !ValidJournalModes[mode] {
+		if !config.ValidJournalModes[mode] {
 			t.Errorf("expected %s to be valid", mode)
 		}
 	}
 	for _, mode := range invalid {
-		if ValidJournalModes[mode] {
+		if config.ValidJournalModes[mode] {
 			t.Errorf("expected %s to be invalid", mode)
 		}
 	}
@@ -731,12 +734,12 @@ func TestValidDatabaseTypes(t *testing.T) {
 	invalid := []string{"", "mysql", "postgres", "SQLite", "SQLSERVER"}
 
 	for _, typ := range valid {
-		if !ValidDatabaseTypes[typ] {
+		if !config.ValidDatabaseTypes[typ] {
 			t.Errorf("expected %s to be valid", typ)
 		}
 	}
 	for _, typ := range invalid {
-		if ValidDatabaseTypes[typ] {
+		if config.ValidDatabaseTypes[typ] {
 			t.Errorf("expected %s to be invalid", typ)
 		}
 	}
@@ -744,7 +747,7 @@ func TestValidDatabaseTypes(t *testing.T) {
 
 // Helper functions
 
-func loadFromString(t *testing.T, content string) *Config {
+func loadFromString(t *testing.T, content string) *config.Config {
 	t.Helper()
 
 	tmpDir := t.TempDir()
@@ -753,7 +756,7 @@ func loadFromString(t *testing.T, content string) *Config {
 		t.Fatalf("failed to write config file: %v", err)
 	}
 
-	cfg, err := Load(path)
+	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}
@@ -769,26 +772,26 @@ func expectLoadError(t *testing.T, content, wantErr string) {
 		t.Fatalf("failed to write config file: %v", err)
 	}
 
-	_, err := Load(path)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !contains(err.Error(), wantErr) {
-		t.Errorf("expected error containing %q, got %q", wantErr, err.Error())
-	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsAt(s, substr))
-}
-
-func containsAt(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
+	cfg, err := config.Load(path)
+	if err != nil {
+		// YAML parse error
+		if !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(wantErr)) {
+			t.Errorf("expected error containing %q, got %q", wantErr, err.Error())
 		}
+		return
 	}
-	return false
+
+	// Validate the config
+	result := validate.Run(cfg)
+	if result.Valid {
+		t.Fatal("expected validation error, got valid config")
+	}
+
+	// Check that the expected error is in the validation errors (case-insensitive)
+	allErrors := strings.ToLower(strings.Join(result.Errors, " | "))
+	if !strings.Contains(allErrors, strings.ToLower(wantErr)) {
+		t.Errorf("expected error containing %q, got errors: %v", wantErr, result.Errors)
+	}
 }
 
 func configWithPort(port int) string {
@@ -947,7 +950,7 @@ func TestIsArrayType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.typeName, func(t *testing.T) {
-			result := IsArrayType(tt.typeName)
+			result := config.IsArrayType(tt.typeName)
 			if result != tt.expected {
 				t.Errorf("IsArrayType(%q) = %v, want %v", tt.typeName, result, tt.expected)
 			}
@@ -972,7 +975,7 @@ func TestArrayBaseType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.typeName, func(t *testing.T) {
-			result := ArrayBaseType(tt.typeName)
+			result := config.ArrayBaseType(tt.typeName)
 			if result != tt.expected {
 				t.Errorf("ArrayBaseType(%q) = %q, want %q", tt.typeName, result, tt.expected)
 			}
@@ -989,7 +992,7 @@ func TestValidParameterTypes(t *testing.T) {
 	}
 
 	for _, typ := range expectedTypes {
-		if !ValidParameterTypes[typ] {
+		if !config.ValidParameterTypes[typ] {
 			t.Errorf("ValidParameterTypes missing expected type: %s", typ)
 		}
 	}
@@ -997,7 +1000,7 @@ func TestValidParameterTypes(t *testing.T) {
 	// Verify invalid types are not in the map
 	invalidTypes := []string{"object", "array", "map", "list", "unknown"}
 	for _, typ := range invalidTypes {
-		if ValidParameterTypes[typ] {
+		if config.ValidParameterTypes[typ] {
 			t.Errorf("ValidParameterTypes should not contain: %s", typ)
 		}
 	}

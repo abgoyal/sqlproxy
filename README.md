@@ -87,20 +87,35 @@ DENY CREATE FUNCTION TO sqlproxy_reader;
 ## Building
 
 ```bash
-# Build for current platform
+# Build for current platform (development)
 go build -ldflags '-s -w' -o sql-proxy .
 
+# Build with version and build time (release)
+VERSION=1.0.0
+BUILD_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+go build -ldflags "-s -w -X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME}" -o sql-proxy .
+
 # Cross-compile for Windows
-GOOS=windows GOARCH=amd64 go build -ldflags '-s -w' -o sql-proxy.exe .
+GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME}" -o sql-proxy.exe .
 
 # Cross-compile for Linux
-GOOS=linux GOARCH=amd64 go build -ldflags '-s -w' -o sql-proxy .
+GOOS=linux GOARCH=amd64 go build -ldflags "-s -w -X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME}" -o sql-proxy .
 
 # Cross-compile for macOS (Intel)
-GOOS=darwin GOARCH=amd64 go build -ldflags '-s -w' -o sql-proxy .
+GOOS=darwin GOARCH=amd64 go build -ldflags "-s -w -X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME}" -o sql-proxy .
 
 # Cross-compile for macOS (Apple Silicon)
-GOOS=darwin GOARCH=arm64 go build -ldflags '-s -w' -o sql-proxy .
+GOOS=darwin GOARCH=arm64 go build -ldflags "-s -w -X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME}" -o sql-proxy .
+
+# Using make (recommended - sets version and build time automatically)
+make build              # Current platform
+make build-windows      # Windows
+make build-linux        # Linux
+make build-darwin       # macOS Intel
+make build-darwin-arm   # macOS Apple Silicon
+
+# Check version
+./sql-proxy -version
 ```
 
 ## Configuration Validation
@@ -371,17 +386,17 @@ databases:
 
     # Connection pool settings (optional)
     max_open_conns: 10       # Max open connections (default: 5)
-    max_idle_conns: 5        # Max idle connections (default: 5)
+    max_idle_conns: 5        # Max idle connections (default: 2)
     conn_max_lifetime: 300   # Max connection lifetime in seconds (default: 300)
-    conn_max_idle_time: 60   # Max idle time in seconds (default: 60)
+    conn_max_idle_time: 120  # Max idle time in seconds (default: 120)
 ```
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `max_open_conns` | 5 | Maximum number of open connections to the database |
-| `max_idle_conns` | 5 | Maximum number of idle connections in the pool |
+| `max_idle_conns` | 2 | Maximum number of idle connections in the pool |
 | `conn_max_lifetime` | 300 | Maximum time (seconds) a connection can be reused |
-| `conn_max_idle_time` | 60 | Maximum time (seconds) a connection can be idle |
+| `conn_max_idle_time` | 120 | Maximum time (seconds) a connection can be idle |
 
 **When to tune:**
 - High-throughput services: Increase `max_open_conns` and `max_idle_conns`
@@ -1421,4 +1436,8 @@ All unit and integration tests use SQLite in-memory databases (`:memory:`) to av
 
 Planned features for future releases:
 
+- [ ] **MySQL Support** - Add MySQL/MariaDB as a database backend option alongside SQL Server and SQLite.
+- [ ] **PostgreSQL Support** - Add PostgreSQL as a database backend option.
 - [ ] **TLS Support** - Native HTTPS termination without requiring a reverse proxy (Caddy/nginx). Will support configurable certificate paths and automatic Let's Encrypt integration.
+- [ ] **Rate Limiting** - Per-endpoint and per-client rate limiting to protect database resources from excessive requests.
+- [ ] **Authentication** - API key and/or JWT-based authentication for endpoint access control.

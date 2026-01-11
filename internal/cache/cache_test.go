@@ -1,7 +1,10 @@
 package cache
 
 import (
+	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -616,5 +619,156 @@ func TestCalculateSize(t *testing.T) {
 				t.Errorf("calculateSize() = %d, want >= %d", size, tt.min)
 			}
 		})
+	}
+}
+
+// TestGetOrCompute tests the GetOrCompute method
+func TestGetOrCompute(t *testing.T) {
+	c, err := New(config.CacheConfig{Enabled: true, MaxSizeMB: 64})
+	if err != nil {
+		t.Fatalf("failed to create cache: %v", err)
+	}
+	defer c.Close()
+
+	endpoint := "/api/test"
+	c.RegisterEndpoint(endpoint, &config.QueryCacheConfig{Enabled: true, Key: "{{.id}}"})
+
+	// First call - should compute and cache
+	data, hit, err := c.GetOrCompute(endpoint, "key1", 5*time.Minute, func() ([]map[string]any, error) {
+		return []map[string]any{{"id": 1, "computed": true}}, nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hit {
+		t.Error("expected cache miss on first call")
+	}
+	if len(data) != 1 || data[0]["id"] != 1 {
+		t.Errorf("unexpected data: %v", data)
+	}
+
+	// Wait for ristretto async processing
+	time.Sleep(10 * time.Millisecond)
+
+	// Second call - should hit cache
+	computeCalled := false
+	data, hit, err = c.GetOrCompute(endpoint, "key1", 5*time.Minute, func() ([]map[string]any, error) {
+		computeCalled = true
+		return []map[string]any{{"id": 2}}, nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hit {
+		t.Error("expected cache hit on second call")
+	}
+	if computeCalled {
+		t.Error("compute function should not have been called on cache hit")
+	}
+	if len(data) != 1 || data[0]["id"] != 1 {
+		t.Errorf("expected cached data, got: %v", data)
+	}
+}
+
+// TestGetOrCompute_Error tests error handling in GetOrCompute
+func TestGetOrCompute_Error(t *testing.T) {
+	c, err := New(config.CacheConfig{Enabled: true, MaxSizeMB: 64})
+	if err != nil {
+		t.Fatalf("failed to create cache: %v", err)
+	}
+	defer c.Close()
+
+	endpoint := "/api/test"
+	c.RegisterEndpoint(endpoint, &config.QueryCacheConfig{Enabled: true, Key: "{{.id}}"})
+
+	expectedErr := errors.New("compute error")
+	data, hit, err := c.GetOrCompute(endpoint, "key1", 5*time.Minute, func() ([]map[string]any, error) {
+		return nil, expectedErr
+	})
+	if err == nil {
+		t.Error("expected error from compute function")
+	}
+	if hit {
+		t.Error("expected cache miss")
+	}
+	if data != nil {
+		t.Errorf("expected nil data on error, got: %v", data)
+	}
+}
+
+// TestGetOrCompute_NilCache tests GetOrCompute with nil cache
+func TestGetOrCompute_NilCache(t *testing.T) {
+	var c *Cache
+
+	// Should still compute when cache is nil
+	computeCalled := false
+	data, hit, err := c.GetOrCompute("/api/test", "key1", 5*time.Minute, func() ([]map[string]any, error) {
+		computeCalled = true
+		return []map[string]any{{"id": 1}}, nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hit {
+		t.Error("expected cache miss with nil cache")
+	}
+	if !computeCalled {
+		t.Error("compute function should have been called")
+	}
+	if len(data) != 1 {
+		t.Errorf("unexpected data: %v", data)
+	}
+}
+
+// TestGetOrCompute_Singleflight tests that singleflight prevents stampedes
+func TestGetOrCompute_Singleflight(t *testing.T) {
+	c, err := New(config.CacheConfig{Enabled: true, MaxSizeMB: 64})
+	if err != nil {
+		t.Fatalf("failed to create cache: %v", err)
+	}
+	defer c.Close()
+
+	endpoint := "/api/test"
+	c.RegisterEndpoint(endpoint, &config.QueryCacheConfig{Enabled: true, Key: "{{.id}}"})
+
+	// Track how many times compute is called
+	var computeCount atomic.Int32
+	var wg sync.WaitGroup
+
+	// Launch many concurrent requests for the same key
+	numRequests := 50
+	results := make(chan []map[string]any, numRequests)
+
+	for i := 0; i < numRequests; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			data, _, err := c.GetOrCompute(endpoint, "shared-key", 5*time.Minute, func() ([]map[string]any, error) {
+				computeCount.Add(1)
+				// Simulate slow computation
+				time.Sleep(50 * time.Millisecond)
+				return []map[string]any{{"id": 1, "computed": true}}, nil
+			})
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+				return
+			}
+			results <- data
+		}()
+	}
+
+	wg.Wait()
+	close(results)
+
+	// With singleflight, compute should only be called once
+	if count := computeCount.Load(); count != 1 {
+		t.Errorf("compute was called %d times, expected 1 (singleflight should deduplicate)", count)
+	}
+
+	// All goroutines should get the same result
+	for data := range results {
+		if len(data) != 1 || data[0]["id"] != 1 {
+			t.Errorf("unexpected result: %v", data)
+		}
 	}
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/dgraph-io/ristretto"
 	"github.com/robfig/cron/v3"
+	"golang.org/x/sync/singleflight"
 
 	"sql-proxy/internal/config"
 )
@@ -38,6 +39,9 @@ type Cache struct {
 
 	mu        sync.RWMutex
 	endpoints map[string]*EndpointCache
+
+	// Singleflight for cache stampede protection
+	sfGroup singleflight.Group
 
 	// Global metrics (atomic for lock-free reads)
 	totalHits   atomic.Int64
@@ -202,6 +206,54 @@ func (c *Cache) Get(endpoint, key string) ([]map[string]any, bool) {
 	}
 
 	return entry.Data, true
+}
+
+// ComputeFunc is the function type for computing a value on cache miss.
+type ComputeFunc func() ([]map[string]any, error)
+
+// GetOrCompute retrieves a cached entry or computes it if not present.
+// Uses singleflight to prevent cache stampedes - only one concurrent caller
+// will execute the compute function while others wait for the result.
+// Returns the data, whether it was a cache hit, and any error from computation.
+func (c *Cache) GetOrCompute(endpoint, key string, ttl time.Duration, compute ComputeFunc) ([]map[string]any, bool, error) {
+	if c == nil {
+		// No cache - just compute
+		data, err := compute()
+		return data, false, err
+	}
+
+	// Try cache first
+	if data, hit := c.Get(endpoint, key); hit {
+		return data, true, nil
+	}
+
+	// Cache miss - use singleflight to deduplicate concurrent requests
+	fullKey := endpoint + ":" + key
+
+	result, err, _ := c.sfGroup.Do(fullKey, func() (any, error) {
+		// Double-check cache in case another request populated it
+		if data, hit := c.Get(endpoint, key); hit {
+			return data, nil
+		}
+
+		// Compute the value
+		data, err := compute()
+		if err != nil {
+			return nil, err
+		}
+
+		// Store in cache
+		c.Set(endpoint, key, data, ttl)
+
+		return data, nil
+	})
+
+	if err != nil {
+		return nil, false, err
+	}
+
+	data, _ := result.([]map[string]any)
+	return data, false, nil
 }
 
 // Set stores data in the cache

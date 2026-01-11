@@ -12,8 +12,17 @@ import (
 	"sql-proxy/internal/validate"
 )
 
+// Version is set at build time via ldflags
+// Example: go build -ldflags "-X main.Version=1.0.0 -X main.BuildTime=2024-01-15T10:30:00Z"
+var (
+	Version   = "dev"
+	BuildTime = "unknown"
+)
+
 var (
 	configPath   = flag.String("config", "config.yaml", "Path to configuration file")
+	serviceName  = flag.String("service-name", "sql-proxy", "Service name (for multi-instance support)")
+	daemon       = flag.Bool("daemon", false, "Run as background daemon/service (disables interactive output)")
 	install      = flag.Bool("install", false, "Install as system service")
 	uninstall    = flag.Bool("uninstall", false, "Uninstall system service")
 	start        = flag.Bool("start", false, "Start the system service")
@@ -21,13 +30,21 @@ var (
 	restart      = flag.Bool("restart", false, "Restart the system service")
 	status       = flag.Bool("status", false, "Show system service status")
 	validateOnly = flag.Bool("validate", false, "Validate configuration and exit")
+	showVersion  = flag.Bool("version", false, "Print version and exit")
 )
 
 func main() {
 	flag.Parse()
 
+	// Handle version flag
+	if *showVersion {
+		fmt.Printf("sql-proxy version %s (built %s)\n", Version, BuildTime)
+		return
+	}
+
 	// Handle service install/uninstall
 	if *install {
+		fmt.Printf("SQL Proxy Service v%s\n", Version)
 		exePath, err := os.Executable()
 		if err != nil {
 			log.Fatalf("Failed to get executable path: %v", err)
@@ -38,46 +55,47 @@ func main() {
 			log.Fatalf("Failed to get absolute config path: %v", err)
 		}
 
-		if err := service.Install(exePath, absConfigPath); err != nil {
+		if err := service.Install(*serviceName, exePath, absConfigPath); err != nil {
 			log.Fatalf("Failed to install service: %v", err)
 		}
 		return
 	}
 
 	if *uninstall {
-		if err := service.Uninstall(); err != nil {
+		fmt.Printf("SQL Proxy Service v%s\n", Version)
+		if err := service.Uninstall(*serviceName); err != nil {
 			log.Fatalf("Failed to uninstall service: %v", err)
 		}
 		return
 	}
 
 	if *start {
-		if err := service.Start(); err != nil {
+		if err := service.Start(*serviceName); err != nil {
 			log.Fatalf("Failed to start service: %v", err)
 		}
 		return
 	}
 
 	if *stop {
-		if err := service.Stop(); err != nil {
+		if err := service.Stop(*serviceName); err != nil {
 			log.Fatalf("Failed to stop service: %v", err)
 		}
 		return
 	}
 
 	if *restart {
-		if err := service.Restart(); err != nil {
+		if err := service.Restart(*serviceName); err != nil {
 			log.Fatalf("Failed to restart service: %v", err)
 		}
 		return
 	}
 
 	if *status {
-		st, err := service.Status()
+		st, err := service.Status(*serviceName)
 		if err != nil {
 			log.Fatalf("Failed to get service status: %v", err)
 		}
-		fmt.Printf("Service %s: %s\n", service.ServiceName(), st)
+		fmt.Printf("Service %s: %s\n", *serviceName, st)
 		return
 	}
 
@@ -87,6 +105,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Configuration error: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Set runtime info (not from config file)
+	cfg.Server.Version = Version
+	cfg.Server.BuildTime = BuildTime
 
 	// Handle validation mode
 	if *validateOnly {
@@ -98,11 +120,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("SQL Proxy Service\n")
-	fmt.Printf("Loaded %d query endpoints\n", len(cfg.Queries))
+	// Interactive mode shows startup info
+	interactive := !*daemon
+	if interactive {
+		fmt.Printf("SQL Proxy Service v%s\n", Version)
+		fmt.Printf("Loaded %d query endpoints\n", len(cfg.Queries))
+	}
 
 	// Run the service
-	if err := service.Run(cfg); err != nil {
+	if err := service.Run(cfg, interactive); err != nil {
 		log.Fatalf("Service error: %v", err)
 	}
 }

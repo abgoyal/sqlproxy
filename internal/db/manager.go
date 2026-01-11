@@ -95,7 +95,9 @@ func (m *Manager) Ping(ctx context.Context) map[string]error {
 	return results
 }
 
-// PingAll returns true if all connections are healthy
+// PingAll returns true if all connections are healthy.
+// Useful for strict health checks that require all databases to be available
+// before reporting healthy status. For detailed per-database status, use Ping.
 func (m *Manager) PingAll(ctx context.Context) bool {
 	results := m.Ping(ctx)
 	for _, err := range results {
@@ -118,7 +120,9 @@ func (m *Manager) Reconnect(name string) error {
 	return driver.Reconnect()
 }
 
-// ReconnectAll attempts to reconnect all databases
+// ReconnectAll attempts to reconnect all databases.
+// Useful for administrative operations like recovering from network outages.
+// Returns a map of connection name -> error (nil if reconnection succeeded).
 func (m *Manager) ReconnectAll() map[string]error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

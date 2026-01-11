@@ -773,3 +773,166 @@ func TestExecute_ConnectionError(t *testing.T) {
 		t.Errorf("error should mention sending webhook: %v", err)
 	}
 }
+
+// TestResolveRetryConfig tests retry configuration resolution
+func TestResolveRetryConfig(t *testing.T) {
+	enabled := true
+	disabled := false
+
+	tests := []struct {
+		name           string
+		cfg            *config.WebhookRetryConfig
+		wantEnabled    bool
+		wantMaxAttempts int
+		wantInitialBackoff time.Duration
+		wantMaxBackoff time.Duration
+	}{
+		{
+			name:           "nil config uses defaults",
+			cfg:            nil,
+			wantEnabled:    true,
+			wantMaxAttempts: 3,
+			wantInitialBackoff: 1 * time.Second,
+			wantMaxBackoff: 30 * time.Second,
+		},
+		{
+			name:           "empty config uses defaults",
+			cfg:            &config.WebhookRetryConfig{},
+			wantEnabled:    true,
+			wantMaxAttempts: 3,
+			wantInitialBackoff: 1 * time.Second,
+			wantMaxBackoff: 30 * time.Second,
+		},
+		{
+			name:           "explicitly disabled",
+			cfg:            &config.WebhookRetryConfig{Enabled: &disabled},
+			wantEnabled:    false,
+			wantMaxAttempts: 3, // Still has defaults but won't be used
+			wantInitialBackoff: 1 * time.Second,
+			wantMaxBackoff: 30 * time.Second,
+		},
+		{
+			name:           "custom max attempts",
+			cfg:            &config.WebhookRetryConfig{Enabled: &enabled, MaxAttempts: 5},
+			wantEnabled:    true,
+			wantMaxAttempts: 5,
+			wantInitialBackoff: 1 * time.Second,
+			wantMaxBackoff: 30 * time.Second,
+		},
+		{
+			name:           "custom backoff",
+			cfg:            &config.WebhookRetryConfig{Enabled: &enabled, InitialBackoffSec: 2, MaxBackoffSec: 60},
+			wantEnabled:    true,
+			wantMaxAttempts: 3, // Uses default when not specified
+			wantInitialBackoff: 2 * time.Second,
+			wantMaxBackoff: 60 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := resolveRetryConfig(tt.cfg)
+
+			if result.Enabled != tt.wantEnabled {
+				t.Errorf("Enabled = %v, want %v", result.Enabled, tt.wantEnabled)
+			}
+			if result.MaxAttempts != tt.wantMaxAttempts {
+				t.Errorf("MaxAttempts = %v, want %v", result.MaxAttempts, tt.wantMaxAttempts)
+			}
+			if result.InitialBackoff != tt.wantInitialBackoff {
+				t.Errorf("InitialBackoff = %v, want %v", result.InitialBackoff, tt.wantInitialBackoff)
+			}
+			if result.MaxBackoff != tt.wantMaxBackoff {
+				t.Errorf("MaxBackoff = %v, want %v", result.MaxBackoff, tt.wantMaxBackoff)
+			}
+		})
+	}
+}
+
+// TestExecute_RetryDisabled tests that retries are skipped when disabled
+func TestExecute_RetryDisabled(t *testing.T) {
+	// Server that always returns 500
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("server error"))
+	}))
+	defer server.Close()
+
+	disabled := false
+	webhookCfg := &config.WebhookConfig{
+		URL: server.URL,
+		Retry: &config.WebhookRetryConfig{
+			Enabled: &disabled,
+		},
+	}
+
+	err := Execute(context.Background(), webhookCfg, &ExecutionContext{})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	// With retries disabled, should only attempt once
+	if attempts != 1 {
+		t.Errorf("expected 1 attempt, got %d", attempts)
+	}
+}
+
+// TestExecute_CustomRetryConfig tests custom retry settings
+func TestExecute_CustomRetryConfig(t *testing.T) {
+	// Server that returns 500 twice, then 200
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 3 {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("server error"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("success"))
+	}))
+	defer server.Close()
+
+	enabled := true
+	webhookCfg := &config.WebhookConfig{
+		URL: server.URL,
+		Retry: &config.WebhookRetryConfig{
+			Enabled:           &enabled,
+			MaxAttempts:       5,
+			InitialBackoffSec: 1, // Use short backoff for tests
+			MaxBackoffSec:     2,
+		},
+	}
+
+	err := Execute(context.Background(), webhookCfg, &ExecutionContext{})
+	if err != nil {
+		t.Fatalf("expected success after retries, got error: %v", err)
+	}
+
+	// Should succeed on 3rd attempt
+	if attempts != 3 {
+		t.Errorf("expected 3 attempts, got %d", attempts)
+	}
+}
+
+// TestExecutionContext_Version tests that version is included in ExecutionContext
+func TestExecutionContext_Version(t *testing.T) {
+	execCtx := &ExecutionContext{
+		Query:   "test_query",
+		Count:   5,
+		Success: true,
+		Version: "v1.2.3-abc123",
+	}
+
+	// Verify version is accessible for templates
+	result, err := executeTemplate("test", "Version: {{.Version}}", execCtx)
+	if err != nil {
+		t.Fatalf("template error: %v", err)
+	}
+
+	if result != "Version: v1.2.3-abc123" {
+		t.Errorf("expected 'Version: v1.2.3-abc123', got %q", result)
+	}
+}

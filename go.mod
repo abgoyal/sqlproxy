@@ -3,8 +3,10 @@ module sql-proxy
 go 1.24.0
 
 require (
+	github.com/dgraph-io/ristretto v0.2.0
 	github.com/microsoft/go-mssqldb v1.7.0
 	github.com/robfig/cron/v3 v3.0.1
+	golang.org/x/sync v0.16.0
 	golang.org/x/sys v0.36.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v3 v3.0.1
@@ -13,7 +15,6 @@ require (
 
 require (
 	github.com/cespare/xxhash/v2 v2.1.1 // indirect
-	github.com/dgraph-io/ristretto v0.2.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/golang-sql/civil v0.0.0-20220223132316-b832511892a9 // indirect
 	github.com/golang-sql/sqlexp v0.1.0 // indirect
