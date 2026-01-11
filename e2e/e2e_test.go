@@ -199,7 +199,7 @@ func (ts *testServer) waitReady(timeout time.Duration) error {
 	client := &http.Client{Timeout: 1 * time.Second}
 
 	for time.Now().Before(deadline) {
-		resp, err := client.Get(ts.baseURL + "/health")
+		resp, err := client.Get(ts.baseURL + "/_/health")
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -294,7 +294,7 @@ func TestE2E_ServerStartupAndShutdown(t *testing.T) {
 	defer ts.stop()
 
 	// Verify server is running
-	resp, err := ts.get("/health")
+	resp, err := ts.get("/_/health")
 	if err != nil {
 		t.Fatalf("health check failed: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestE2E_HealthEndpoint(t *testing.T) {
 	defer ts.stop()
 
 	var result map[string]any
-	resp, err := ts.getJSON("/health", &result)
+	resp, err := ts.getJSON("/_/health", &result)
 	if err != nil {
 		t.Fatalf("health check failed: %v", err)
 	}
@@ -356,7 +356,7 @@ func TestE2E_HealthEndpoint(t *testing.T) {
 	}
 }
 
-// TestE2E_MetricsEndpoint tests /metrics returns runtime stats
+// TestE2E_MetricsEndpoint tests /_/metrics returns runtime stats
 func TestE2E_MetricsEndpoint(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test in short mode")
@@ -376,7 +376,7 @@ func TestE2E_MetricsEndpoint(t *testing.T) {
 	defer ts.stop()
 
 	var result map[string]any
-	resp, err := ts.getJSON("/metrics", &result)
+	resp, err := ts.getJSON("/_/metrics", &result)
 	if err != nil {
 		t.Fatalf("metrics request failed: %v", err)
 	}
@@ -404,7 +404,7 @@ func TestE2E_MetricsEndpoint(t *testing.T) {
 	}
 }
 
-// TestE2E_OpenAPIEndpoint tests /openapi.json returns valid spec
+// TestE2E_OpenAPIEndpoint tests /_/openapi.json returns valid spec
 func TestE2E_OpenAPIEndpoint(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test in short mode")
@@ -424,7 +424,7 @@ func TestE2E_OpenAPIEndpoint(t *testing.T) {
 	defer ts.stop()
 
 	var spec map[string]any
-	resp, err := ts.getJSON("/openapi.json", &spec)
+	resp, err := ts.getJSON("/_/openapi.json", &spec)
 	if err != nil {
 		t.Fatalf("openapi request failed: %v", err)
 	}
@@ -603,7 +603,7 @@ func TestE2E_LogLevelEndpoint(t *testing.T) {
 
 	// GET current level
 	var result map[string]any
-	resp, err := ts.getJSON("/config/loglevel", &result)
+	resp, err := ts.getJSON("/_/config/loglevel", &result)
 	if err != nil {
 		t.Fatalf("get loglevel failed: %v", err)
 	}
@@ -613,7 +613,7 @@ func TestE2E_LogLevelEndpoint(t *testing.T) {
 	}
 
 	// POST to change level
-	resp, err = ts.post("/config/loglevel?level=debug", "")
+	resp, err = ts.post("/_/config/loglevel?level=debug", "")
 	if err != nil {
 		t.Fatalf("post loglevel failed: %v", err)
 	}
@@ -624,7 +624,7 @@ func TestE2E_LogLevelEndpoint(t *testing.T) {
 	}
 
 	// Verify level changed
-	resp, err = ts.getJSON("/config/loglevel", &result)
+	resp, err = ts.getJSON("/_/config/loglevel", &result)
 	if err != nil {
 		t.Fatalf("get loglevel failed: %v", err)
 	}
@@ -807,7 +807,7 @@ func TestE2E_GracefulShutdown(t *testing.T) {
 	}
 
 	// Verify server is no longer accepting connections
-	_, err = http.Get(ts.baseURL + "/health")
+	_, err = http.Get(ts.baseURL + "/_/health")
 	if err == nil {
 		t.Error("expected connection refused after shutdown")
 	}

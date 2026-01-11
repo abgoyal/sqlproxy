@@ -9,6 +9,7 @@ A lightweight, production-grade Go service that exposes predefined SQL queries a
 - **YAML Configuration** - Easy query management, no code changes
 - **Read-only Safety** - Zero interference with production database
 - **Scheduled Queries** - Run queries on cron schedule with retry
+- **Rate Limiting** - Per-endpoint and per-client rate limiting with token bucket
 - **Structured Logging** - JSON logs with automatic rotation
 - **Metrics Endpoint** - `/metrics` for monitoring
 - **Request Tracing** - Wide events with request IDs
@@ -802,6 +803,97 @@ With `log_results: true`, the first 10 rows are included:
 {"time":"...","level":"INFO","msg":"scheduled_query_completed","query_name":"daily_report","row_count":1,"duration_ms":45,"sample_rows":"[{\"total\":1523,\"unique_employees\":342}]"}
 ```
 
+## Rate Limiting
+
+Protect your database from excessive requests with configurable rate limiting. Rate limits use the token bucket algorithm with configurable request rate and burst capacity.
+
+### Server-Level Rate Limit Pools
+
+Define reusable rate limit pools at the server level:
+
+```yaml
+rate_limits:
+  - name: "global"
+    requests_per_second: 100
+    burst: 200
+    key: "{{.ClientIP}}"
+
+  - name: "per_user"
+    requests_per_second: 10
+    burst: 20
+    key: "{{.Header.Authorization}}"
+
+  - name: "per_tenant"
+    requests_per_second: 50
+    burst: 100
+    key: "{{getOr .Header \"X-Tenant-ID\" \"default\"}}"
+```
+
+### Per-Query Rate Limits
+
+Apply rate limits to specific queries by referencing pools or using inline configuration:
+
+```yaml
+queries:
+  - name: "expensive_report"
+    path: "/api/report"
+    method: "GET"
+    sql: "SELECT * FROM large_table"
+    rate_limit:
+      - pool: "global"                   # Reference named pool
+      - pool: "per_user"                 # Multiple pools can be applied
+
+  - name: "public_api"
+    path: "/api/public"
+    method: "GET"
+    sql: "SELECT * FROM items"
+    rate_limit:
+      - requests_per_second: 5           # Inline rate limit
+        burst: 10
+        key: "{{.ClientIP}}"
+```
+
+### Rate Limit Key Templates
+
+Keys determine how requests are grouped for rate limiting. Use Go template syntax with access to request context:
+
+| Template | Description |
+|----------|-------------|
+| `{{.ClientIP}}` | Client IP address (handles proxies via X-Forwarded-For) |
+| `{{.Header.Authorization}}` | Authorization header value |
+| `{{.Header.X-API-Key}}` | Custom header value |
+| `{{.Query.tenant}}` | Query parameter value |
+| `{{.Param.user_id}}` | URL parameter value |
+| `{{getOr .Header "X-Tenant" "default"}}` | Header with fallback |
+| `{{.ClientIP}}:{{.Header.X-Tenant-ID}}` | Composite key |
+
+### Rate Limit Behavior
+
+When a request is rate limited:
+- HTTP 429 (Too Many Requests) is returned
+- Response includes `Retry-After` header with seconds to wait
+- Request is logged with `rate_limited: true`
+
+```json
+{
+  "success": false,
+  "error": "rate limit exceeded",
+  "retry_after_sec": 2
+}
+```
+
+### Multiple Rate Limits
+
+When multiple rate limits apply to a query, **all must pass** for the request to proceed:
+
+```yaml
+rate_limit:
+  - pool: "global"      # 100 req/s global limit
+  - pool: "per_user"    # 10 req/s per user
+```
+
+This allows layered rate limiting (e.g., global cap + per-client fairness).
+
 ## Logging
 
 Uses Go's `log/slog` with JSON output. Rotation via lumberjack.
@@ -1456,5 +1548,5 @@ Planned features for future releases:
 - [ ] **MySQL Support** - Add MySQL/MariaDB as a database backend option alongside SQL Server and SQLite.
 - [ ] **PostgreSQL Support** - Add PostgreSQL as a database backend option.
 - [ ] **TLS Support** - Native HTTPS termination without requiring a reverse proxy (Caddy/nginx). Will support configurable certificate paths and automatic Let's Encrypt integration.
-- [ ] **Rate Limiting** - Per-endpoint and per-client rate limiting to protect database resources from excessive requests.
+- [x] **Rate Limiting** - Per-endpoint and per-client rate limiting to protect database resources from excessive requests.
 - [ ] **Authentication** - API key and/or JWT-based authentication for endpoint access control.

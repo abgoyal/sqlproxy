@@ -8,11 +8,12 @@ import (
 )
 
 type Config struct {
-	Server    ServerConfig     `yaml:"server"`
-	Databases []DatabaseConfig `yaml:"databases"`
-	Logging   LoggingConfig    `yaml:"logging"`
-	Metrics   MetricsConfig    `yaml:"metrics"`
-	Queries   []QueryConfig    `yaml:"queries"`
+	Server     ServerConfig          `yaml:"server"`
+	Databases  []DatabaseConfig      `yaml:"databases"`
+	Logging    LoggingConfig         `yaml:"logging"`
+	Metrics    MetricsConfig         `yaml:"metrics"`
+	RateLimits []RateLimitPoolConfig `yaml:"rate_limits"` // Named rate limit pools
+	Queries    []QueryConfig         `yaml:"queries"`
 }
 
 type LoggingConfig struct {
@@ -33,6 +34,7 @@ type ServerConfig struct {
 	DefaultTimeoutSec int          `yaml:"default_timeout_sec"` // Default query timeout (can be overridden per-query or per-request)
 	MaxTimeoutSec     int          `yaml:"max_timeout_sec"`     // Maximum allowed timeout (caps request overrides)
 	Cache             *CacheConfig `yaml:"cache"`               // Optional cache configuration
+	TrustProxyHeaders bool         `yaml:"trust_proxy_headers"` // Trust X-Forwarded-For/X-Real-IP for client IP (default: false)
 	APIVersion        string       `yaml:"api_version"`         // API version for OpenAPI spec (e.g., "1.0.0")
 	Version           string       `yaml:"-"`                   // Server version, set at runtime, not from config file
 	BuildTime         string       `yaml:"-"`                   // Set at runtime, not from config file
@@ -43,6 +45,36 @@ type CacheConfig struct {
 	Enabled       bool `yaml:"enabled"`
 	MaxSizeMB     int  `yaml:"max_size_mb"`      // Total cache limit in MB (default: 256)
 	DefaultTTLSec int  `yaml:"default_ttl_sec"`  // Default TTL in seconds (default: 300)
+}
+
+// RateLimitPoolConfig defines a named rate limit pool that can be referenced by queries
+type RateLimitPoolConfig struct {
+	Name              string `yaml:"name"`                // Pool name (required, must be unique)
+	RequestsPerSecond int    `yaml:"requests_per_second"` // Token refill rate (required)
+	Burst             int    `yaml:"burst"`               // Maximum burst size (required)
+	Key               string `yaml:"key"`                 // Template for bucket key (e.g., "{{.ClientIP}}")
+}
+
+// QueryRateLimitConfig is per-query rate limit configuration
+// Can reference a named pool or define an inline limit
+type QueryRateLimitConfig struct {
+	// Reference a named pool (mutually exclusive with inline settings)
+	Pool string `yaml:"pool"`
+
+	// Inline rate limit settings (mutually exclusive with pool reference)
+	RequestsPerSecond int    `yaml:"requests_per_second"`
+	Burst             int    `yaml:"burst"`
+	Key               string `yaml:"key"`
+}
+
+// IsPoolReference returns true if this config references a named pool
+func (r *QueryRateLimitConfig) IsPoolReference() bool {
+	return r.Pool != ""
+}
+
+// IsInline returns true if this config defines inline rate limit settings
+func (r *QueryRateLimitConfig) IsInline() bool {
+	return r.RequestsPerSecond > 0 || r.Burst > 0 || r.Key != ""
 }
 
 type DatabaseConfig struct {
@@ -102,6 +134,7 @@ type QueryConfig struct {
 	TimeoutSec  int               `yaml:"timeout_sec"` // Query-specific timeout (0 = use server default)
 	Schedule    *ScheduleConfig   `yaml:"schedule"`    // Optional scheduled execution
 	Cache       *QueryCacheConfig `yaml:"cache"`       // Optional cache configuration
+	RateLimit   []QueryRateLimitConfig `yaml:"rate_limit"` // Rate limit configs (all must pass)
 
 	// Session overrides (empty = use connection default)
 	Isolation        string `yaml:"isolation"`         // Override isolation level for this query

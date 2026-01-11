@@ -1641,3 +1641,298 @@ func TestValidateQueries_JSONColumns_EmptyColumn(t *testing.T) {
 		t.Errorf("expected error about json_columns, got: %v", r.Errors)
 	}
 }
+
+// TestValidateRateLimits tests server-level rate limit pool validation
+func TestValidateRateLimits(t *testing.T) {
+	tests := []struct {
+		name       string
+		rateLimits []config.RateLimitPoolConfig
+		wantErr    bool
+		errMsg     string
+	}{
+		{
+			name:       "empty rate limits is valid",
+			rateLimits: []config.RateLimitPoolConfig{},
+			wantErr:    false,
+		},
+		{
+			name: "valid single pool",
+			rateLimits: []config.RateLimitPoolConfig{
+				{Name: "global", RequestsPerSecond: 100, Burst: 200, Key: "{{.ClientIP}}"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid multiple pools",
+			rateLimits: []config.RateLimitPoolConfig{
+				{Name: "global", RequestsPerSecond: 100, Burst: 200, Key: "{{.ClientIP}}"},
+				{Name: "per_user", RequestsPerSecond: 10, Burst: 20, Key: `{{.Header.Authorization}}`},
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing name",
+			rateLimits: []config.RateLimitPoolConfig{
+				{Name: "", RequestsPerSecond: 100, Burst: 200, Key: "{{.ClientIP}}"},
+			},
+			wantErr: true,
+			errMsg:  "name is required",
+		},
+		{
+			name: "duplicate name",
+			rateLimits: []config.RateLimitPoolConfig{
+				{Name: "pool1", RequestsPerSecond: 100, Burst: 200, Key: "{{.ClientIP}}"},
+				{Name: "pool1", RequestsPerSecond: 50, Burst: 100, Key: "{{.ClientIP}}"},
+			},
+			wantErr: true,
+			errMsg:  "duplicate pool name",
+		},
+		{
+			name: "zero requests per second",
+			rateLimits: []config.RateLimitPoolConfig{
+				{Name: "pool", RequestsPerSecond: 0, Burst: 200, Key: "{{.ClientIP}}"},
+			},
+			wantErr: true,
+			errMsg:  "requests_per_second must be positive",
+		},
+		{
+			name: "negative requests per second",
+			rateLimits: []config.RateLimitPoolConfig{
+				{Name: "pool", RequestsPerSecond: -10, Burst: 200, Key: "{{.ClientIP}}"},
+			},
+			wantErr: true,
+			errMsg:  "requests_per_second must be positive",
+		},
+		{
+			name: "zero burst",
+			rateLimits: []config.RateLimitPoolConfig{
+				{Name: "pool", RequestsPerSecond: 100, Burst: 0, Key: "{{.ClientIP}}"},
+			},
+			wantErr: true,
+			errMsg:  "burst must be positive",
+		},
+		{
+			name: "missing key template",
+			rateLimits: []config.RateLimitPoolConfig{
+				{Name: "pool", RequestsPerSecond: 100, Burst: 200, Key: ""},
+			},
+			wantErr: true,
+			errMsg:  "key template is required",
+		},
+		{
+			name: "invalid key template syntax",
+			rateLimits: []config.RateLimitPoolConfig{
+				{Name: "pool", RequestsPerSecond: 100, Burst: 200, Key: "{{.Invalid"},
+			},
+			wantErr: true,
+			errMsg:  "invalid key template",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{
+				RateLimits: tc.rateLimits,
+			}
+
+			r := &Result{Valid: true}
+			validateRateLimits(cfg, r)
+
+			if tc.wantErr && r.Valid {
+				t.Error("expected error but got none")
+			}
+			if !tc.wantErr && !r.Valid {
+				t.Errorf("unexpected error: %v", r.Errors)
+			}
+			if tc.wantErr && !strings.Contains(strings.Join(r.Errors, " "), tc.errMsg) {
+				t.Errorf("expected error containing %q, got %v", tc.errMsg, r.Errors)
+			}
+		})
+	}
+}
+
+// TestValidateQueryRateLimits tests per-query rate limit validation
+func TestValidateQueryRateLimits(t *testing.T) {
+	pools := map[string]bool{
+		"global":   true,
+		"per_user": true,
+	}
+
+	tests := []struct {
+		name    string
+		limits  []config.QueryRateLimitConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "valid pool reference",
+			limits: []config.QueryRateLimitConfig{
+				{Pool: "global"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid inline config",
+			limits: []config.QueryRateLimitConfig{
+				{RequestsPerSecond: 10, Burst: 20, Key: "{{.ClientIP}}"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "multiple valid limits",
+			limits: []config.QueryRateLimitConfig{
+				{Pool: "global"},
+				{RequestsPerSecond: 5, Burst: 10, Key: `{{.Param.user_id}}`},
+			},
+			wantErr: false,
+		},
+		{
+			name: "unknown pool reference",
+			limits: []config.QueryRateLimitConfig{
+				{Pool: "nonexistent"},
+			},
+			wantErr: true,
+			errMsg:  "unknown rate limit pool 'nonexistent'",
+		},
+		{
+			name: "pool and inline mixed (error)",
+			limits: []config.QueryRateLimitConfig{
+				{Pool: "global", RequestsPerSecond: 10, Burst: 20, Key: "{{.ClientIP}}"},
+			},
+			wantErr: true,
+			errMsg:  "cannot specify both 'pool' and inline",
+		},
+		{
+			name: "neither pool nor inline",
+			limits: []config.QueryRateLimitConfig{
+				{}, // Empty config
+			},
+			wantErr: true,
+			errMsg:  "must specify either 'pool' or inline",
+		},
+		{
+			name: "inline missing requests_per_second",
+			limits: []config.QueryRateLimitConfig{
+				{Burst: 20, Key: "{{.ClientIP}}"},
+			},
+			wantErr: true,
+			errMsg:  "requests_per_second must be positive",
+		},
+		{
+			name: "inline missing burst",
+			limits: []config.QueryRateLimitConfig{
+				{RequestsPerSecond: 10, Key: "{{.ClientIP}}"},
+			},
+			wantErr: true,
+			errMsg:  "burst must be positive",
+		},
+		{
+			name: "inline missing key",
+			limits: []config.QueryRateLimitConfig{
+				{RequestsPerSecond: 10, Burst: 20},
+			},
+			wantErr: true,
+			errMsg:  "key template is required",
+		},
+		{
+			name: "inline invalid key template",
+			limits: []config.QueryRateLimitConfig{
+				{RequestsPerSecond: 10, Burst: 20, Key: "{{.Invalid"},
+			},
+			wantErr: true,
+			errMsg:  "invalid key template",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &Result{Valid: true}
+			validateQueryRateLimits(tc.limits, pools, "queries[0]", r)
+
+			if tc.wantErr && r.Valid {
+				t.Error("expected error but got none")
+			}
+			if !tc.wantErr && !r.Valid {
+				t.Errorf("unexpected error: %v", r.Errors)
+			}
+			if tc.wantErr && !strings.Contains(strings.Join(r.Errors, " "), tc.errMsg) {
+				t.Errorf("expected error containing %q, got %v", tc.errMsg, r.Errors)
+			}
+		})
+	}
+}
+
+// TestValidateQueries_RateLimits tests rate limit validation in full query validation
+func TestValidateQueries_RateLimits(t *testing.T) {
+	cfg := &config.Config{
+		Databases: []config.DatabaseConfig{
+			{Name: "test", Type: "sqlite", Path: ":memory:"},
+		},
+		RateLimits: []config.RateLimitPoolConfig{
+			{Name: "global", RequestsPerSecond: 100, Burst: 200, Key: "{{.ClientIP}}"},
+		},
+		Queries: []config.QueryConfig{
+			{
+				Name:     "test_query",
+				Database: "test",
+				Path:     "/api/test",
+				Method:   "GET",
+				SQL:      "SELECT 1",
+				RateLimit: []config.QueryRateLimitConfig{
+					{Pool: "global"},
+				},
+			},
+		},
+	}
+
+	r := &Result{Valid: true}
+	validateRateLimits(cfg, r)
+	validateQueries(cfg, r)
+
+	if !r.Valid {
+		t.Errorf("expected valid config, got errors: %v", r.Errors)
+	}
+}
+
+// TestValidateQueries_RateLimits_UnknownPool tests that unknown pool reference is caught
+func TestValidateQueries_RateLimits_UnknownPool(t *testing.T) {
+	cfg := &config.Config{
+		Databases: []config.DatabaseConfig{
+			{Name: "test", Type: "sqlite", Path: ":memory:"},
+		},
+		RateLimits: []config.RateLimitPoolConfig{
+			{Name: "global", RequestsPerSecond: 100, Burst: 200, Key: "{{.ClientIP}}"},
+		},
+		Queries: []config.QueryConfig{
+			{
+				Name:     "test_query",
+				Database: "test",
+				Path:     "/api/test",
+				Method:   "GET",
+				SQL:      "SELECT 1",
+				RateLimit: []config.QueryRateLimitConfig{
+					{Pool: "nonexistent"}, // Unknown pool
+				},
+			},
+		},
+	}
+
+	r := &Result{Valid: true}
+	validateRateLimits(cfg, r)
+	validateQueries(cfg, r)
+
+	if r.Valid {
+		t.Error("expected invalid config due to unknown pool reference")
+	}
+
+	found := false
+	for _, err := range r.Errors {
+		if strings.Contains(err, "unknown rate limit pool") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected error about unknown pool, got: %v", r.Errors)
+	}
+}

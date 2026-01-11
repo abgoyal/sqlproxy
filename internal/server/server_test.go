@@ -91,7 +91,7 @@ func TestServer_HealthHandler(t *testing.T) {
 	}
 	defer srv.Shutdown(context.Background())
 
-	req := httptest.NewRequest("GET", "/health", nil)
+	req := httptest.NewRequest("GET", "/_/health", nil)
 	w := httptest.NewRecorder()
 
 	srv.healthHandler(w, req)
@@ -119,7 +119,7 @@ func TestServer_HealthHandler(t *testing.T) {
 	}
 }
 
-// TestServer_MetricsHandler_Disabled tests /metrics returns not-enabled message when disabled
+// TestServer_MetricsHandler_Disabled tests /_/metrics returns not-enabled message when disabled
 func TestServer_MetricsHandler_Disabled(t *testing.T) {
 	cfg := createTestConfig()
 	cfg.Metrics.Enabled = false
@@ -130,7 +130,7 @@ func TestServer_MetricsHandler_Disabled(t *testing.T) {
 	}
 	defer srv.Shutdown(context.Background())
 
-	req := httptest.NewRequest("GET", "/metrics", nil)
+	req := httptest.NewRequest("GET", "/_/metrics", nil)
 	w := httptest.NewRecorder()
 
 	srv.metricsHandler(w, req)
@@ -156,7 +156,7 @@ func TestServer_LogLevelHandler(t *testing.T) {
 	defer srv.Shutdown(context.Background())
 
 	// GET current level
-	req := httptest.NewRequest("GET", "/config/loglevel", nil)
+	req := httptest.NewRequest("GET", "/_/config/loglevel", nil)
 	w := httptest.NewRecorder()
 	srv.logLevelHandler(w, req)
 
@@ -165,7 +165,7 @@ func TestServer_LogLevelHandler(t *testing.T) {
 	}
 
 	// POST to change level
-	req = httptest.NewRequest("POST", "/config/loglevel?level=debug", nil)
+	req = httptest.NewRequest("POST", "/_/config/loglevel?level=debug", nil)
 	w = httptest.NewRecorder()
 	srv.logLevelHandler(w, req)
 
@@ -174,7 +174,7 @@ func TestServer_LogLevelHandler(t *testing.T) {
 	}
 
 	// POST without level parameter
-	req = httptest.NewRequest("POST", "/config/loglevel", nil)
+	req = httptest.NewRequest("POST", "/_/config/loglevel", nil)
 	w = httptest.NewRecorder()
 	srv.logLevelHandler(w, req)
 
@@ -249,7 +249,7 @@ func TestServer_OpenAPIHandler(t *testing.T) {
 	}
 	defer srv.Shutdown(context.Background())
 
-	req := httptest.NewRequest("GET", "/openapi.json", nil)
+	req := httptest.NewRequest("GET", "/_/openapi.json", nil)
 	w := httptest.NewRecorder()
 	srv.openAPIHandler(w, req)
 
@@ -440,10 +440,10 @@ func TestServer_Integration_QueryEndpoint(t *testing.T) {
 
 	// Create a test server using the handler
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", srv.healthHandler)
-	mux.HandleFunc("/metrics", srv.metricsHandler)
-	mux.HandleFunc("/openapi.json", srv.openAPIHandler)
-	mux.HandleFunc("/config/loglevel", srv.logLevelHandler)
+	mux.HandleFunc("/_/health", srv.healthHandler)
+	mux.HandleFunc("/_/metrics", srv.metricsHandler)
+	mux.HandleFunc("/_/openapi.json", srv.openAPIHandler)
+	mux.HandleFunc("/_/config/loglevel", srv.logLevelHandler)
 	mux.HandleFunc("/", srv.listEndpointsHandler)
 
 	// Register query endpoints
@@ -580,7 +580,7 @@ func TestServer_Integration_WithGzip(t *testing.T) {
 // Helper to create a query handler
 func createQueryHandler(srv *Server, q config.QueryConfig) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h := handler.New(srv.dbManager, srv.cache, q, srv.config.Server)
+		h := handler.New(srv.dbManager, srv.cache, srv.rateLimiter, srv.ctxBuilder, q, srv.config.Server)
 		h.ServeHTTP(w, r)
 	})
 }
@@ -603,7 +603,7 @@ func TestServer_HealthHandler_Degraded(t *testing.T) {
 	driver.Close()
 
 	// Now health check should show degraded/unhealthy status
-	req := httptest.NewRequest("GET", "/health", nil)
+	req := httptest.NewRequest("GET", "/_/health", nil)
 	w := httptest.NewRecorder()
 
 	srv.healthHandler(w, req)
@@ -633,7 +633,7 @@ func TestServer_HealthHandler_Degraded(t *testing.T) {
 	}
 }
 
-// TestServer_HealthHandler_DatabaseDown tests /health shows database as disconnected when ping fails
+// TestServer_HealthHandler_DatabaseDown tests /_/health shows database as disconnected when ping fails
 func TestServer_HealthHandler_DatabaseDown(t *testing.T) {
 	cfg := createTestConfig()
 	// Use an invalid SQLite path to simulate connection failure
@@ -646,7 +646,7 @@ func TestServer_HealthHandler_DatabaseDown(t *testing.T) {
 	}
 }
 
-// TestServer_HealthHandler_MultipleDatabases tests /health with multiple database connections
+// TestServer_HealthHandler_MultipleDatabases tests /_/health with multiple database connections
 func TestServer_HealthHandler_MultipleDatabases(t *testing.T) {
 	readOnly := false
 	cfg := &config.Config{
@@ -685,7 +685,7 @@ func TestServer_HealthHandler_MultipleDatabases(t *testing.T) {
 	}
 	defer srv.Shutdown(context.Background())
 
-	req := httptest.NewRequest("GET", "/health", nil)
+	req := httptest.NewRequest("GET", "/_/health", nil)
 	w := httptest.NewRecorder()
 
 	srv.healthHandler(w, req)
@@ -875,7 +875,7 @@ func TestServer_Integration_CacheMetrics(t *testing.T) {
 			mux.Handle(q.Path, h)
 		}
 	}
-	mux.HandleFunc("/metrics", srv.metricsHandler)
+	mux.HandleFunc("/_/metrics", srv.metricsHandler)
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
@@ -885,7 +885,7 @@ func TestServer_Integration_CacheMetrics(t *testing.T) {
 	http.Get(ts.URL + "/api/cached")
 
 	// Get metrics
-	resp, err := http.Get(ts.URL + "/metrics")
+	resp, err := http.Get(ts.URL + "/_/metrics")
 	if err != nil {
 		t.Fatalf("metrics request failed: %v", err)
 	}
@@ -912,6 +912,189 @@ func TestServer_Integration_CacheMetrics(t *testing.T) {
 	}
 	if cacheMetrics["total_misses"].(float64) < 1 {
 		t.Errorf("expected at least 1 miss, got %v", cacheMetrics["total_misses"])
+	}
+}
+
+// TestServer_RateLimitsHandler tests the /_/ratelimits endpoint
+func TestServer_RateLimitsHandler(t *testing.T) {
+	readOnly := false
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Host:              "127.0.0.1",
+			Port:              8080,
+			DefaultTimeoutSec: 30,
+			MaxTimeoutSec:     300,
+		},
+		Databases: []config.DatabaseConfig{
+			{
+				Name:     "test",
+				Type:     "sqlite",
+				Path:     ":memory:",
+				ReadOnly: &readOnly,
+			},
+		},
+		Logging: config.LoggingConfig{
+			Level: "error",
+		},
+		Metrics: config.MetricsConfig{
+			Enabled: false,
+		},
+		RateLimits: []config.RateLimitPoolConfig{
+			{
+				Name:              "global",
+				RequestsPerSecond: 100,
+				Burst:             200,
+				Key:               "{{.ClientIP}}",
+			},
+			{
+				Name:              "per_user",
+				RequestsPerSecond: 10,
+				Burst:             20,
+				Key:               `{{getOr .Header "Authorization" "anonymous"}}`,
+			},
+		},
+		Queries: []config.QueryConfig{
+			{
+				Name:     "test",
+				Database: "test",
+				Path:     "/api/test",
+				Method:   "GET",
+				SQL:      "SELECT 1",
+			},
+		},
+	}
+
+	srv, err := New(cfg, true)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	// Create httptest server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/_/ratelimits", srv.rateLimitsHandler)
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// Test rate limits endpoint
+	resp, err := http.Get(ts.URL + "/_/ratelimits")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	var result map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Check response structure
+	if result["enabled"] != true {
+		t.Error("expected enabled=true")
+	}
+	if _, ok := result["total_allowed"]; !ok {
+		t.Error("expected total_allowed field")
+	}
+	if _, ok := result["total_denied"]; !ok {
+		t.Error("expected total_denied field")
+	}
+
+	pools, ok := result["pools"].([]any)
+	if !ok {
+		t.Fatal("expected pools array")
+	}
+	if len(pools) != 2 {
+		t.Errorf("expected 2 pools, got %d", len(pools))
+	}
+
+	// Verify pool info
+	foundGlobal := false
+	for _, p := range pools {
+		pool := p.(map[string]any)
+		if pool["name"] == "global" {
+			foundGlobal = true
+			if pool["requests_per_second"].(float64) != 100 {
+				t.Errorf("expected global rps=100, got %v", pool["requests_per_second"])
+			}
+			if pool["burst"].(float64) != 200 {
+				t.Errorf("expected global burst=200, got %v", pool["burst"])
+			}
+		}
+	}
+	if !foundGlobal {
+		t.Error("expected to find 'global' pool")
+	}
+}
+
+// TestServer_RateLimitsHandler_NotConfigured tests the endpoint when rate limiting is disabled
+func TestServer_RateLimitsHandler_NotConfigured(t *testing.T) {
+	readOnly := false
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Host:              "127.0.0.1",
+			Port:              8080,
+			DefaultTimeoutSec: 30,
+			MaxTimeoutSec:     300,
+		},
+		Databases: []config.DatabaseConfig{
+			{
+				Name:     "test",
+				Type:     "sqlite",
+				Path:     ":memory:",
+				ReadOnly: &readOnly,
+			},
+		},
+		Logging: config.LoggingConfig{
+			Level: "error",
+		},
+		Metrics: config.MetricsConfig{
+			Enabled: false,
+		},
+		// No rate limits configured
+		Queries: []config.QueryConfig{
+			{
+				Name:     "test",
+				Database: "test",
+				Path:     "/api/test",
+				Method:   "GET",
+				SQL:      "SELECT 1",
+			},
+		},
+	}
+
+	srv, err := New(cfg, true)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	// Create httptest server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/_/ratelimits", srv.rateLimitsHandler)
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// Test rate limits endpoint without rate limiting configured
+	resp, err := http.Get(ts.URL + "/_/ratelimits")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var result map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Should return error when not configured
+	if _, ok := result["error"]; !ok {
+		t.Error("expected error field when rate limiting not configured")
 	}
 }
 

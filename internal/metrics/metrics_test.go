@@ -469,3 +469,77 @@ func TestReset_NoCollector(t *testing.T) {
 	// Should not panic
 	Reset()
 }
+
+// TestSetRateLimitSnapshotProvider verifies rate limit metrics are included in snapshot
+func TestSetRateLimitSnapshotProvider(t *testing.T) {
+	defaultCollector = nil
+	Init(func() bool { return true }, "1.0.0", "2024-01-01T00:00:00Z")
+
+	// Set rate limit snapshot provider
+	SetRateLimitSnapshotProvider(func() any {
+		return map[string]any{
+			"total_allowed": int64(1000),
+			"total_denied":  int64(50),
+			"pools": map[string]any{
+				"global": map[string]any{
+					"allowed":        int64(800),
+					"denied":         int64(40),
+					"active_buckets": int64(25),
+				},
+			},
+		}
+	})
+
+	snap := GetSnapshot()
+	if snap.RateLimits == nil {
+		t.Fatal("expected RateLimits to be set")
+	}
+
+	rateLimits := snap.RateLimits.(map[string]any)
+	if rateLimits["total_allowed"] != int64(1000) {
+		t.Errorf("expected total_allowed=1000, got %v", rateLimits["total_allowed"])
+	}
+	if rateLimits["total_denied"] != int64(50) {
+		t.Errorf("expected total_denied=50, got %v", rateLimits["total_denied"])
+	}
+}
+
+// TestSetRateLimitSnapshotProvider_NoCollector verifies nil collector handling
+func TestSetRateLimitSnapshotProvider_NoCollector(t *testing.T) {
+	defaultCollector = nil
+	// Should not panic
+	SetRateLimitSnapshotProvider(func() any { return nil })
+}
+
+// TestSnapshot_BothCacheAndRateLimits verifies both cache and rate limit metrics work together
+func TestSnapshot_BothCacheAndRateLimits(t *testing.T) {
+	defaultCollector = nil
+	Init(func() bool { return true }, "1.0.0", "2024-01-01T00:00:00Z")
+
+	SetCacheSnapshotProvider(func() any {
+		return map[string]any{"hits": 100, "misses": 10}
+	})
+
+	SetRateLimitSnapshotProvider(func() any {
+		return map[string]any{"total_allowed": 500, "total_denied": 25}
+	})
+
+	snap := GetSnapshot()
+
+	if snap.Cache == nil {
+		t.Error("expected Cache to be set")
+	}
+	if snap.RateLimits == nil {
+		t.Error("expected RateLimits to be set")
+	}
+
+	cache := snap.Cache.(map[string]any)
+	if cache["hits"] != 100 {
+		t.Errorf("expected cache hits=100, got %v", cache["hits"])
+	}
+
+	rateLimits := snap.RateLimits.(map[string]any)
+	if rateLimits["total_allowed"] != 500 {
+		t.Errorf("expected rate limit total_allowed=500, got %v", rateLimits["total_allowed"])
+	}
+}

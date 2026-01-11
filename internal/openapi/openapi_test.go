@@ -71,34 +71,34 @@ func TestSpec_BuiltInPaths(t *testing.T) {
 	spec := Spec(cfg)
 	paths := spec["paths"].(map[string]any)
 
-	// Check /health endpoint
-	health, ok := paths["/health"].(map[string]any)
+	// Check /_/health endpoint
+	health, ok := paths["/_/health"].(map[string]any)
 	if !ok {
-		t.Fatal("expected /health path")
+		t.Fatal("expected /_/health path")
 	}
 	if health["get"] == nil {
-		t.Error("expected GET method for /health")
+		t.Error("expected GET method for /_/health")
 	}
 
-	// Check /metrics endpoint
-	metrics, ok := paths["/metrics"].(map[string]any)
+	// Check /_/metrics endpoint
+	metrics, ok := paths["/_/metrics"].(map[string]any)
 	if !ok {
-		t.Fatal("expected /metrics path")
+		t.Fatal("expected /_/metrics path")
 	}
 	if metrics["get"] == nil {
-		t.Error("expected GET method for /metrics")
+		t.Error("expected GET method for /_/metrics")
 	}
 
-	// Check /config/loglevel endpoint
-	loglevel, ok := paths["/config/loglevel"].(map[string]any)
+	// Check /_/config/loglevel endpoint
+	loglevel, ok := paths["/_/config/loglevel"].(map[string]any)
 	if !ok {
-		t.Fatal("expected /config/loglevel path")
+		t.Fatal("expected /_/config/loglevel path")
 	}
 	if loglevel["get"] == nil {
-		t.Error("expected GET method for /config/loglevel")
+		t.Error("expected GET method for /_/config/loglevel")
 	}
 	if loglevel["post"] == nil {
-		t.Error("expected POST method for /config/loglevel")
+		t.Error("expected POST method for /_/config/loglevel")
 	}
 }
 

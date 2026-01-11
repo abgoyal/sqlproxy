@@ -101,6 +101,8 @@ process_package "internal/openapi" "OpenAPI"
 process_package "internal/service" "Service"
 process_package "internal/webhook" "Webhook"
 process_package "internal/cache" "Cache"
+process_package "internal/tmpl" "Template Engine"
+process_package "internal/ratelimit" "Rate Limiting"
 process_package "e2e" "End-to-End"
 
 # Add footer
@@ -122,6 +124,8 @@ make test-e2e          # End-to-end tests (starts actual binary)
 # Run by package
 make test-db
 make test-handler
+make test-tmpl
+make test-ratelimit
 # etc.
 
 # Run with coverage

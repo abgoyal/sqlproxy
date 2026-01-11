@@ -1,6 +1,6 @@
 module sql-proxy
 
-go 1.24.0
+go 1.25.0
 
 require (
 	github.com/dgraph-io/ristretto v0.2.0
@@ -8,6 +8,7 @@ require (
 	github.com/robfig/cron/v3 v3.0.1
 	golang.org/x/sync v0.16.0
 	golang.org/x/sys v0.36.0
+	golang.org/x/time v0.14.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.43.0

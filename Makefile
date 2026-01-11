@@ -38,12 +38,15 @@ PKG_OPENAPI := ./internal/openapi/...
 PKG_SERVICE := ./internal/service/...
 PKG_WEBHOOK := ./internal/webhook/...
 PKG_CACHE := ./internal/cache/...
+PKG_TMPL := ./internal/tmpl/...
+PKG_RATELIMIT := ./internal/ratelimit/...
 
 .PHONY: all build clean test validate run install deps tidy version \
         build-linux build-windows build-darwin build-all \
         build-linux-arm64 build-darwin-arm64 \
         test-config test-db test-handler test-scheduler test-validate \
         test-server test-logging test-metrics test-openapi test-webhook \
+        test-cache test-tmpl test-ratelimit \
         test-unit test-integration test-e2e test-bench \
         test-cover test-cover-html test-cover-report test-docs
 
@@ -109,6 +112,12 @@ test-webhook:
 test-cache:
 	$(GOTEST) -v $(PKG_CACHE)
 
+test-tmpl:
+	$(GOTEST) -v $(PKG_TMPL)
+
+test-ratelimit:
+	$(GOTEST) -v $(PKG_RATELIMIT)
+
 # Run unit tests only (exclude benchmarks and e2e)
 test-unit:
 	$(GOTEST) -v -run "^Test" ./internal/...
@@ -128,6 +137,52 @@ test-bench:
 # Run benchmarks with short time (quick check)
 test-bench-short:
 	$(GOTEST) -bench=. -benchtime=100ms ./...
+
+# Generate benchmark report (saved to coverage directory)
+test-bench-report:
+	@mkdir -p $(COVERAGE_DIR)
+	@echo "Running benchmarks and saving report..."
+	$(GOTEST) -bench=. -benchmem -count=5 ./internal/tmpl/... > $(COVERAGE_DIR)/benchmark_tmpl.txt 2>&1
+	$(GOTEST) -bench=. -benchmem -count=5 ./internal/ratelimit/... > $(COVERAGE_DIR)/benchmark_ratelimit.txt 2>&1
+	$(GOTEST) -bench=. -benchmem -count=5 ./internal/cache/... > $(COVERAGE_DIR)/benchmark_cache.txt 2>&1
+	$(GOTEST) -bench=. -benchmem -count=5 ./internal/handler/... > $(COVERAGE_DIR)/benchmark_handler.txt 2>&1
+	$(GOTEST) -bench=. -benchmem -count=5 ./internal/metrics/... > $(COVERAGE_DIR)/benchmark_metrics.txt 2>&1
+	@echo ""
+	@echo "=== Benchmark Summary ==="
+	@echo "Reports saved to $(COVERAGE_DIR)/benchmark_*.txt"
+	@echo ""
+	@echo "Template Engine (critical path):"
+	@grep "BenchmarkEngine_CacheKey_Simple" $(COVERAGE_DIR)/benchmark_tmpl.txt | tail -1 || true
+	@grep "BenchmarkEngine_RateLimit_Composite" $(COVERAGE_DIR)/benchmark_tmpl.txt | tail -1 || true
+	@grep "BenchmarkEngine_Webhook_SimpleJSON" $(COVERAGE_DIR)/benchmark_tmpl.txt | tail -1 || true
+	@echo ""
+	@echo "Rate Limiting:"
+	@grep "BenchmarkAllow-" $(COVERAGE_DIR)/benchmark_ratelimit.txt | tail -1 || true
+	@echo ""
+	@echo "Cache:"
+	@grep "BenchmarkCache_GetSet" $(COVERAGE_DIR)/benchmark_cache.txt | tail -1 || true
+
+# Compare benchmarks (requires benchstat: go install golang.org/x/perf/cmd/benchstat@latest)
+test-bench-compare:
+	@if ! command -v benchstat &> /dev/null; then \
+		echo "benchstat not found. Install with: go install golang.org/x/perf/cmd/benchstat@latest"; \
+		exit 1; \
+	fi
+	@mkdir -p $(COVERAGE_DIR)
+	@echo "Running benchmarks for comparison (old)..."
+	$(GOTEST) -bench=. -benchmem -count=5 ./internal/tmpl/... > $(COVERAGE_DIR)/bench_old.txt 2>&1
+	@echo "Make your changes, then run: make test-bench-compare-new"
+
+test-bench-compare-new:
+	@if ! command -v benchstat &> /dev/null; then \
+		echo "benchstat not found. Install with: go install golang.org/x/perf/cmd/benchstat@latest"; \
+		exit 1; \
+	fi
+	@echo "Running benchmarks for comparison (new)..."
+	$(GOTEST) -bench=. -benchmem -count=5 ./internal/tmpl/... > $(COVERAGE_DIR)/bench_new.txt 2>&1
+	@echo ""
+	@echo "=== Benchmark Comparison ==="
+	benchstat $(COVERAGE_DIR)/bench_old.txt $(COVERAGE_DIR)/bench_new.txt
 
 # ============================================================================
 # Coverage targets
@@ -167,6 +222,8 @@ test-cover-packages:
 	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/logging.out $(PKG_LOGGING)
 	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/metrics.out $(PKG_METRICS)
 	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/openapi.out $(PKG_OPENAPI)
+	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/tmpl.out $(PKG_TMPL)
+	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/ratelimit.out $(PKG_RATELIMIT)
 	@echo ""
 	@echo "Per-package coverage reports saved to $(COVERAGE_DIR)/"
 
@@ -269,6 +326,8 @@ help:
 	@echo "  make test-openapi    Run openapi package tests"
 	@echo "  make test-webhook    Run webhook package tests"
 	@echo "  make test-cache      Run cache package tests"
+	@echo "  make test-tmpl       Run tmpl package tests"
+	@echo "  make test-ratelimit  Run ratelimit package tests"
 	@echo ""
 	@echo "Testing by type:"
 	@echo "  make test-unit        Run unit tests (internal packages)"
@@ -276,8 +335,11 @@ help:
 	@echo "  make test-e2e         Run end-to-end tests (starts binary)"
 	@echo ""
 	@echo "Benchmarks:"
-	@echo "  make test-bench        Run all benchmarks"
-	@echo "  make test-bench-short  Run benchmarks (quick)"
+	@echo "  make test-bench            Run all benchmarks"
+	@echo "  make test-bench-short      Run benchmarks (quick)"
+	@echo "  make test-bench-report     Generate benchmark reports"
+	@echo "  make test-bench-compare    Baseline for A/B comparison"
+	@echo "  make test-bench-compare-new Compare against baseline"
 	@echo ""
 	@echo "Coverage:"
 	@echo "  make test-cover          Summary coverage for all packages"

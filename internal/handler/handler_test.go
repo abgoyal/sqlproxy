@@ -92,7 +92,7 @@ func TestHandler_ServeHTTP_SimpleQuery(t *testing.T) {
 		Version:           "test",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 
 	req := httptest.NewRequest("GET", "/api/users", nil)
 	w := httptest.NewRecorder()
@@ -152,7 +152,7 @@ func TestHandler_ServeHTTP_WithParameters(t *testing.T) {
 		Version:           "test",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 
 	req := httptest.NewRequest("GET", "/api/user?status=active", nil)
 	w := httptest.NewRecorder()
@@ -193,7 +193,7 @@ func TestHandler_ServeHTTP_MissingRequiredParam(t *testing.T) {
 		Version:           "test",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 
 	req := httptest.NewRequest("GET", "/api/user", nil)
 	w := httptest.NewRecorder()
@@ -238,7 +238,7 @@ func TestHandler_ServeHTTP_DefaultParameter(t *testing.T) {
 		Version:           "test",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 
 	req := httptest.NewRequest("GET", "/api/users", nil)
 	w := httptest.NewRecorder()
@@ -277,7 +277,7 @@ func TestHandler_ServeHTTP_WrongMethod(t *testing.T) {
 		Version:           "test",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 
 	req := httptest.NewRequest("POST", "/api/users", nil)
 	w := httptest.NewRecorder()
@@ -311,7 +311,7 @@ func TestHandler_ServeHTTP_InvalidParamType(t *testing.T) {
 		Version:           "test",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 
 	req := httptest.NewRequest("GET", "/api/user?id=not_a_number", nil)
 	w := httptest.NewRecorder()
@@ -349,7 +349,7 @@ func TestHandler_ServeHTTP_POSTMethod(t *testing.T) {
 	}
 
 	_ = readOnly // Not used in this test
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 
 	form := url.Values{}
 	form.Set("name", "Dave")
@@ -385,7 +385,7 @@ func TestHandler_ServeHTTP_CustomRequestID(t *testing.T) {
 		Version:           "test",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 
 	tests := []struct {
 		name       string
@@ -498,7 +498,7 @@ func TestHandler_ResolveTimeout(t *testing.T) {
 				Version:           "test",
 			}
 
-			handler := New(manager, nil, queryCfg, serverCfg)
+			handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 
 			url := "/test"
 			if tt.requestTimeout != "" {
@@ -611,7 +611,7 @@ func TestHandler_ParseParameters(t *testing.T) {
 		Version:           "test",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 
 	tests := []struct {
 		name      string
@@ -685,7 +685,7 @@ func TestHandler_ServeHTTP_EmptyResult(t *testing.T) {
 		Version:           "test",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 
 	req := httptest.NewRequest("GET", "/api/user?id=999", nil)
 	w := httptest.NewRecorder()
@@ -727,7 +727,7 @@ func TestHandler_ServeHTTP_SQLError(t *testing.T) {
 		Version:           "test",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 
 	req := httptest.NewRequest("GET", "/api/bad", nil)
 	w := httptest.NewRecorder()
@@ -792,7 +792,7 @@ func TestHandler_ServeHTTP_DateTimeParam(t *testing.T) {
 		Version:           "test",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 
 	req := httptest.NewRequest("GET", "/api/events?since=2024-01-01", nil)
 	w := httptest.NewRecorder()
@@ -970,7 +970,7 @@ func TestHandler_ServeHTTP_JSONBody(t *testing.T) {
 		Version:           "test",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 
 	// Test JSON body parsing
 	jsonBody := `{"status": "active"}`
@@ -1014,7 +1014,7 @@ func TestHandler_ServeHTTP_JSONBody_RejectsNestedForNonJSONType(t *testing.T) {
 		Version:           "test",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 
 	tests := []struct {
 		name    string
@@ -1094,7 +1094,7 @@ func TestHandler_ServeHTTP_JSONTypeParam(t *testing.T) {
 		Version:           "test",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 
 	// Test with nested JSON object
 	jsonBody := `{"name": "test_config", "data": {"key": "value", "nested": {"a": 1}}}`
@@ -1139,7 +1139,7 @@ func TestHandler_ServeHTTP_ArrayTypeParam(t *testing.T) {
 		Version:           "test",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 
 	// Test with JSON body containing int array
 	jsonBody := `{"ids": [1, 2]}`
@@ -1188,7 +1188,7 @@ func TestHandler_ServeHTTP_ArrayTypeParam_InvalidElement(t *testing.T) {
 		Version:           "test",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 
 	// Test with wrong element type (strings instead of ints)
 	jsonBody := `{"ids": ["not", "integers"]}`
@@ -1236,7 +1236,7 @@ func TestHandler_ServeHTTP_StringArrayParam(t *testing.T) {
 		Version:           "test",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 
 	jsonBody := `{"statuses": ["active", "inactive"]}`
 	req := httptest.NewRequest("POST", "/api/users/filter", strings.NewReader(jsonBody))
@@ -1823,7 +1823,7 @@ func TestHandler_ServeHTTP_JSONColumns(t *testing.T) {
 		Version:           "test",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 
 	req := httptest.NewRequest("GET", "/api/config?name=settings", nil)
 	w := httptest.NewRecorder()
@@ -1919,7 +1919,7 @@ func TestHandler_ServeHTTP_JSONColumns_WithoutConfig(t *testing.T) {
 		Version:           "test",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 
 	req := httptest.NewRequest("GET", "/api/config2", nil)
 	w := httptest.NewRecorder()

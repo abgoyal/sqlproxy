@@ -13,6 +13,7 @@ import (
 	"sql-proxy/internal/cache"
 	"sql-proxy/internal/config"
 	"sql-proxy/internal/db"
+	"sql-proxy/internal/tmpl"
 	"sql-proxy/internal/webhook"
 )
 
@@ -40,6 +41,7 @@ func Run(cfg *config.Config) *Result {
 	validateServer(cfg, r)
 	validateDatabase(cfg, r)
 	validateLogging(cfg, r)
+	validateRateLimits(cfg, r)
 	validateQueries(cfg, r)
 
 	// If format is valid, test database connections
@@ -200,6 +202,50 @@ func validateLogging(cfg *config.Config, r *Result) {
 	}
 }
 
+func validateRateLimits(cfg *config.Config, r *Result) {
+	if len(cfg.RateLimits) == 0 {
+		return // Rate limits are optional
+	}
+
+	// Create template engine for validation
+	tmplEngine := tmpl.New()
+
+	names := make(map[string]bool)
+	for i, pool := range cfg.RateLimits {
+		prefix := fmt.Sprintf("rate_limits[%d]", i)
+
+		// Name is required and must be unique
+		if pool.Name == "" {
+			r.addError("%s: name is required", prefix)
+			continue
+		}
+		prefix = fmt.Sprintf("rate_limits[%d] (%s)", i, pool.Name)
+
+		if names[pool.Name] {
+			r.addError("%s: duplicate pool name", prefix)
+		}
+		names[pool.Name] = true
+
+		// RequestsPerSecond and Burst are required
+		if pool.RequestsPerSecond <= 0 {
+			r.addError("%s: requests_per_second must be positive", prefix)
+		}
+		if pool.Burst <= 0 {
+			r.addError("%s: burst must be positive", prefix)
+		}
+
+		// Key template is required
+		if pool.Key == "" {
+			r.addError("%s: key template is required", prefix)
+		} else {
+			// Validate key template syntax
+			if err := tmplEngine.Validate(pool.Key, tmpl.UsagePreQuery); err != nil {
+				r.addError("%s: invalid key template: %v", prefix, err)
+			}
+		}
+	}
+}
+
 func validateQueries(cfg *config.Config, r *Result) {
 	if len(cfg.Queries) == 0 {
 		r.addWarning("No queries configured - service will have no endpoints")
@@ -210,6 +256,14 @@ func validateQueries(cfg *config.Config, r *Result) {
 	dbNames := make(map[string]bool) // name -> isReadOnly
 	for _, dbCfg := range cfg.Databases {
 		dbNames[dbCfg.Name] = dbCfg.IsReadOnly()
+	}
+
+	// Build map of rate limit pool names for validation
+	rateLimitPools := make(map[string]bool)
+	for _, pool := range cfg.RateLimits {
+		if pool.Name != "" {
+			rateLimitPools[pool.Name] = true
+		}
 	}
 
 	// Track which databases are used
@@ -257,6 +311,11 @@ func validateQueries(cfg *config.Config, r *Result) {
 
 			if !strings.HasPrefix(q.Path, "/") {
 				r.addError("%s: path must start with '/'", prefix)
+			}
+
+			// /_/ prefix is reserved for internal endpoints
+			if strings.HasPrefix(q.Path, "/_/") {
+				r.addError("%s: path cannot start with '/_/' (reserved for internal endpoints)", prefix)
 			}
 
 			if q.Method != "GET" && q.Method != "POST" {
@@ -319,6 +378,11 @@ func validateQueries(cfg *config.Config, r *Result) {
 		// Validate json_columns if present
 		if len(q.JSONColumns) > 0 {
 			validateJSONColumns(q.JSONColumns, prefix, r)
+		}
+
+		// Validate rate limits if present
+		if len(q.RateLimit) > 0 {
+			validateQueryRateLimits(q.RateLimit, rateLimitPools, prefix, r)
 		}
 	}
 
@@ -491,6 +555,48 @@ func validateJSONColumns(columns []string, prefix string, r *Result) {
 			r.addWarning("%s: json_columns contains duplicate column '%s'", prefix, col)
 		}
 		seen[col] = true
+	}
+}
+
+func validateQueryRateLimits(limits []config.QueryRateLimitConfig, pools map[string]bool, prefix string, r *Result) {
+	tmplEngine := tmpl.New()
+
+	for i, limit := range limits {
+		limitPrefix := fmt.Sprintf("%s.rate_limit[%d]", prefix, i)
+
+		// Check for mutually exclusive settings
+		if limit.IsPoolReference() && limit.IsInline() {
+			r.addError("%s: cannot specify both 'pool' and inline rate limit settings (requests_per_second/burst/key)", limitPrefix)
+			continue
+		}
+
+		if !limit.IsPoolReference() && !limit.IsInline() {
+			r.addError("%s: must specify either 'pool' or inline rate limit settings", limitPrefix)
+			continue
+		}
+
+		if limit.IsPoolReference() {
+			// Validate pool reference
+			if !pools[limit.Pool] {
+				r.addError("%s: references unknown rate limit pool '%s'", limitPrefix, limit.Pool)
+			}
+		} else {
+			// Validate inline settings
+			if limit.RequestsPerSecond <= 0 {
+				r.addError("%s: requests_per_second must be positive", limitPrefix)
+			}
+			if limit.Burst <= 0 {
+				r.addError("%s: burst must be positive", limitPrefix)
+			}
+			if limit.Key == "" {
+				r.addError("%s: key template is required for inline rate limit", limitPrefix)
+			} else {
+				// Validate key template syntax
+				if err := tmplEngine.Validate(limit.Key, tmpl.UsagePreQuery); err != nil {
+					r.addError("%s: invalid key template: %v", limitPrefix, err)
+				}
+			}
+		}
 	}
 }
 

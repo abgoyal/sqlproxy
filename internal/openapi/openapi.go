@@ -34,8 +34,8 @@ func Spec(cfg *config.Config) map[string]any {
 func buildPaths(cfg *config.Config) map[string]any {
 	paths := make(map[string]any)
 
-	// Add built-in endpoints
-	paths["/health"] = map[string]any{
+	// Add built-in endpoints (/_/ prefix is reserved for internal endpoints)
+	paths["/_/health"] = map[string]any{
 		"get": map[string]any{
 			"summary":     "Health check",
 			"description": "Returns service and database health status. Always returns 200; parse the 'status' field (healthy/degraded/unhealthy) for actual state.",
@@ -53,7 +53,7 @@ func buildPaths(cfg *config.Config) map[string]any {
 		},
 	}
 
-	paths["/health/{dbname}"] = map[string]any{
+	paths["/_/health/{dbname}"] = map[string]any{
 		"get": map[string]any{
 			"summary":     "Per-database health check",
 			"description": "Returns health status for a specific database connection. Always returns 200 if database exists; parse 'status' field (connected/disconnected).",
@@ -85,7 +85,7 @@ func buildPaths(cfg *config.Config) map[string]any {
 		},
 	}
 
-	paths["/metrics"] = map[string]any{
+	paths["/_/metrics"] = map[string]any{
 		"get": map[string]any{
 			"summary":     "Metrics snapshot",
 			"description": "Returns current metrics including request counts, latencies, and error rates",
@@ -103,7 +103,7 @@ func buildPaths(cfg *config.Config) map[string]any {
 		},
 	}
 
-	paths["/config/loglevel"] = map[string]any{
+	paths["/_/config/loglevel"] = map[string]any{
 		"get": map[string]any{
 			"summary":     "Get current log level",
 			"tags":        []string{"System"},
@@ -161,9 +161,28 @@ func buildPaths(cfg *config.Config) map[string]any {
 			},
 		},
 	}
-	paths["/cache/clear"] = map[string]any{
+	paths["/_/cache/clear"] = map[string]any{
 		"post":   cacheClearOp,
 		"delete": cacheClearOp,
+	}
+
+	// Rate limits endpoint
+	paths["/_/ratelimits"] = map[string]any{
+		"get": map[string]any{
+			"summary":     "Rate limit status",
+			"description": "Returns rate limit configuration and current metrics for all pools",
+			"tags":        []string{"System"},
+			"responses": map[string]any{
+				"200": map[string]any{
+					"description": "Rate limit status",
+					"content": map[string]any{
+						"application/json": map[string]any{
+							"schema": map[string]any{"$ref": "#/components/schemas/RateLimitsResponse"},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	// Add query endpoints (skip schedule-only queries without HTTP paths)
@@ -223,6 +242,61 @@ func buildQueryPath(q config.QueryConfig, serverCfg config.ServerConfig) map[str
 		effectiveTimeout = q.TimeoutSec
 	}
 
+	responses := map[string]any{
+		"200": map[string]any{
+			"description": "Successful query",
+			"content": map[string]any{
+				"application/json": map[string]any{
+					"schema": map[string]any{"$ref": "#/components/schemas/QueryResponse"},
+				},
+			},
+		},
+		"400": map[string]any{
+			"description": "Bad request (missing or invalid parameters)",
+			"content": map[string]any{
+				"application/json": map[string]any{
+					"schema": map[string]any{"$ref": "#/components/schemas/ErrorResponse"},
+				},
+			},
+		},
+		"500": map[string]any{
+			"description": "Query execution failed",
+			"content": map[string]any{
+				"application/json": map[string]any{
+					"schema": map[string]any{"$ref": "#/components/schemas/ErrorResponse"},
+				},
+			},
+		},
+		"504": map[string]any{
+			"description": "Query timeout",
+			"content": map[string]any{
+				"application/json": map[string]any{
+					"schema": map[string]any{"$ref": "#/components/schemas/ErrorResponse"},
+				},
+			},
+		},
+	}
+
+	// Add 429 response if rate limiting is configured for this query
+	if len(q.RateLimit) > 0 {
+		responses["429"] = map[string]any{
+			"description": "Rate limit exceeded",
+			"headers": map[string]any{
+				"Retry-After": map[string]any{
+					"description": "Seconds to wait before retrying",
+					"schema": map[string]any{
+						"type": "integer",
+					},
+				},
+			},
+			"content": map[string]any{
+				"application/json": map[string]any{
+					"schema": map[string]any{"$ref": "#/components/schemas/RateLimitErrorResponse"},
+				},
+			},
+		}
+	}
+
 	return map[string]any{
 		method: map[string]any{
 			"summary":     q.Name,
@@ -230,40 +304,7 @@ func buildQueryPath(q config.QueryConfig, serverCfg config.ServerConfig) map[str
 			"tags":        []string{"Queries"},
 			"operationId": q.Name,
 			"parameters":  params,
-			"responses": map[string]any{
-				"200": map[string]any{
-					"description": "Successful query",
-					"content": map[string]any{
-						"application/json": map[string]any{
-							"schema": map[string]any{"$ref": "#/components/schemas/QueryResponse"},
-						},
-					},
-				},
-				"400": map[string]any{
-					"description": "Bad request (missing or invalid parameters)",
-					"content": map[string]any{
-						"application/json": map[string]any{
-							"schema": map[string]any{"$ref": "#/components/schemas/ErrorResponse"},
-						},
-					},
-				},
-				"500": map[string]any{
-					"description": "Query execution failed",
-					"content": map[string]any{
-						"application/json": map[string]any{
-							"schema": map[string]any{"$ref": "#/components/schemas/ErrorResponse"},
-						},
-					},
-				},
-				"504": map[string]any{
-					"description": "Query timeout",
-					"content": map[string]any{
-						"application/json": map[string]any{
-							"schema": map[string]any{"$ref": "#/components/schemas/ErrorResponse"},
-						},
-					},
-				},
-			},
+			"responses":   responses,
 		},
 	}
 }
@@ -456,6 +497,67 @@ func buildComponents() map[string]any {
 					"endpoints": map[string]any{
 						"type":        "object",
 						"description": "Per-endpoint statistics",
+					},
+				},
+			},
+			"RateLimitsResponse": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"enabled": map[string]any{
+						"type": "boolean",
+					},
+					"total_allowed": map[string]any{
+						"type":        "integer",
+						"description": "Total requests allowed since startup",
+					},
+					"total_denied": map[string]any{
+						"type":        "integer",
+						"description": "Total requests denied since startup",
+					},
+					"pools": map[string]any{
+						"type":        "array",
+						"description": "Rate limit pool configurations and metrics",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"name": map[string]any{
+									"type": "string",
+								},
+								"requests_per_second": map[string]any{
+									"type": "integer",
+								},
+								"burst": map[string]any{
+									"type": "integer",
+								},
+								"allowed": map[string]any{
+									"type": "integer",
+								},
+								"denied": map[string]any{
+									"type": "integer",
+								},
+								"active_buckets": map[string]any{
+									"type":        "integer",
+									"description": "Number of active client buckets",
+								},
+							},
+						},
+					},
+				},
+			},
+			"RateLimitErrorResponse": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"success": map[string]any{
+						"type":    "boolean",
+						"example": false,
+					},
+					"error": map[string]any{
+						"type":    "string",
+						"example": "rate limit exceeded",
+					},
+					"retry_after_sec": map[string]any{
+						"type":        "integer",
+						"description": "Seconds to wait before retrying",
 					},
 				},
 			},

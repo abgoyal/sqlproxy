@@ -49,6 +49,9 @@ type RuntimeStats struct {
 // CacheSnapshotProvider is a function that returns cache metrics
 type CacheSnapshotProvider func() any
 
+// RateLimitSnapshotProvider is a function that returns rate limit metrics
+type RateLimitSnapshotProvider func() any
+
 // Snapshot represents metrics at a point in time
 type Snapshot struct {
 	Timestamp     time.Time                 `json:"timestamp"`
@@ -62,15 +65,17 @@ type Snapshot struct {
 	DBHealthy     bool                      `json:"db_healthy"`
 	Runtime       RuntimeStats              `json:"runtime"`
 	Cache         any                       `json:"cache,omitempty"`
+	RateLimits    any                       `json:"rate_limits,omitempty"`
 }
 
 // Collector collects metrics
 type Collector struct {
-	startTime             time.Time
-	version               string
-	buildTime             string
-	dbHealthChecker       func() bool
-	cacheSnapshotProvider CacheSnapshotProvider
+	startTime                 time.Time
+	version                   string
+	buildTime                 string
+	dbHealthChecker           func() bool
+	cacheSnapshotProvider     CacheSnapshotProvider
+	rateLimitSnapshotProvider RateLimitSnapshotProvider
 
 	mu            sync.RWMutex
 	totalRequests int64
@@ -108,6 +113,13 @@ func Init(dbHealthChecker func() bool, version, buildTime string) {
 func SetCacheSnapshotProvider(provider CacheSnapshotProvider) {
 	if defaultCollector != nil {
 		defaultCollector.cacheSnapshotProvider = provider
+	}
+}
+
+// SetRateLimitSnapshotProvider sets the function that provides rate limit metrics
+func SetRateLimitSnapshotProvider(provider RateLimitSnapshotProvider) {
+	if defaultCollector != nil {
+		defaultCollector.rateLimitSnapshotProvider = provider
 	}
 }
 
@@ -239,6 +251,11 @@ func GetSnapshot() *Snapshot {
 	// Include cache stats if provider is set
 	if c.cacheSnapshotProvider != nil {
 		snap.Cache = c.cacheSnapshotProvider()
+	}
+
+	// Include rate limit stats if provider is set
+	if c.rateLimitSnapshotProvider != nil {
+		snap.RateLimits = c.rateLimitSnapshotProvider()
 	}
 
 	return snap

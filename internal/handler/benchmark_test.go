@@ -73,7 +73,7 @@ func setupBenchmarkHandler(b *testing.B) (*Handler, func()) {
 		Version:           "bench",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 
 	return handler, func() { manager.Close() }
 }
@@ -140,7 +140,7 @@ func BenchmarkHandler_ServeHTTP_WithParams(b *testing.B) {
 		Version:           "bench",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -261,7 +261,7 @@ func BenchmarkHandler_ParseParameters_NoParams(b *testing.B) {
 		Version:           "bench",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 	req := httptest.NewRequest("GET", "/test", nil)
 
 	b.ResetTimer()
@@ -301,7 +301,7 @@ func BenchmarkHandler_ParseParameters_ManyParams(b *testing.B) {
 		Version:           "bench",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 	req := httptest.NewRequest("GET", "/test?p1=hello&p2=42&p3=3.14&p4=false&p5=2024-06-15", nil)
 
 	b.ResetTimer()
@@ -335,7 +335,7 @@ func BenchmarkHandler_ResolveTimeout(b *testing.B) {
 		Version:           "bench",
 	}
 
-	handler := New(manager, nil, queryCfg, serverCfg)
+	handler := New(manager, nil, nil, nil, queryCfg, serverCfg)
 	req := httptest.NewRequest("GET", "/test?_timeout=120", nil)
 
 	b.ResetTimer()

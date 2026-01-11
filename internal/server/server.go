@@ -20,7 +20,9 @@ import (
 	"sql-proxy/internal/logging"
 	"sql-proxy/internal/metrics"
 	"sql-proxy/internal/openapi"
+	"sql-proxy/internal/ratelimit"
 	"sql-proxy/internal/scheduler"
+	"sql-proxy/internal/tmpl"
 )
 
 const (
@@ -47,11 +49,13 @@ const (
 )
 
 type Server struct {
-	httpServer *http.Server
-	dbManager  *db.Manager
-	cache      *cache.Cache
-	config     *config.Config
-	createdAt  time.Time
+	httpServer  *http.Server
+	dbManager   *db.Manager
+	cache       *cache.Cache
+	rateLimiter *ratelimit.Limiter
+	ctxBuilder  *tmpl.ContextBuilder
+	config      *config.Config
+	createdAt   time.Time
 
 	// Health tracking (all DBs healthy)
 	dbHealthy     atomic.Bool
@@ -169,6 +173,25 @@ func New(cfg *config.Config, interactive bool) (*Server, error) {
 		})
 	}
 
+	// Initialize template engine and context builder (for rate limiting, webhooks, etc.)
+	tmplEngine := tmpl.New()
+	s.ctxBuilder = tmpl.NewContextBuilder(cfg.Server.TrustProxyHeaders, cfg.Server.Version)
+
+	// Initialize rate limiter if pools are configured
+	if len(cfg.RateLimits) > 0 {
+		var err error
+		s.rateLimiter, err = ratelimit.New(cfg.RateLimits, tmplEngine)
+		if err != nil {
+			logging.Error("rate_limiter_init_failed", map[string]any{
+				"error": err.Error(),
+			})
+			return nil, fmt.Errorf("failed to initialize rate limiter: %w", err)
+		}
+		logging.Info("rate_limiter_initialized", map[string]any{
+			"pools": len(cfg.RateLimits),
+		})
+	}
+
 	// Initialize metrics
 	if cfg.Metrics.Enabled {
 		metrics.Init(s.checkDBHealth, cfg.Server.Version, cfg.Server.BuildTime)
@@ -176,6 +199,12 @@ func New(cfg *config.Config, interactive bool) (*Server, error) {
 		if s.cache != nil {
 			metrics.SetCacheSnapshotProvider(func() any {
 				return s.cache.GetSnapshot()
+			})
+		}
+		// Set rate limit snapshot provider for metrics
+		if s.rateLimiter != nil {
+			metrics.SetRateLimitSnapshotProvider(func() any {
+				return s.rateLimiter.Snapshot()
 			})
 		}
 		logging.Info("metrics_initialized", nil)
@@ -286,21 +315,25 @@ func (s *Server) checkDBHealth() bool {
 }
 
 func (s *Server) setupRoutes(mux *http.ServeMux) {
+	// Internal endpoints (/_/ prefix is reserved, user queries cannot use it)
 	// Health check endpoints
-	mux.HandleFunc("/health", s.healthHandler)        // Aggregate health
-	mux.HandleFunc("/health/", s.dbHealthHandler)     // Per-database health: /health/{dbname}
+	mux.HandleFunc("/_/health", s.healthHandler)       // Aggregate health
+	mux.HandleFunc("/_/health/", s.dbHealthHandler)    // Per-database health: /_/health/{dbname}
 
 	// Metrics endpoint (returns current snapshot)
-	mux.HandleFunc("/metrics", s.metricsHandler)
+	mux.HandleFunc("/_/metrics", s.metricsHandler)
 
 	// OpenAPI spec endpoint
-	mux.HandleFunc("/openapi.json", s.openAPIHandler)
+	mux.HandleFunc("/_/openapi.json", s.openAPIHandler)
 
 	// Runtime config endpoint
-	mux.HandleFunc("/config/loglevel", s.logLevelHandler)
+	mux.HandleFunc("/_/config/loglevel", s.logLevelHandler)
 
 	// Cache management endpoint
-	mux.HandleFunc("/cache/clear", s.cacheClearHandler)
+	mux.HandleFunc("/_/cache/clear", s.cacheClearHandler)
+
+	// Rate limit observability endpoint
+	mux.HandleFunc("/_/ratelimits", s.rateLimitsHandler)
 
 	// List available endpoints
 	mux.HandleFunc("/", s.listEndpointsHandler)
@@ -321,7 +354,7 @@ func (s *Server) setupRoutes(mux *http.ServeMux) {
 			}
 		}
 
-		h := handler.New(s.dbManager, s.cache, q, s.config.Server)
+		h := handler.New(s.dbManager, s.cache, s.rateLimiter, s.ctxBuilder, q, s.config.Server)
 		mux.Handle(q.Path, h)
 
 		logFields := map[string]any{
@@ -385,16 +418,16 @@ func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// dbHealthHandler handles per-database health checks: /health/{dbname}
+// dbHealthHandler handles per-database health checks: /_/health/{dbname}
 func (s *Server) dbHealthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	// Extract database name from path: /health/{dbname}
-	dbName := strings.TrimPrefix(r.URL.Path, "/health/")
+	// Extract database name from path: /_/health/{dbname}
+	dbName := strings.TrimPrefix(r.URL.Path, "/_/health/")
 	if dbName == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		writeJSON(w, errorResponse{
-			Error: "database name required: /health/{dbname}",
+			Error: "database name required: /_/health/{dbname}",
 		})
 		return
 	}
@@ -477,7 +510,7 @@ func (s *Server) logLevelHandler(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, logLevelResponse{
 		CurrentLevel: logging.GetLevel(),
-		Usage:        "POST /config/loglevel?level=debug|info|warn|error",
+		Usage:        "POST /_/config/loglevel?level=debug|info|warn|error",
 	})
 }
 
@@ -525,6 +558,65 @@ func (s *Server) cacheClearHandler(w http.ResponseWriter, r *http.Request) {
 			Message: "all cache cleared",
 		})
 	}
+}
+
+// rateLimitsHandler returns rate limit pool status and metrics
+func (s *Server) rateLimitsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if s.rateLimiter == nil {
+		writeJSON(w, errorResponse{
+			Error: "rate limiting not configured",
+		})
+		return
+	}
+
+	// Get detailed rate limit snapshot
+	snapshot := s.rateLimiter.Snapshot()
+
+	// Add pool configuration info
+	type poolInfo struct {
+		Name              string `json:"name"`
+		RequestsPerSecond int    `json:"requests_per_second"`
+		Burst             int    `json:"burst"`
+		Allowed           int64  `json:"allowed"`
+		Denied            int64  `json:"denied"`
+		ActiveBuckets     int64  `json:"active_buckets"`
+	}
+
+	type rateLimitsResponse struct {
+		Enabled      bool        `json:"enabled"`
+		TotalAllowed int64       `json:"total_allowed"`
+		TotalDenied  int64       `json:"total_denied"`
+		Pools        []*poolInfo `json:"pools"`
+	}
+
+	resp := rateLimitsResponse{
+		Enabled:      true,
+		TotalAllowed: snapshot.TotalAllowed,
+		TotalDenied:  snapshot.TotalDenied,
+		Pools:        make([]*poolInfo, 0),
+	}
+
+	// Include pool config and metrics
+	for _, name := range s.rateLimiter.PoolNames() {
+		pool := s.rateLimiter.GetPool(name)
+		if pool == nil {
+			continue
+		}
+		poolMetrics := snapshot.Pools[name]
+
+		resp.Pools = append(resp.Pools, &poolInfo{
+			Name:              name,
+			RequestsPerSecond: pool.RequestsPerSecond(),
+			Burst:             pool.Burst(),
+			Allowed:           poolMetrics.Allowed,
+			Denied:            poolMetrics.Denied,
+			ActiveBuckets:     poolMetrics.ActiveBuckets,
+		})
+	}
+
+	writeJSON(w, resp)
 }
 
 func (s *Server) startTime() time.Time {

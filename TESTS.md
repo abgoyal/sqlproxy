@@ -39,6 +39,9 @@ Run `make test-cover` for current coverage statistics.
 - **TestValidDeadlockPriorities**: TestValidDeadlockPriorities checks the ValidDeadlockPriorities map for low/normal/high
 - **TestValidJournalModes**: TestValidJournalModes checks ValidJournalModes for SQLite: wal/delete/truncate/memory/off
 - **TestValidDatabaseTypes**: TestValidDatabaseTypes checks ValidDatabaseTypes contains sqlserver and sqlite only
+- **TestIsArrayType**: TestIsArrayType verifies IsArrayType correctly identifies array types
+- **TestArrayBaseType**: TestArrayBaseType verifies ArrayBaseType extracts the base type from array types
+- **TestValidParameterTypes**: TestValidParameterTypes verifies all expected parameter types are in ValidParameterTypes
 
 
 ---
@@ -91,6 +94,8 @@ Run `make test-cover` for current coverage statistics.
 - **TestManager_ReconnectAll**: TestManager_ReconnectAll reconnects all databases and verifies connectivity
 - **TestManager_Close**: TestManager_Close ensures all connections are released and count returns 0
 - **TestManager_ConcurrentAccess**: TestManager_ConcurrentAccess runs 100 concurrent Get and Ping operations
+- **TestManager_ConcurrentReconnect**: TestManager_ConcurrentReconnect tests concurrent Reconnect calls to prevent race conditions
+- **TestManager_ConcurrentReconnectAll**: TestManager_ConcurrentReconnectAll tests concurrent ReconnectAll calls
 - **TestManager_MixedDatabaseTypes**: TestManager_MixedDatabaseTypes manages SQLite connections with different readonly/settings
 
 ### sqlite_test.go
@@ -167,8 +172,20 @@ Run `make test-cover` for current coverage statistics.
 - **TestSanitizeHeaderValue**: TestSanitizeHeaderValue tests header value sanitization for security
 - **TestGetOrGenerateRequestID_Sanitizes**: TestGetOrGenerateRequestID_Sanitizes validates that request IDs from headers are sanitized
 - **TestHandler_ServeHTTP_JSONBody**: TestHandler_ServeHTTP_JSONBody tests JSON body parsing for POST endpoints
-- **TestHandler_ServeHTTP_JSONBody_RejectsNested**: TestHandler_ServeHTTP_JSONBody_RejectsNested tests that nested JSON objects are rejected
+- **TestHandler_ServeHTTP_JSONBody_RejectsNestedForNonJSONType**: TestHandler_ServeHTTP_JSONBody_RejectsNestedForNonJSONType tests that nested JSON is rejected for non-json types
+- **TestHandler_ServeHTTP_JSONTypeParam**: TestHandler_ServeHTTP_JSONTypeParam tests json type parameter accepts nested objects
+- **TestHandler_ServeHTTP_ArrayTypeParam**: TestHandler_ServeHTTP_ArrayTypeParam tests array type parameters (int[], string[], etc.)
+- **TestHandler_ServeHTTP_ArrayTypeParam_InvalidElement**: TestHandler_ServeHTTP_ArrayTypeParam_InvalidElement tests array type rejects wrong element types
+- **TestHandler_ServeHTTP_StringArrayParam**: TestHandler_ServeHTTP_StringArrayParam tests string[] type parameter
 - **TestConvertJSONValue**: TestConvertJSONValue tests JSON value type conversion
+- **TestConvertJSONValue_JSONType**: TestConvertJSONValue_JSONType tests json type serializes to JSON string
+- **TestConvertJSONValue_ArrayTypes**: TestConvertJSONValue_ArrayTypes tests array types serialize to JSON array string
+- **TestConvertValue_JSONType**: TestConvertValue_JSONType tests json type from query string
+- **TestConvertValue_ArrayTypes**: TestConvertValue_ArrayTypes tests array types from query string
+- **TestValidateArrayElements**: TestValidateArrayElements tests array element validation
+- **TestParseJSONColumns**: TestParseJSONColumns tests parsing JSON string columns into objects
+- **TestHandler_ServeHTTP_JSONColumns**: TestHandler_ServeHTTP_JSONColumns tests json_columns config parses JSON in response
+- **TestHandler_ServeHTTP_JSONColumns_WithoutConfig**: TestHandler_ServeHTTP_JSONColumns_WithoutConfig tests default behavior (no json_columns)
 
 
 ---
@@ -213,7 +230,7 @@ Run `make test-cover` for current coverage statistics.
 - **TestValidateDatabase_SQLite**: TestValidateDatabase_SQLite tests SQLite-specific validation: path, journal mode, timeout
 - **TestValidateDatabase_SQLServer**: TestValidateDatabase_SQLServer tests SQL Server validation: host, port, isolation, timeout
 - **TestValidateDatabase_EnvVarWarning**: TestValidateDatabase_EnvVarWarning tests unresolved env vars generate warnings
-- **TestValidateLogging**: TestValidateLogging tests log level validation accepts only debug/info/warn/error
+- **TestValidateLogging**: TestValidateLogging tests log level and rotation settings validation
 - **TestValidateQueries_NoQueries**: TestValidateQueries_NoQueries tests empty queries list generates warning
 - **TestValidateQueries_DuplicateName**: TestValidateQueries_DuplicateName ensures duplicate query names are rejected
 - **TestValidateQueries_DuplicatePath**: TestValidateQueries_DuplicatePath ensures duplicate endpoint paths are rejected
@@ -241,6 +258,13 @@ Run `make test-cover` for current coverage statistics.
 - **TestValidateServerCache**: TestValidateServerCache tests server-level cache configuration validation
 - **TestValidateQueries_WithCache**: TestValidateQueries_WithCache tests query-level cache validation integration
 - **TestValidateTemplate**: TestValidateTemplate tests template syntax validation
+- **TestValidateJSONColumns**: TestValidateJSONColumns tests json_columns validation
+- **TestValidateQueries_JSONColumns**: TestValidateQueries_JSONColumns tests json_columns in full query validation
+- **TestValidateQueries_JSONColumns_EmptyColumn**: TestValidateQueries_JSONColumns_EmptyColumn tests validation catches empty column name
+- **TestValidateRateLimits**: TestValidateRateLimits tests server-level rate limit pool validation
+- **TestValidateQueryRateLimits**: TestValidateQueryRateLimits tests per-query rate limit validation
+- **TestValidateQueries_RateLimits**: TestValidateQueries_RateLimits tests rate limit validation in full query validation
+- **TestValidateQueries_RateLimits_UnknownPool**: TestValidateQueries_RateLimits_UnknownPool tests that unknown pool reference is caught
 
 
 ---
@@ -253,7 +277,7 @@ Run `make test-cover` for current coverage statistics.
 
 - **TestServer_New**: TestServer_New verifies server initialization creates dbManager and httpServer
 - **TestServer_HealthHandler**: TestServer_HealthHandler tests /health returns status and database connections
-- **TestServer_MetricsHandler_Disabled**: TestServer_MetricsHandler_Disabled tests /metrics returns not-enabled message when disabled
+- **TestServer_MetricsHandler_Disabled**: TestServer_MetricsHandler_Disabled tests /_/metrics returns not-enabled message when disabled
 - **TestServer_LogLevelHandler**: TestServer_LogLevelHandler tests log level GET retrieval and POST update operations
 - **TestServer_ListEndpointsHandler**: TestServer_ListEndpointsHandler tests root path returns service info and endpoint listing
 - **TestServer_ListEndpointsHandler_NotFound**: TestServer_ListEndpointsHandler_NotFound tests unknown paths return 404
@@ -266,10 +290,12 @@ Run `make test-cover` for current coverage statistics.
 - **TestServer_Integration_ParameterizedQuery**: TestServer_Integration_ParameterizedQuery tests parameterized query with required and optional params
 - **TestServer_Integration_WithGzip**: TestServer_Integration_WithGzip tests HTTP request/response cycle with gzip encoding
 - **TestServer_HealthHandler_Degraded**: TestServer_HealthHandler_Degraded tests /health returns degraded status when database is unreachable
-- **TestServer_HealthHandler_DatabaseDown**: TestServer_HealthHandler_DatabaseDown tests /health shows database as disconnected when ping fails
-- **TestServer_HealthHandler_MultipleDatabases**: TestServer_HealthHandler_MultipleDatabases tests /health with multiple database connections
+- **TestServer_HealthHandler_DatabaseDown**: TestServer_HealthHandler_DatabaseDown tests /_/health shows database as disconnected when ping fails
+- **TestServer_HealthHandler_MultipleDatabases**: TestServer_HealthHandler_MultipleDatabases tests /_/health with multiple database connections
 - **TestServer_Integration_WithCache**: TestServer_Integration_WithCache tests cache hit/miss behavior and headers
 - **TestServer_Integration_CacheMetrics**: TestServer_Integration_CacheMetrics tests cache stats appear in metrics snapshot
+- **TestServer_RateLimitsHandler**: TestServer_RateLimitsHandler tests the /_/ratelimits endpoint
+- **TestServer_RateLimitsHandler_NotConfigured**: TestServer_RateLimitsHandler_NotConfigured tests the endpoint when rate limiting is disabled
 
 
 ---
@@ -328,6 +354,13 @@ Run `make test-cover` for current coverage statistics.
 - **TestRecord_MultipleEndpoints**: TestRecord_MultipleEndpoints tests separate stats tracking per endpoint
 - **TestEndpointStats_Fields**: TestEndpointStats_Fields verifies all endpoint stat fields are populated
 - **TestSnapshot_Timestamp**: TestSnapshot_Timestamp verifies snapshot timestamp is set correctly
+- **TestSnapshot_Version**: TestSnapshot_Version verifies version and buildTime are included in snapshot
+- **TestSnapshot_EmptyVersion**: TestSnapshot_EmptyVersion verifies empty version/buildTime are handled correctly
+- **TestReset**: TestReset verifies metrics are cleared while preserving configuration
+- **TestReset_NoCollector**: TestReset_NoCollector verifies Reset handles nil collector
+- **TestSetRateLimitSnapshotProvider**: TestSetRateLimitSnapshotProvider verifies rate limit metrics are included in snapshot
+- **TestSetRateLimitSnapshotProvider_NoCollector**: TestSetRateLimitSnapshotProvider_NoCollector verifies nil collector handling
+- **TestSnapshot_BothCacheAndRateLimits**: TestSnapshot_BothCacheAndRateLimits verifies both cache and rate limit metrics work together
 
 
 ---
@@ -351,6 +384,8 @@ Run `make test-cover` for current coverage statistics.
 - **TestSpec_ValidJSON**: TestSpec_ValidJSON verifies spec serializes to valid JSON and back
 - **TestSpec_TimeoutParameter**: TestSpec_TimeoutParameter tests _timeout param has correct default and maximum
 - **TestSpec_QueryDescription**: TestSpec_QueryDescription tests custom description and timeout info in spec
+- **TestParamTypeToSchema_ArrayTypes**: TestParamTypeToSchema_ArrayTypes tests array type schema generation
+- **TestParamTypeToSchema_JSONType**: TestParamTypeToSchema_JSONType tests json type schema generation
 - **TestBuildQueryPath_DefaultTimeout**: TestBuildQueryPath_DefaultTimeout tests server default timeout used when query has none
 
 
@@ -362,8 +397,8 @@ Run `make test-cover` for current coverage statistics.
 
 ### service_test.go
 
-- **TestServiceName**: TestServiceName verifies ServiceName returns the expected constant
-- **TestIsWindowsService**: TestIsWindowsService verifies IsWindowsService returns false on non-Windows
+- **TestDefaultServiceName**: TestDefaultServiceName verifies the default service name constant
+- **TestJoinErrors**: TestJoinErrors verifies error joining function
 
 
 ---
@@ -371,6 +406,15 @@ Run `make test-cover` for current coverage statistics.
 ## Webhook
 
 **Package**: `internal/webhook`
+
+### benchmark_test.go
+
+- **BenchmarkExecuteTemplate**: BenchmarkExecuteTemplate benchmarks template execution with various complexity
+- **BenchmarkBuildBody**: BenchmarkBuildBody benchmarks body building for webhook payloads
+- **BenchmarkExecute**: BenchmarkExecute benchmarks end-to-end webhook execution
+- **BenchmarkExecute_WithBodyTemplate**: BenchmarkExecute_WithBodyTemplate benchmarks execution with body templates
+- **BenchmarkResolveRetryConfig**: BenchmarkResolveRetryConfig benchmarks retry config resolution
+- **BenchmarkBuildBody_Parallel**: BenchmarkBuildBody_Parallel benchmarks concurrent body building
 
 ### webhook_test.go
 
@@ -399,6 +443,12 @@ Run `make test-cover` for current coverage statistics.
 - **TestJsonFunction_Error**: TestJsonFunction_Error tests json function with unmarshalable value
 - **TestJsonFunctions_Error**: TestJsonFunctions_Error tests json/jsonIndent functions with unmarshalable values
 - **TestExecute_ConnectionError**: TestExecute_ConnectionError tests error when server is unreachable
+- **TestResolveRetryConfig**: TestResolveRetryConfig tests retry configuration resolution
+- **TestExecute_RetryDisabled**: TestExecute_RetryDisabled tests that retries are skipped when disabled
+- **TestExecute_CustomRetryConfig**: TestExecute_CustomRetryConfig tests custom retry settings
+- **TestExecute_BackoffTiming**: TestExecute_BackoffTiming tests exponential backoff with cap
+- **TestExecute_BackoffCapping**: TestExecute_BackoffCapping tests that backoff is capped at MaxBackoff
+- **TestExecutionContext_Version**: TestExecutionContext_Version tests that version is included in ExecutionContext
 
 
 ---
@@ -427,6 +477,122 @@ Run `make test-cover` for current coverage statistics.
 - **TestCache_DefaultTTL**: TestCache_DefaultTTL tests that TTL=0 uses server default TTL
 - **TestCache_UnregisteredEndpoint**: TestCache_UnregisteredEndpoint tests operations on endpoints not explicitly registered
 - **TestCalculateSize**: TestCalculateSize tests size calculation for cache entries
+- **TestGetOrCompute**: TestGetOrCompute tests the GetOrCompute method
+- **TestGetOrCompute_Error**: TestGetOrCompute_Error tests error handling in GetOrCompute
+- **TestGetOrCompute_NilCache**: TestGetOrCompute_NilCache tests GetOrCompute with nil cache
+- **TestGetOrCompute_Singleflight**: TestGetOrCompute_Singleflight tests that singleflight prevents stampedes
+- **TestCache_EvictFromEndpoint**: TestCache_EvictFromEndpoint tests LRU eviction when per-endpoint size is exceeded
+- **TestCache_EvictionMetrics**: TestCache_EvictionMetrics tests that eviction metrics are properly tracked
+- **TestCache_CronEvictionExecution**: TestCache_CronEvictionExecution tests that cron eviction runs and clears cache
+- **TestCache_ClearTriggersEvictionMetric**: TestCache_ClearTriggersEvictionMetric tests that Clear increments eviction count
+
+
+---
+
+## Template Engine
+
+**Package**: `internal/tmpl`
+
+### benchmark_test.go
+
+- **BenchmarkEngine_CacheKey_Simple**: BenchmarkEngine_CacheKey_Simple benchmarks simple cache key like "items:{{.Param.status}}"
+- **BenchmarkEngine_CacheKey_MultiParam**: BenchmarkEngine_CacheKey_MultiParam benchmarks cache key with multiple params
+- **BenchmarkEngine_CacheKey_WithDefault**: BenchmarkEngine_CacheKey_WithDefault benchmarks cache key with default fallback
+- **BenchmarkEngine_RateLimit_ClientIP**: BenchmarkEngine_RateLimit_ClientIP benchmarks simple rate limit key
+- **BenchmarkEngine_RateLimit_Composite**: BenchmarkEngine_RateLimit_Composite benchmarks composite rate limit key
+- **BenchmarkEngine_RateLimit_HeaderRequired**: BenchmarkEngine_RateLimit_HeaderRequired benchmarks rate limit with required header
+- **BenchmarkEngine_Webhook_SimpleJSON**: BenchmarkEngine_Webhook_SimpleJSON benchmarks simple webhook JSON body
+- **BenchmarkEngine_Webhook_SlackFormat**: BenchmarkEngine_Webhook_SlackFormat benchmarks Slack webhook body
+- **BenchmarkEngine_Webhook_WithConditional**: BenchmarkEngine_Webhook_WithConditional benchmarks webhook with conditional logic
+- **BenchmarkEngine_ExecuteInline**: BenchmarkEngine_ExecuteInline benchmarks inline (non-cached) template execution
+- **BenchmarkEngine_Register**: BenchmarkEngine_Register benchmarks template registration/compilation
+- **BenchmarkEngine_Validate**: BenchmarkEngine_Validate benchmarks template validation
+- **BenchmarkEngine_ValidateWithParams**: BenchmarkEngine_ValidateWithParams benchmarks template validation with param checking
+- **BenchmarkContextBuilder_Simple**: BenchmarkContextBuilder_Simple benchmarks basic context building
+- **BenchmarkContextBuilder_WithHeaders**: BenchmarkContextBuilder_WithHeaders benchmarks context with many headers
+- **BenchmarkContextBuilder_WithResult**: BenchmarkContextBuilder_WithResult benchmarks context with query result
+- **BenchmarkExtractParamRefs_Simple**: BenchmarkExtractParamRefs_Simple benchmarks simple param extraction
+- **BenchmarkExtractParamRefs_Complex**: BenchmarkExtractParamRefs_Complex benchmarks complex param extraction
+- **BenchmarkExtractHeaderRefs**: BenchmarkExtractHeaderRefs benchmarks header reference extraction
+- **BenchmarkFunc_RequireFunc**: BenchmarkFunc_RequireFunc benchmarks require function
+- **BenchmarkFunc_GetOrFunc**: BenchmarkFunc_GetOrFunc benchmarks getOr function
+- **BenchmarkFunc_HasFunc**: BenchmarkFunc_HasFunc benchmarks has function
+- **BenchmarkFunc_JSONFunc**: BenchmarkFunc_JSONFunc benchmarks JSON serialization
+- **BenchmarkFunc_CoalesceFunc**: BenchmarkFunc_CoalesceFunc benchmarks coalesce function
+- **BenchmarkEngine_Concurrent_SameTemplate**: BenchmarkEngine_Concurrent_SameTemplate benchmarks concurrent access to same template
+- **BenchmarkEngine_Concurrent_DifferentTemplates**: BenchmarkEngine_Concurrent_DifferentTemplates benchmarks concurrent access to different templates
+- **BenchmarkContextBuilder_Concurrent**: BenchmarkContextBuilder_Concurrent benchmarks concurrent context building
+
+### context_test.go
+
+- **TestNewContextBuilder**: TestNewContextBuilder tests builder creation
+- **TestContextBuilder_Build**: TestContextBuilder_Build tests context creation from HTTP request
+- **TestContextBuilder_Build_NilParams**: TestContextBuilder_Build_NilParams tests build with nil params
+- **TestContextBuilder_ResolveClientIP_NoProxy**: TestContextBuilder_ResolveClientIP_NoProxy tests IP resolution without proxy headers
+- **TestContextBuilder_ResolveClientIP_WithProxy**: TestContextBuilder_ResolveClientIP_WithProxy tests IP resolution with proxy headers
+- **TestContextBuilder_GetRequestID**: TestContextBuilder_GetRequestID tests request ID extraction
+- **TestContext_WithResult**: TestContext_WithResult tests adding result to context
+- **TestContext_ToMap**: TestContext_ToMap tests context conversion to map
+- **TestExtractParamRefs**: TestExtractParamRefs tests param reference extraction
+- **TestExtractHeaderRefs**: TestExtractHeaderRefs tests header reference extraction
+- **TestExtractQueryRefs**: TestExtractQueryRefs tests query reference extraction
+- **TestContext_Integration**: TestContext_Integration tests full context usage with engine
+- **TestContext_PostQuery_Integration**: TestContext_PostQuery_Integration tests post-query context with webhooks
+- **BenchmarkContextBuilder_Build**: BenchmarkContextBuilder_Build benchmarks context creation
+- **BenchmarkExtractParamRefs**: BenchmarkExtractParamRefs benchmarks param extraction
+
+### engine_test.go
+
+- **TestNew**: TestNew verifies engine creation with all functions
+- **TestRequireFunc**: TestRequireFunc tests the require helper function
+- **TestGetOrFunc**: TestGetOrFunc tests the getOr helper function
+- **TestHasFunc**: TestHasFunc tests the has helper function
+- **TestJSONFunc**: TestJSONFunc tests JSON serialization
+- **TestJSONIndentFunc**: TestJSONIndentFunc tests indented JSON serialization
+- **TestDefaultFunc**: TestDefaultFunc tests the default helper function
+- **TestCoalesceFunc**: TestCoalesceFunc tests the coalesce function
+- **TestEngine_Register**: TestEngine_Register tests template registration
+- **TestEngine_Execute**: TestEngine_Execute tests template execution
+- **TestEngine_Execute_NotRegistered**: TestEngine_Execute_NotRegistered tests executing unregistered template
+- **TestEngine_Execute_EmptyResult**: TestEngine_Execute_EmptyResult tests that empty results are rejected
+- **TestEngine_ExecuteInline**: TestEngine_ExecuteInline tests inline template execution
+- **TestEngine_Validate**: TestEngine_Validate tests template validation
+- **TestEngine_ValidateWithParams**: TestEngine_ValidateWithParams tests template validation with param checking
+- **TestEngine_MathFunctions**: TestEngine_MathFunctions tests math helper functions in templates
+- **TestEngine_StringFunctions**: TestEngine_StringFunctions tests string helper functions in templates
+- **TestEngine_ContextFunctions**: TestEngine_ContextFunctions tests context-based helper functions
+- **TestEngine_RequireFuncError**: TestEngine_RequireFuncError tests require function error case
+- **TestEngine_PostQueryContext**: TestEngine_PostQueryContext tests post-query context with Result
+- **TestEngine_ConcurrentAccess**: TestEngine_ConcurrentAccess tests thread safety
+- **TestSampleContextMap**: TestSampleContextMap tests sample context generation
+- **TestJSONFunc_Error**: TestJSONFunc_Error tests JSON serialization error handling
+- **TestJSONIndentFunc_Error**: TestJSONIndentFunc_Error tests indented JSON serialization error handling
+- **TestEngine_ExecuteInline_EmptyResult**: TestEngine_ExecuteInline_EmptyResult tests that empty results are rejected
+- **TestEngine_Execute_TemplateError**: TestEngine_Execute_TemplateError tests template execution error handling
+- **TestEngine_Validate_StructuralError**: TestEngine_Validate_StructuralError tests validation with structural template errors
+
+
+---
+
+## Rate Limiting
+
+**Package**: `internal/ratelimit`
+
+### ratelimit_test.go
+
+- **TestNew**: New
+- **TestAllow_NoLimits**: Allow NoLimits
+- **TestAllow_NamedPool**: Allow NamedPool
+- **TestAllow_InlineConfig**: Allow InlineConfig
+- **TestAllow_MultiplePools**: Allow MultiplePools
+- **TestAllow_DifferentClients**: Allow DifferentClients
+- **TestAllow_HeaderBasedKey**: Allow HeaderBasedKey
+- **TestAllow_MissingTemplateData**: Allow MissingTemplateData
+- **TestAllow_NonexistentPool**: Allow NonexistentPool
+- **TestMetrics**: Metrics
+- **TestPoolNames**: PoolNames
+- **TestGetPool**: GetPool
+- **TestBucketCleanup**: BucketCleanup
 
 
 ---
@@ -439,8 +605,8 @@ Run `make test-cover` for current coverage statistics.
 
 - **TestE2E_ServerStartupAndShutdown**: TestE2E_ServerStartupAndShutdown tests the server starts and stops cleanly
 - **TestE2E_HealthEndpoint**: TestE2E_HealthEndpoint tests /health returns database status
-- **TestE2E_MetricsEndpoint**: TestE2E_MetricsEndpoint tests /metrics returns runtime stats
-- **TestE2E_OpenAPIEndpoint**: TestE2E_OpenAPIEndpoint tests /openapi.json returns valid spec
+- **TestE2E_MetricsEndpoint**: TestE2E_MetricsEndpoint tests /_/metrics returns runtime stats
+- **TestE2E_OpenAPIEndpoint**: TestE2E_OpenAPIEndpoint tests /_/openapi.json returns valid spec
 - **TestE2E_RootEndpoint**: TestE2E_RootEndpoint tests / returns endpoint listing
 - **TestE2E_QueryEndpoint**: TestE2E_QueryEndpoint tests query execution returns data
 - **TestE2E_QueryWithParameters**: TestE2E_QueryWithParameters tests parameterized query execution
@@ -469,6 +635,8 @@ make test-e2e          # End-to-end tests (starts actual binary)
 # Run by package
 make test-db
 make test-handler
+make test-tmpl
+make test-ratelimit
 # etc.
 
 # Run with coverage

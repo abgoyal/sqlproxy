@@ -16,11 +16,15 @@ import (
 	"sql-proxy/internal/db"
 	"sql-proxy/internal/logging"
 	"sql-proxy/internal/metrics"
+	"sql-proxy/internal/ratelimit"
+	"sql-proxy/internal/tmpl"
 )
 
 type Handler struct {
 	dbManager         *db.Manager
 	cache             *cache.Cache
+	rateLimiter       *ratelimit.Limiter
+	ctxBuilder        *tmpl.ContextBuilder
 	dbName            string // Which connection to use
 	queryConfig       config.QueryConfig
 	defaultTimeoutSec int
@@ -39,7 +43,7 @@ type Response struct {
 	RequestID  string `json:"request_id,omitempty"`
 }
 
-func New(dbManager *db.Manager, c *cache.Cache, queryCfg config.QueryConfig, serverCfg config.ServerConfig) *Handler {
+func New(dbManager *db.Manager, c *cache.Cache, rl *ratelimit.Limiter, ctxBuilder *tmpl.ContextBuilder, queryCfg config.QueryConfig, serverCfg config.ServerConfig) *Handler {
 	defaultCacheTTL := 300 * time.Second
 	if serverCfg.Cache != nil && serverCfg.Cache.DefaultTTLSec > 0 {
 		defaultCacheTTL = time.Duration(serverCfg.Cache.DefaultTTLSec) * time.Second
@@ -48,6 +52,8 @@ func New(dbManager *db.Manager, c *cache.Cache, queryCfg config.QueryConfig, ser
 	return &Handler{
 		dbManager:         dbManager,
 		cache:             c,
+		rateLimiter:       rl,
+		ctxBuilder:        ctxBuilder,
 		dbName:            queryCfg.Database,
 		queryConfig:       queryCfg,
 		defaultTimeoutSec: serverCfg.DefaultTimeoutSec,
@@ -161,6 +167,32 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	logFields["parse_duration_ms"] = parseDuration.Milliseconds()
 
 	logging.Debug("params_parsed", logFields)
+
+	// Check rate limits (before expensive operations)
+	if h.rateLimiter != nil && len(h.queryConfig.RateLimit) > 0 && h.ctxBuilder != nil {
+		tmplCtx := h.ctxBuilder.Build(r, params)
+		allowed, err := h.rateLimiter.Allow(h.queryConfig.RateLimit, tmplCtx)
+		if err != nil {
+			// Template error - log and reject (config bug that should be caught at load time)
+			m.StatusCode = http.StatusInternalServerError
+			m.Error = "rate limit error"
+			m.TotalDuration = time.Since(startTime)
+			logFields["error"] = err.Error()
+			logging.Error("rate_limit_error", logFields)
+			h.finishRequest(w, m, logFields, http.StatusInternalServerError, "rate limit configuration error", requestID, 0)
+			return
+		}
+		if !allowed {
+			m.StatusCode = http.StatusTooManyRequests
+			m.Error = "rate limit exceeded"
+			m.TotalDuration = time.Since(startTime)
+			logFields["rate_limited"] = true
+			logging.Warn("rate_limit_exceeded", logFields)
+			w.Header().Set("Retry-After", "1")
+			h.finishRequest(w, m, logFields, http.StatusTooManyRequests, "rate limit exceeded", requestID, 0)
+			return
+		}
+	}
 
 	// Resolve timeout
 	timeoutSec := h.resolveTimeout(r)
