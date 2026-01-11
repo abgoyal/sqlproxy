@@ -27,6 +27,11 @@ databases:
     # isolation: "read_uncommitted"   # read_uncommitted, read_committed, repeatable_read, serializable, snapshot
     # lock_timeout_ms: 5000           # Lock wait timeout in milliseconds
     # deadlock_priority: "low"        # low, normal, high
+    # Connection pool settings (optional - sensible defaults apply)
+    # max_open_conns: 10             # Max open connections (default: 5)
+    # max_idle_conns: 5              # Max idle connections (default: 5)
+    # conn_max_lifetime: 300         # Max connection lifetime in seconds (default: 300)
+    # conn_max_idle_time: 60         # Max idle time before closing in seconds (default: 60)
 
   # Example: SQLite database (useful for testing)
   # - name: "test_db"
@@ -35,6 +40,11 @@ databases:
   #   # SQLite session settings (optional)
   #   # journal_mode: "wal"         # wal, delete, truncate, memory, off (default: wal)
   #   # busy_timeout_ms: 5000       # Busy timeout in milliseconds (default: 5000)
+  #   # Connection pool settings (optional - applies to all database types)
+  #   # max_open_conns: 5
+  #   # max_idle_conns: 5
+  #   # conn_max_lifetime: 300
+  #   # conn_max_idle_time: 60
 
 # Logging Configuration
 logging:

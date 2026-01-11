@@ -50,6 +50,41 @@ func buildPaths(cfg *config.Config) map[string]any {
 		},
 	}
 
+	paths["/health/{dbname}"] = map[string]any{
+		"get": map[string]any{
+			"summary":     "Per-database health check",
+			"description": "Returns health status for a specific database connection",
+			"tags":        []string{"System"},
+			"parameters": []map[string]any{
+				{
+					"name":        "dbname",
+					"in":          "path",
+					"required":    true,
+					"description": "Database connection name",
+					"schema": map[string]any{
+						"type": "string",
+					},
+				},
+			},
+			"responses": map[string]any{
+				"200": map[string]any{
+					"description": "Database is connected",
+					"content": map[string]any{
+						"application/json": map[string]any{
+							"schema": map[string]any{"$ref": "#/components/schemas/DbHealthResponse"},
+						},
+					},
+				},
+				"404": map[string]any{
+					"description": "Database not found",
+				},
+				"503": map[string]any{
+					"description": "Database is disconnected",
+				},
+			},
+		},
+	}
+
 	paths["/metrics"] = map[string]any{
 		"get": map[string]any{
 			"summary":     "Metrics snapshot",
@@ -246,14 +281,28 @@ func paramTypeToSchema(typeName string, defaultVal string) map[string]any {
 	case "int", "integer":
 		schema["type"] = "integer"
 		if defaultVal != "" {
-			// Parse default to int for schema
-			schema["default"] = defaultVal
+			// Parse default to int for correct schema type
+			if v, err := strconv.Atoi(defaultVal); err == nil {
+				schema["default"] = v
+			}
 		}
 	case "float", "double":
 		schema["type"] = "number"
 		schema["format"] = "double"
+		if defaultVal != "" {
+			// Parse default to float for correct schema type
+			if v, err := strconv.ParseFloat(defaultVal, 64); err == nil {
+				schema["default"] = v
+			}
+		}
 	case "bool", "boolean":
 		schema["type"] = "boolean"
+		if defaultVal != "" {
+			// Parse default to bool for correct schema type
+			if v, err := strconv.ParseBool(defaultVal); err == nil {
+				schema["default"] = v
+			}
+		}
 	case "datetime", "date":
 		schema["type"] = "string"
 		schema["format"] = "date-time"
@@ -334,6 +383,27 @@ func buildComponents() map[string]any {
 					"uptime": map[string]any{
 						"type":        "string",
 						"description": "Service uptime",
+					},
+				},
+			},
+			"DbHealthResponse": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"database": map[string]any{
+						"type":        "string",
+						"description": "Database connection name",
+					},
+					"status": map[string]any{
+						"type": "string",
+						"enum": []string{"connected", "disconnected"},
+					},
+					"type": map[string]any{
+						"type":        "string",
+						"description": "Database type (sqlserver, sqlite)",
+					},
+					"readonly": map[string]any{
+						"type":        "boolean",
+						"description": "Whether connection is read-only",
 					},
 				},
 			},

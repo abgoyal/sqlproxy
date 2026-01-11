@@ -74,7 +74,7 @@ func NewSQLServerDriver(cfg config.DatabaseConfig) (*SQLServerDriver, error) {
 	}
 
 	// Conservative connection pool to minimize footprint on SQL Server
-	configureSQLServerPool(conn)
+	configureSQLServerPool(conn, cfg)
 
 	// Test connection
 	ctx, cancel := context.WithTimeout(context.Background(), sqlserverPingTimeout)
@@ -88,11 +88,28 @@ func NewSQLServerDriver(cfg config.DatabaseConfig) (*SQLServerDriver, error) {
 	return &SQLServerDriver{conn: conn, connStr: connStr, cfg: cfg, readOnly: readOnly}, nil
 }
 
-func configureSQLServerPool(conn *sql.DB) {
-	conn.SetMaxOpenConns(sqlserverMaxOpenConns)
-	conn.SetMaxIdleConns(sqlserverMaxIdleConns)
-	conn.SetConnMaxLifetime(sqlserverConnMaxLifetime)
-	conn.SetConnMaxIdleTime(sqlserverConnMaxIdleTime)
+func configureSQLServerPool(conn *sql.DB, cfg config.DatabaseConfig) {
+	maxOpen := sqlserverMaxOpenConns
+	if cfg.MaxOpenConns != nil {
+		maxOpen = *cfg.MaxOpenConns
+	}
+	maxIdle := sqlserverMaxIdleConns
+	if cfg.MaxIdleConns != nil {
+		maxIdle = *cfg.MaxIdleConns
+	}
+	maxLifetime := sqlserverConnMaxLifetime
+	if cfg.ConnMaxLifetime != nil {
+		maxLifetime = time.Duration(*cfg.ConnMaxLifetime) * time.Second
+	}
+	maxIdleTime := sqlserverConnMaxIdleTime
+	if cfg.ConnMaxIdleTime != nil {
+		maxIdleTime = time.Duration(*cfg.ConnMaxIdleTime) * time.Second
+	}
+
+	conn.SetMaxOpenConns(maxOpen)
+	conn.SetMaxIdleConns(maxIdle)
+	conn.SetConnMaxLifetime(maxLifetime)
+	conn.SetConnMaxIdleTime(maxIdleTime)
 }
 
 // Name returns the connection name
@@ -128,7 +145,7 @@ func (d *SQLServerDriver) Reconnect() error {
 		return fmt.Errorf("failed to open database connection: %w", err)
 	}
 
-	configureSQLServerPool(conn)
+	configureSQLServerPool(conn, d.cfg)
 
 	// Test connection
 	ctx, cancel := context.WithTimeout(context.Background(), sqlserverPingTimeout)

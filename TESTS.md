@@ -164,6 +164,11 @@ Run `make test-cover` for current coverage statistics.
 - **TestHandler_ServeHTTP_DateTimeParam**: TestHandler_ServeHTTP_DateTimeParam tests datetime parameter parsing and SQL binding
 - **TestGenerateRequestID**: TestGenerateRequestID validates unique 16-char hex IDs are generated
 - **TestGetOrGenerateRequestID**: TestGetOrGenerateRequestID checks header extraction priority and fallback generation
+- **TestSanitizeHeaderValue**: TestSanitizeHeaderValue tests header value sanitization for security
+- **TestGetOrGenerateRequestID_Sanitizes**: TestGetOrGenerateRequestID_Sanitizes validates that request IDs from headers are sanitized
+- **TestHandler_ServeHTTP_JSONBody**: TestHandler_ServeHTTP_JSONBody tests JSON body parsing for POST endpoints
+- **TestHandler_ServeHTTP_JSONBody_RejectsNested**: TestHandler_ServeHTTP_JSONBody_RejectsNested tests that nested JSON objects are rejected
+- **TestConvertJSONValue**: TestConvertJSONValue tests JSON value type conversion
 
 
 ---
@@ -183,7 +188,6 @@ Run `make test-cover` for current coverage statistics.
 - **TestScheduler_ResolveValue_DynamicDates**: TestScheduler_ResolveValue_DynamicDates tests dynamic date keywords: now, today, yesterday, tomorrow
 - **TestScheduler_ResolveValue_Types**: TestScheduler_ResolveValue_Types tests type conversion for string, int, and bool parameters
 - **TestScheduler_ResolveValue_DateFormats**: TestScheduler_ResolveValue_DateFormats tests datetime parsing with various input formats
-- **TestParseInt**: TestParseInt tests integer parsing accepts positives, rejects negatives and invalid input
 - **TestHasScheduledQueries**: TestHasScheduledQueries tests detection of scheduled queries in config list
 - **TestScheduler_InvalidCron**: TestScheduler_InvalidCron verifies invalid cron expressions are rejected without panic
 - **TestScheduler_UnknownDatabase**: TestScheduler_UnknownDatabase tests error for queries referencing non-existent database
@@ -322,7 +326,6 @@ Run `make test-cover` for current coverage statistics.
 - **TestGetSnapshot_DBHealth**: TestGetSnapshot_DBHealth tests database health status via checker function
 - **TestRecord_Concurrent**: TestRecord_Concurrent tests thread-safe metric recording with 100 goroutines
 - **TestRecord_MultipleEndpoints**: TestRecord_MultipleEndpoints tests separate stats tracking per endpoint
-- **TestClose**: TestClose verifies Close is a no-op and doesn't panic
 - **TestEndpointStats_Fields**: TestEndpointStats_Fields verifies all endpoint stat fields are populated
 - **TestSnapshot_Timestamp**: TestSnapshot_Timestamp verifies snapshot timestamp is set correctly
 

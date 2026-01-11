@@ -934,3 +934,152 @@ func TestGetOrGenerateRequestID_Sanitizes(t *testing.T) {
 		t.Errorf("expected 'testX-Injected: evil', got %q", id)
 	}
 }
+
+// TestHandler_ServeHTTP_JSONBody tests JSON body parsing for POST endpoints
+func TestHandler_ServeHTTP_JSONBody(t *testing.T) {
+	manager := createTestManager(t)
+	defer manager.Close()
+
+	queryCfg := config.QueryConfig{
+		Name:     "get_user",
+		Database: "test",
+		Path:     "/api/user",
+		Method:   "POST",
+		SQL:      "SELECT * FROM users WHERE status = @status",
+		Parameters: []config.ParamConfig{
+			{Name: "status", Type: "string", Required: true},
+		},
+	}
+
+	serverCfg := config.ServerConfig{
+		DefaultTimeoutSec: 30,
+		MaxTimeoutSec:     300,
+	}
+
+	handler := New(manager, nil, queryCfg, serverCfg)
+
+	// Test JSON body parsing
+	jsonBody := `{"status": "active"}`
+	req := httptest.NewRequest("POST", "/api/user", strings.NewReader(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp Response
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	if resp.Count != 2 {
+		t.Errorf("expected 2 active users, got %d", resp.Count)
+	}
+}
+
+// TestHandler_ServeHTTP_JSONBody_RejectsNested tests that nested JSON objects are rejected
+func TestHandler_ServeHTTP_JSONBody_RejectsNested(t *testing.T) {
+	manager := createTestManager(t)
+	defer manager.Close()
+
+	queryCfg := config.QueryConfig{
+		Name:     "test",
+		Database: "test",
+		Path:     "/api/test",
+		Method:   "POST",
+		SQL:      "SELECT 1",
+		Parameters: []config.ParamConfig{
+			{Name: "data", Type: "string", Required: true},
+		},
+	}
+
+	serverCfg := config.ServerConfig{
+		DefaultTimeoutSec: 30,
+		MaxTimeoutSec:     300,
+	}
+
+	handler := New(manager, nil, queryCfg, serverCfg)
+
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{
+			name:    "nested object",
+			body:    `{"data": {"nested": "value"}}`,
+			wantErr: "nested objects not supported",
+		},
+		{
+			name:    "nested array",
+			body:    `{"data": [1, 2, 3]}`,
+			wantErr: "nested arrays not supported",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/api/test", strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			handler.ServeHTTP(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("expected status 400, got %d", w.Code)
+			}
+
+			var resp Response
+			json.NewDecoder(w.Body).Decode(&resp)
+
+			if !strings.Contains(resp.Error, tt.wantErr) {
+				t.Errorf("expected error containing %q, got %q", tt.wantErr, resp.Error)
+			}
+		})
+	}
+}
+
+// TestConvertJSONValue tests JSON value type conversion
+func TestConvertJSONValue(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     any
+		typeName  string
+		wantValue any
+		wantErr   bool
+	}{
+		{"float64 to int", float64(42), "int", 42, false},
+		{"string to int", "42", "int", 42, false},
+		{"bool to int", true, "int", nil, true},
+		{"float64 to float", 3.14, "float", 3.14, false},
+		{"bool to bool", true, "bool", true, false},
+		{"string to bool", "true", "bool", true, false},
+		{"string to string", "hello", "string", "hello", false},
+		{"float64 to string", float64(42), "string", "42", false},
+		{"bool to string", true, "string", "true", false},
+		{"nil to string", nil, "string", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := convertJSONValue(tt.value, tt.typeName)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+				return
+			}
+
+			if result != tt.wantValue {
+				t.Errorf("expected %v (%T), got %v (%T)", tt.wantValue, tt.wantValue, result, result)
+			}
+		})
+	}
+}

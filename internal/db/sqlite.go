@@ -89,7 +89,7 @@ func NewSQLiteDriver(cfg config.DatabaseConfig) (*SQLiteDriver, error) {
 	}
 
 	// Configure connection pool (SQLite is single-writer, so keep it conservative)
-	configureSQLitePool(conn)
+	configureSQLitePool(conn, cfg)
 
 	// Apply initial PRAGMA settings
 	driver := &SQLiteDriver{
@@ -116,13 +116,30 @@ func NewSQLiteDriver(cfg config.DatabaseConfig) (*SQLiteDriver, error) {
 	return driver, nil
 }
 
-func configureSQLitePool(conn *sql.DB) {
+func configureSQLitePool(conn *sql.DB, cfg config.DatabaseConfig) {
 	// SQLite is single-writer, so we don't need many connections
 	// WAL mode allows concurrent reads with single writer
-	conn.SetMaxOpenConns(sqliteMaxOpenConns)
-	conn.SetMaxIdleConns(sqliteMaxIdleConns)
-	conn.SetConnMaxLifetime(sqliteConnMaxLifetime)
-	conn.SetConnMaxIdleTime(sqliteConnMaxIdleTime)
+	maxOpen := sqliteMaxOpenConns
+	if cfg.MaxOpenConns != nil {
+		maxOpen = *cfg.MaxOpenConns
+	}
+	maxIdle := sqliteMaxIdleConns
+	if cfg.MaxIdleConns != nil {
+		maxIdle = *cfg.MaxIdleConns
+	}
+	maxLifetime := sqliteConnMaxLifetime
+	if cfg.ConnMaxLifetime != nil {
+		maxLifetime = time.Duration(*cfg.ConnMaxLifetime) * time.Second
+	}
+	maxIdleTime := sqliteConnMaxIdleTime
+	if cfg.ConnMaxIdleTime != nil {
+		maxIdleTime = time.Duration(*cfg.ConnMaxIdleTime) * time.Second
+	}
+
+	conn.SetMaxOpenConns(maxOpen)
+	conn.SetMaxIdleConns(maxIdle)
+	conn.SetConnMaxLifetime(maxLifetime)
+	conn.SetConnMaxIdleTime(maxIdleTime)
 }
 
 // applyInitialPragmas applies database-level pragmas that should be set once.
@@ -238,7 +255,7 @@ func (d *SQLiteDriver) Reconnect() error {
 		return fmt.Errorf("failed to open sqlite database: %w", err)
 	}
 
-	configureSQLitePool(conn)
+	configureSQLitePool(conn, d.cfg)
 
 	// Create a temporary driver to apply pragmas (using the new conn)
 	tempDriver := &SQLiteDriver{conn: conn, path: d.path, cfg: d.cfg, readOnly: d.readOnly}

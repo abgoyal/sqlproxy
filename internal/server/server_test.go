@@ -601,14 +601,15 @@ func TestServer_HealthHandler_Degraded(t *testing.T) {
 	}
 	driver.Close()
 
-	// Now health check should show degraded status
+	// Now health check should show degraded/unhealthy status
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
 
 	srv.healthHandler(w, req)
 
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("expected status 503, got %d", w.Code)
+	// Always returns 200 - clients parse the status field
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
 	}
 
 	var resp map[string]any
@@ -616,8 +617,9 @@ func TestServer_HealthHandler_Degraded(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	if resp["status"] != "degraded" {
-		t.Errorf("expected status 'degraded', got %v", resp["status"])
+	// With single DB down, status is "unhealthy" (all DBs disconnected)
+	if resp["status"] != "unhealthy" {
+		t.Errorf("expected status 'unhealthy', got %v", resp["status"])
 	}
 
 	databases, ok := resp["databases"].(map[string]any)

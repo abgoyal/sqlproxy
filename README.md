@@ -358,6 +358,36 @@ queries:
 | `journal_mode` | `wal` | WAL mode enables concurrent reads during writes |
 | `busy_timeout_ms` | `5000` | How long to wait when database is locked (ms) |
 
+### Connection Pool Configuration
+
+All database types support connection pool tuning. These settings are optional and have sensible defaults:
+
+```yaml
+databases:
+  - name: "primary"
+    type: "sqlserver"
+    host: "server.example.com"
+    # ... other connection settings ...
+
+    # Connection pool settings (optional)
+    max_open_conns: 10       # Max open connections (default: 5)
+    max_idle_conns: 5        # Max idle connections (default: 5)
+    conn_max_lifetime: 300   # Max connection lifetime in seconds (default: 300)
+    conn_max_idle_time: 60   # Max idle time in seconds (default: 60)
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `max_open_conns` | 5 | Maximum number of open connections to the database |
+| `max_idle_conns` | 5 | Maximum number of idle connections in the pool |
+| `conn_max_lifetime` | 300 | Maximum time (seconds) a connection can be reused |
+| `conn_max_idle_time` | 60 | Maximum time (seconds) a connection can be idle |
+
+**When to tune:**
+- High-throughput services: Increase `max_open_conns` and `max_idle_conns`
+- Connection limits on DB server: Reduce `max_open_conns`
+- Network instability: Reduce `conn_max_lifetime` to recycle connections more often
+
 #### SQLite Automatic Pragmas
 
 The driver automatically configures SQLite for optimal concurrent performance:
@@ -855,10 +885,48 @@ Response:
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/` | GET | List all query endpoints with parameters |
-| `/health` | GET | Health check with per-database status (returns 503 if any DB disconnected) |
+| `/health` | GET | Aggregate health check (always 200, parse `status` field) |
+| `/health/{dbname}` | GET | Per-database health check (200 or 404 if not found) |
 | `/metrics` | GET | Current metrics snapshot |
 | `/openapi.json` | GET | OpenAPI 3.0 specification |
 | `/config/loglevel` | GET/POST | View/change log level |
+| `/cache/clear` | POST/DELETE | Clear cache (all or specific endpoint via `?endpoint=/api/path`) |
+
+### Health Check Design
+
+Health endpoints always return HTTP 200 with status details in the response body. This design:
+- Avoids confusion with proxy/middleware 503 errors
+- Allows clients to always receive health details
+- Enables monitoring tools to parse JSON for actual status
+
+**Aggregate health (`/health`):**
+```json
+{
+  "status": "healthy",
+  "databases": {
+    "primary": "connected",
+    "reporting": "connected"
+  },
+  "uptime": "24h35m12s"
+}
+```
+
+Status values:
+- `healthy` - All databases connected
+- `degraded` - Some databases connected, some disconnected
+- `unhealthy` - All databases disconnected
+
+**Per-database health (`/health/{dbname}`):**
+```json
+{
+  "database": "primary",
+  "status": "connected",
+  "type": "sqlserver",
+  "readonly": true
+}
+```
+
+Returns 404 only if the database name doesn't exist in configuration.
 
 ### OpenAPI / Swagger
 
@@ -890,6 +958,38 @@ Defined in `config.yaml`. Each returns:
 ```
 
 The `request_id` can be used to trace the request in logs.
+
+### JSON Body Support for POST
+
+POST endpoints accept parameters via JSON body (in addition to query parameters and form data):
+
+```bash
+# JSON body
+curl -X POST http://localhost:8081/api/reports \
+  -H "Content-Type: application/json" \
+  -d '{"date": "2024-01-15", "status": "active", "count": 100}'
+
+# Query parameters still work
+curl -X POST "http://localhost:8081/api/reports?date=2024-01-15&status=active"
+
+# Form data still works
+curl -X POST http://localhost:8081/api/reports \
+  -d "date=2024-01-15" -d "status=active"
+```
+
+**Important notes:**
+- JSON body must be flat (no nested objects or arrays)
+- Query parameters override JSON body values
+- Maximum request body size: 1MB
+- Nested objects/arrays are rejected with 400 error
+
+```bash
+# This will fail (nested object)
+curl -X POST http://localhost:8081/api/reports \
+  -H "Content-Type: application/json" \
+  -d '{"filter": {"status": "active"}}'
+# Error: "nested objects not supported: parameter 'filter' contains an object"
+```
 
 ## Request Tracing
 

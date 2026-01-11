@@ -41,6 +41,9 @@ const (
 
 	// writeTimeoutBuffer is added to max query timeout for HTTP write timeout
 	writeTimeoutBuffer = 30 * time.Second
+
+	// maxRequestBodySize is the maximum allowed request body size (1MB)
+	maxRequestBodySize = 1 << 20
 )
 
 type Server struct {
@@ -56,6 +59,49 @@ type Server struct {
 
 	// Scheduled query execution
 	scheduler *scheduler.Scheduler
+}
+
+// Response types for JSON encoding
+type healthResponse struct {
+	Status    string            `json:"status"`
+	Databases map[string]string `json:"databases"`
+	Uptime    string            `json:"uptime"`
+}
+
+type logLevelResponse struct {
+	Status string `json:"status,omitempty"`
+	Level  string `json:"level,omitempty"`
+	// For GET request
+	CurrentLevel string `json:"current_level,omitempty"`
+	Usage        string `json:"usage,omitempty"`
+}
+
+type cacheClearResponse struct {
+	Status   string `json:"status"`
+	Message  string `json:"message"`
+	Endpoint string `json:"endpoint,omitempty"`
+}
+
+type dbHealthResponse struct {
+	Database string `json:"database"`
+	Status   string `json:"status"`
+	Type     string `json:"type"`
+	ReadOnly bool   `json:"readonly"`
+}
+
+type errorResponse struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error"`
+}
+
+// writeJSON encodes v as JSON to w and logs any encoding errors
+func writeJSON(w http.ResponseWriter, v any) {
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		logging.Error("json_encode_failed", map[string]any{
+			"error": err.Error(),
+			"type":  fmt.Sprintf("%T", v),
+		})
+	}
 }
 
 func New(cfg *config.Config, interactive bool) (*Server, error) {
@@ -152,8 +198,8 @@ func New(cfg *config.Config, interactive bool) (*Server, error) {
 	// Calculate write timeout based on max query timeout + buffer
 	writeTimeout := time.Duration(cfg.Server.MaxTimeoutSec)*time.Second + writeTimeoutBuffer
 
-	// Middleware chain: recovery -> gzip -> routes
-	handler := s.recoveryMiddleware(s.gzipMiddleware(mux))
+	// Middleware chain: recovery -> bodyLimit -> gzip -> routes
+	handler := s.recoveryMiddleware(s.bodySizeLimitMiddleware(s.gzipMiddleware(mux)))
 
 	s.httpServer = &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
@@ -240,8 +286,9 @@ func (s *Server) checkDBHealth() bool {
 }
 
 func (s *Server) setupRoutes(mux *http.ServeMux) {
-	// Health check endpoint
-	mux.HandleFunc("/health", s.healthHandler)
+	// Health check endpoints
+	mux.HandleFunc("/health", s.healthHandler)        // Aggregate health
+	mux.HandleFunc("/health/", s.dbHealthHandler)     // Per-database health: /health/{dbname}
 
 	// Metrics endpoint (returns current snapshot)
 	mux.HandleFunc("/metrics", s.metricsHandler)
@@ -304,31 +351,80 @@ func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	dbResults := s.dbManager.Ping(ctx)
 
-	// Build per-database status
+	// Build per-database status and count healthy/unhealthy
 	databases := make(map[string]string)
-	allHealthy := true
+	healthyCount := 0
+	totalCount := 0
 	for name, err := range dbResults {
+		totalCount++
 		if err != nil {
 			databases[name] = "disconnected"
-			allHealthy = false
 		} else {
 			databases[name] = "connected"
+			healthyCount++
 		}
 	}
 
+	// Determine overall status:
+	// - "healthy" = all DBs connected
+	// - "degraded" = some DBs connected, some disconnected
+	// - "unhealthy" = all DBs disconnected
 	status := "healthy"
-	httpStatus := http.StatusOK
-
-	if !allHealthy {
+	if healthyCount == 0 && totalCount > 0 {
+		status = "unhealthy"
+	} else if healthyCount < totalCount {
 		status = "degraded"
-		httpStatus = http.StatusServiceUnavailable
 	}
 
-	w.WriteHeader(httpStatus)
-	json.NewEncoder(w).Encode(map[string]any{
-		"status":    status,
-		"databases": databases,
-		"uptime":    time.Since(s.startTime()).String(),
+	// Always return 200 - clients should parse the status field
+	// This avoids confusion with proxy/middleware 503s
+	writeJSON(w, healthResponse{
+		Status:    status,
+		Databases: databases,
+		Uptime:    time.Since(s.startTime()).String(),
+	})
+}
+
+// dbHealthHandler handles per-database health checks: /health/{dbname}
+func (s *Server) dbHealthHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	// Extract database name from path: /health/{dbname}
+	dbName := strings.TrimPrefix(r.URL.Path, "/health/")
+	if dbName == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, errorResponse{
+			Error: "database name required: /health/{dbname}",
+		})
+		return
+	}
+
+	// Get the database driver
+	driver, err := s.dbManager.Get(dbName)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		writeJSON(w, errorResponse{
+			Error: "database not found: " + dbName,
+		})
+		return
+	}
+
+	// Check connectivity
+	ctx, cancel := context.WithTimeout(r.Context(), healthCheckTimeout)
+	defer cancel()
+
+	status := "connected"
+	if err := driver.Ping(ctx); err != nil {
+		status = "disconnected"
+	}
+
+	// Always return 200 - clients should parse the status field
+	// Only 404 is returned for unknown database names
+	writeJSON(w, dbHealthResponse{
+		Database: dbName,
+		Status:   status,
+		Type:     driver.Type(),
+		ReadOnly: driver.IsReadOnly(),
 	})
 }
 
@@ -337,13 +433,13 @@ func (s *Server) metricsHandler(w http.ResponseWriter, r *http.Request) {
 
 	snap := metrics.GetSnapshot()
 	if snap == nil {
-		json.NewEncoder(w).Encode(map[string]string{
-			"error": "metrics not enabled",
+		writeJSON(w, errorResponse{
+			Error: "metrics not enabled",
 		})
 		return
 	}
 
-	json.NewEncoder(w).Encode(snap)
+	writeJSON(w, snap)
 }
 
 func (s *Server) openAPIHandler(w http.ResponseWriter, r *http.Request) {
@@ -351,7 +447,7 @@ func (s *Server) openAPIHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*") // Allow Swagger UI from anywhere
 
 	spec := openapi.Spec(s.config)
-	json.NewEncoder(w).Encode(spec)
+	writeJSON(w, spec)
 }
 
 func (s *Server) logLevelHandler(w http.ResponseWriter, r *http.Request) {
@@ -361,8 +457,8 @@ func (s *Server) logLevelHandler(w http.ResponseWriter, r *http.Request) {
 		level := r.URL.Query().Get("level")
 		if level == "" {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{
-				"error": "level parameter required (debug, info, warn, error)",
+			writeJSON(w, errorResponse{
+				Error: "level parameter required (debug, info, warn, error)",
 			})
 			return
 		}
@@ -372,16 +468,16 @@ func (s *Server) logLevelHandler(w http.ResponseWriter, r *http.Request) {
 			"new_level": level,
 		})
 
-		json.NewEncoder(w).Encode(map[string]string{
-			"status": "ok",
-			"level":  level,
+		writeJSON(w, logLevelResponse{
+			Status: "ok",
+			Level:  level,
 		})
 		return
 	}
 
-	json.NewEncoder(w).Encode(map[string]string{
-		"current_level": logging.GetLevel(),
-		"usage":         "POST /config/loglevel?level=debug|info|warn|error",
+	writeJSON(w, logLevelResponse{
+		CurrentLevel: logging.GetLevel(),
+		Usage:        "POST /config/loglevel?level=debug|info|warn|error",
 	})
 }
 
@@ -391,8 +487,8 @@ func (s *Server) cacheClearHandler(w http.ResponseWriter, r *http.Request) {
 	// Only allow POST/DELETE methods
 	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error": "method not allowed, use POST or DELETE",
+		writeJSON(w, errorResponse{
+			Error: "method not allowed, use POST or DELETE",
 		})
 		return
 	}
@@ -400,8 +496,8 @@ func (s *Server) cacheClearHandler(w http.ResponseWriter, r *http.Request) {
 	// Check if cache is enabled
 	if s.cache == nil {
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error": "cache not enabled",
+		writeJSON(w, errorResponse{
+			Error: "cache not enabled",
 		})
 		return
 	}
@@ -415,18 +511,18 @@ func (s *Server) cacheClearHandler(w http.ResponseWriter, r *http.Request) {
 		logging.Info("cache_cleared", map[string]any{
 			"endpoint": endpoint,
 		})
-		json.NewEncoder(w).Encode(map[string]any{
-			"status":   "ok",
-			"message":  "cache cleared for endpoint",
-			"endpoint": endpoint,
+		writeJSON(w, cacheClearResponse{
+			Status:   "ok",
+			Message:  "cache cleared for endpoint",
+			Endpoint: endpoint,
 		})
 	} else {
 		// Clear all cache
 		s.cache.ClearAll()
 		logging.Info("cache_cleared_all", nil)
-		json.NewEncoder(w).Encode(map[string]any{
-			"status":  "ok",
-			"message": "all cache cleared",
+		writeJSON(w, cacheClearResponse{
+			Status:  "ok",
+			Message: "all cache cleared",
 		})
 	}
 }
@@ -514,7 +610,7 @@ func (s *Server) listEndpointsHandler(w http.ResponseWriter, r *http.Request) {
 		response["scheduled_queries"] = scheduled
 	}
 
-	json.NewEncoder(w).Encode(response)
+	writeJSON(w, response)
 }
 
 // recoveryMiddleware catches panics and logs them with stack traces
@@ -532,13 +628,23 @@ func (s *Server) recoveryMiddleware(next http.Handler) http.Handler {
 
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusInternalServerError)
-				json.NewEncoder(w).Encode(map[string]any{
-					"success": false,
-					"error":   "internal server error",
+				writeJSON(w, errorResponse{
+					Success: false,
+					Error:   "internal server error",
 				})
 			}
 		}()
 
+		next.ServeHTTP(w, r)
+	})
+}
+
+// bodySizeLimitMiddleware limits the size of request bodies to prevent memory exhaustion
+func (s *Server) bodySizeLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -573,7 +679,14 @@ func (s *Server) gzipMiddleware(next http.Handler) http.Handler {
 		gz := gzipWriterPool.Get().(*gzip.Writer)
 		gz.Reset(w)
 		defer func() {
-			gz.Close()
+			// Close flushes the buffer; only return to pool if successful
+			if err := gz.Close(); err != nil {
+				logging.Debug("gzip_close_error", map[string]any{
+					"error": err.Error(),
+					"path":  r.URL.Path,
+				})
+				return // Don't put broken writer back in pool
+			}
 			gzipWriterPool.Put(gz)
 		}()
 
@@ -624,13 +737,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.cache != nil {
 		s.cache.Close()
 		logging.Info("cache_closed", nil)
-	}
-
-	// Close metrics (exports final metrics)
-	if err := metrics.Close(); err != nil {
-		logging.Warn("metrics_close_error", map[string]any{
-			"error": err.Error(),
-		})
 	}
 
 	// Close database connections

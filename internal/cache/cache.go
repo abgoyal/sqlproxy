@@ -213,12 +213,16 @@ func (c *Cache) Set(endpoint, key string, data []map[string]any, ttl time.Durati
 	// Calculate size
 	sizeBytes := calculateSize(data)
 
-	// Check per-endpoint limit
+	// Check per-endpoint limit under lock to prevent race condition
 	ep := c.getEndpoint(endpoint)
 	if ep != nil && ep.maxCost > 0 {
+		ep.mu.Lock()
 		currentSize := ep.sizeBytes.Load()
-		if currentSize+sizeBytes > ep.maxCost {
-			// Need to evict some entries from this endpoint
+		needsEviction := currentSize+sizeBytes > ep.maxCost
+		ep.mu.Unlock()
+
+		if needsEviction {
+			// Evict outside the lock to avoid deadlock with Delete
 			c.evictFromEndpoint(endpoint, sizeBytes)
 		}
 	}

@@ -324,12 +324,49 @@ func (h *Handler) resolveTimeout(r *http.Request) int {
 func (h *Handler) parseParameters(r *http.Request) (map[string]any, error) {
 	params := make(map[string]any)
 
+	// Parse JSON body if Content-Type is application/json
+	var jsonParams map[string]any
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") && r.Body != nil {
+		var rawJSON map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&rawJSON); err != nil {
+			return nil, fmt.Errorf("failed to parse JSON body: %w", err)
+		}
+
+		// Validate flat structure (reject nested objects/arrays)
+		jsonParams = make(map[string]any)
+		for k, v := range rawJSON {
+			switch v.(type) {
+			case map[string]any:
+				return nil, fmt.Errorf("nested objects not supported: parameter '%s' contains an object", k)
+			case []any:
+				return nil, fmt.Errorf("nested arrays not supported: parameter '%s' contains an array", k)
+			default:
+				jsonParams[k] = v
+			}
+		}
+	}
+
+	// Parse query string and form data
 	if err := r.ParseForm(); err != nil {
 		return nil, fmt.Errorf("failed to parse form: %w", err)
 	}
 
 	for _, p := range h.queryConfig.Parameters {
+		// Check query string/form first (takes precedence)
 		value := r.FormValue(p.Name)
+
+		// If not in query string, check JSON body
+		if value == "" && jsonParams != nil {
+			if jsonVal, ok := jsonParams[p.Name]; ok {
+				// Convert JSON value to appropriate type
+				converted, err := convertJSONValue(jsonVal, p.Type)
+				if err != nil {
+					return nil, fmt.Errorf("invalid value for parameter %s: %w", p.Name, err)
+				}
+				params[p.Name] = converted
+				continue
+			}
+		}
 
 		if value == "" {
 			if p.Required {
@@ -350,6 +387,71 @@ func (h *Handler) parseParameters(r *http.Request) (map[string]any, error) {
 	}
 
 	return params, nil
+}
+
+// convertJSONValue converts a JSON-decoded value to the appropriate type.
+// JSON numbers are float64, strings are strings, bools are bools.
+func convertJSONValue(v any, typeName string) (any, error) {
+	switch strings.ToLower(typeName) {
+	case "int", "integer":
+		switch val := v.(type) {
+		case float64:
+			return int(val), nil
+		case string:
+			return strconv.Atoi(val)
+		default:
+			return nil, fmt.Errorf("expected integer, got %T", v)
+		}
+	case "float", "double":
+		switch val := v.(type) {
+		case float64:
+			return val, nil
+		case string:
+			return strconv.ParseFloat(val, 64)
+		default:
+			return nil, fmt.Errorf("expected number, got %T", v)
+		}
+	case "bool", "boolean":
+		switch val := v.(type) {
+		case bool:
+			return val, nil
+		case string:
+			return strconv.ParseBool(val)
+		default:
+			return nil, fmt.Errorf("expected boolean, got %T", v)
+		}
+	case "datetime", "date":
+		strVal, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("expected string for datetime, got %T", v)
+		}
+		formats := []string{
+			time.RFC3339,
+			"2006-01-02T15:04:05",
+			"2006-01-02 15:04:05",
+			"2006-01-02",
+		}
+		for _, f := range formats {
+			if t, err := time.Parse(f, strVal); err == nil {
+				return t, nil
+			}
+		}
+		return nil, fmt.Errorf("invalid datetime format")
+	default: // string
+		switch val := v.(type) {
+		case string:
+			return val, nil
+		case float64:
+			// JSON numbers for string params - convert to string
+			return strconv.FormatFloat(val, 'f', -1, 64), nil
+		case bool:
+			return strconv.FormatBool(val), nil
+		case nil:
+			return "", nil
+		default:
+			return fmt.Sprintf("%v", v), nil
+		}
+	}
 }
 
 func convertValue(value, typeName string) (any, error) {

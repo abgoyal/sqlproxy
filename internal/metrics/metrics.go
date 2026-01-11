@@ -216,8 +216,3 @@ func GetSnapshot() *Snapshot {
 
 	return snap
 }
-
-// Close is a no-op now (kept for compatibility)
-func Close() error {
-	return nil
-}

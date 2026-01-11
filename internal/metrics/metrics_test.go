@@ -352,15 +352,6 @@ func TestRecord_MultipleEndpoints(t *testing.T) {
 	}
 }
 
-// TestClose verifies Close is a no-op and doesn't panic
-func TestClose(t *testing.T) {
-	// Close is a no-op, just verify it doesn't panic
-	err := Close()
-	if err != nil {
-		t.Errorf("Close() returned unexpected error: %v", err)
-	}
-}
-
 // TestEndpointStats_Fields verifies all endpoint stat fields are populated
 func TestEndpointStats_Fields(t *testing.T) {
 	defaultCollector = nil

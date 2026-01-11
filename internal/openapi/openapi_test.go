@@ -336,23 +336,27 @@ func TestBuildParamDescription(t *testing.T) {
 // TestParamTypeToSchema tests parameter type to JSON Schema conversion
 func TestParamTypeToSchema(t *testing.T) {
 	tests := []struct {
-		typeName   string
-		defaultVal string
-		wantType   string
-		wantFormat string
+		typeName    string
+		defaultVal  string
+		wantType    string
+		wantFormat  string
+		wantDefault any // nil if no default expected
 	}{
-		{"int", "", "integer", ""},
-		{"integer", "", "integer", ""},
-		{"int", "42", "integer", ""},
-		{"float", "", "number", "double"},
-		{"double", "", "number", "double"},
-		{"bool", "", "boolean", ""},
-		{"boolean", "", "boolean", ""},
-		{"datetime", "", "string", "date-time"},
-		{"date", "", "string", "date-time"},
-		{"string", "", "string", ""},
-		{"string", "default_value", "string", ""},
-		{"unknown", "", "string", ""}, // defaults to string
+		{"int", "", "integer", "", nil},
+		{"integer", "", "integer", "", nil},
+		{"int", "42", "integer", "", 42},      // int defaults are parsed to int
+		{"float", "", "number", "double", nil},
+		{"float", "3.14", "number", "double", 3.14}, // float defaults are parsed
+		{"double", "", "number", "double", nil},
+		{"bool", "", "boolean", "", nil},
+		{"bool", "true", "boolean", "", true},  // bool defaults are parsed
+		{"boolean", "", "boolean", "", nil},
+		{"datetime", "", "string", "date-time", nil},
+		{"datetime", "2024-01-01", "string", "date-time", "2024-01-01"}, // datetime defaults stay string
+		{"date", "", "string", "date-time", nil},
+		{"string", "", "string", "", nil},
+		{"string", "default_value", "string", "", "default_value"},
+		{"unknown", "", "string", "", nil}, // defaults to string
 	}
 
 	for _, tt := range tests {
@@ -369,9 +373,14 @@ func TestParamTypeToSchema(t *testing.T) {
 				}
 			}
 
-			if tt.defaultVal != "" && tt.typeName != "bool" && tt.typeName != "boolean" {
-				if schema["default"] != tt.defaultVal {
-					t.Errorf("expected default %s, got %v", tt.defaultVal, schema["default"])
+			if tt.wantDefault != nil {
+				if schema["default"] != tt.wantDefault {
+					t.Errorf("expected default %v (%T), got %v (%T)", tt.wantDefault, tt.wantDefault, schema["default"], schema["default"])
+				}
+			} else if tt.defaultVal == "" {
+				// No default provided, should have no default in schema
+				if _, hasDefault := schema["default"]; hasDefault {
+					t.Errorf("expected no default, got %v", schema["default"])
 				}
 			}
 		})

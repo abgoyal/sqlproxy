@@ -72,6 +72,12 @@ type DatabaseConfig struct {
 	// SQLite-specific settings
 	BusyTimeoutMs *int   `yaml:"busy_timeout_ms"` // SQLite busy timeout in ms (default: 5000)
 	JournalMode   string `yaml:"journal_mode"`    // wal, delete, truncate, memory, off (default: wal)
+
+	// Connection pool settings (applies to all database types)
+	MaxOpenConns    *int `yaml:"max_open_conns"`     // Maximum open connections (default: 5)
+	MaxIdleConns    *int `yaml:"max_idle_conns"`     // Maximum idle connections (default: 2)
+	ConnMaxLifetime *int `yaml:"conn_max_lifetime"`  // Max connection lifetime in seconds (default: 300)
+	ConnMaxIdleTime *int `yaml:"conn_max_idle_time"` // Max idle time in seconds (default: 120)
 }
 
 // IsReadOnly returns whether this connection is read-only (defaults to true)
