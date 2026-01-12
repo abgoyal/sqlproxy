@@ -34,4 +34,4 @@ jobs:
         run: ./sql-proxy -version
 
       - name: Smoke test - validate config
-        run: ./sql-proxy -validate -config config.yaml
+        run: ./sql-proxy -validate -config testdata/config.ci.yaml

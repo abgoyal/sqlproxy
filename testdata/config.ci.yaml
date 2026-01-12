@@ -1,0 +1,756 @@
+# Extensive CI validation config
+# Exercises all features using SQLite in-memory (no external dependencies)
+# This config is used by CI to validate that the config parser works correctly
+
+server:
+  host: "127.0.0.1"
+  port: 8080
+  default_timeout_sec: 30
+  max_timeout_sec: 300
+  api_version: "1.0.0"
+  trust_proxy_headers: true
+  cache:
+    enabled: true
+    max_size_mb: 256
+    default_ttl_sec: 300
+
+# Multiple databases with various configurations
+databases:
+  # Primary database with all SQLite options
+  - name: "primary"
+    type: "sqlite"
+    path: ":memory:"
+    readonly: true
+    journal_mode: "wal"
+    busy_timeout_ms: 5000
+    max_open_conns: 10
+    max_idle_conns: 5
+    conn_max_lifetime: 300
+    conn_max_idle_time: 120
+
+  # Secondary database with different settings
+  - name: "secondary"
+    type: "sqlite"
+    path: ":memory:"
+    readonly: true
+    journal_mode: "memory"
+    busy_timeout_ms: 3000
+    max_open_conns: 5
+    max_idle_conns: 2
+
+  # Write-enabled database for POST operations
+  - name: "writable"
+    type: "sqlite"
+    path: ":memory:"
+    readonly: false
+    journal_mode: "delete"
+
+  # Minimal config database (defaults only)
+  - name: "minimal"
+    type: "sqlite"
+    path: ":memory:"
+
+logging:
+  level: "info"
+  file_path: "./logs/test.log"
+  max_size_mb: 100
+  max_backups: 5
+  max_age_days: 30
+
+metrics:
+  enabled: true
+
+debug:
+  enabled: true
+  port: 6060
+  host: "localhost"
+
+# Named rate limit pools
+rate_limits:
+  - name: "default"
+    requests_per_second: 100
+    burst: 200
+    key: "{{.ClientIP}}"
+
+  - name: "strict"
+    requests_per_second: 10
+    burst: 20
+    key: "{{.ClientIP}}"
+
+  - name: "by_param"
+    requests_per_second: 50
+    burst: 100
+    key: "{{.ClientIP}}:{{.user_id}}"
+
+queries:
+  # Basic GET endpoint
+  - name: "health_check"
+    database: "primary"
+    path: "/api/health"
+    method: "GET"
+    description: "Simple health check"
+    sql: "SELECT 1 AS ok, datetime('now') AS timestamp"
+
+  # Query with string parameter
+  - name: "echo_string"
+    database: "primary"
+    path: "/api/echo/string"
+    method: "GET"
+    description: "Echo string parameter"
+    sql: "SELECT @message AS message"
+    parameters:
+      - name: "message"
+        type: "string"
+        required: false
+        default: "hello"
+
+  # Query with int parameter
+  - name: "echo_int"
+    database: "primary"
+    path: "/api/echo/int"
+    method: "GET"
+    description: "Echo integer parameter"
+    sql: "SELECT @value AS value, @value * 2 AS doubled"
+    parameters:
+      - name: "value"
+        type: "int"
+        required: true
+
+  # Query with integer (alias) parameter
+  - name: "echo_integer"
+    database: "primary"
+    path: "/api/echo/integer"
+    method: "GET"
+    description: "Echo integer (alias) parameter"
+    sql: "SELECT @num AS number"
+    parameters:
+      - name: "num"
+        type: "integer"
+        required: true
+
+  # Query with float parameter
+  - name: "echo_float"
+    database: "primary"
+    path: "/api/echo/float"
+    method: "GET"
+    description: "Echo float parameter"
+    sql: "SELECT @amount AS amount, round(@amount, 2) AS rounded"
+    parameters:
+      - name: "amount"
+        type: "float"
+        required: true
+
+  # Query with double (alias) parameter
+  - name: "echo_double"
+    database: "primary"
+    path: "/api/echo/double"
+    method: "GET"
+    description: "Echo double parameter"
+    sql: "SELECT @value AS value"
+    parameters:
+      - name: "value"
+        type: "double"
+        required: true
+
+  # Query with bool parameter
+  - name: "echo_bool"
+    database: "primary"
+    path: "/api/echo/bool"
+    method: "GET"
+    description: "Echo boolean parameter"
+    sql: "SELECT @flag AS flag, CASE WHEN @flag THEN 'yes' ELSE 'no' END AS result"
+    parameters:
+      - name: "flag"
+        type: "bool"
+        required: false
+        default: "false"
+
+  # Query with boolean (alias) parameter
+  - name: "echo_boolean"
+    database: "primary"
+    path: "/api/echo/boolean"
+    method: "GET"
+    description: "Echo boolean (alias) parameter"
+    sql: "SELECT @active AS active"
+    parameters:
+      - name: "active"
+        type: "boolean"
+        required: true
+
+  # Query with datetime parameter
+  - name: "echo_datetime"
+    database: "primary"
+    path: "/api/echo/datetime"
+    method: "GET"
+    description: "Echo datetime parameter"
+    sql: "SELECT @timestamp AS timestamp, datetime(@timestamp) AS parsed"
+    parameters:
+      - name: "timestamp"
+        type: "datetime"
+        required: false
+        default: "2024-01-01T00:00:00Z"
+
+  # Query with date parameter
+  - name: "echo_date"
+    database: "primary"
+    path: "/api/echo/date"
+    method: "GET"
+    description: "Echo date parameter"
+    sql: "SELECT @day AS day, date(@day) AS parsed"
+    parameters:
+      - name: "day"
+        type: "date"
+        required: true
+
+  # Query with multiple parameters
+  - name: "multi_params"
+    database: "primary"
+    path: "/api/params/multi"
+    method: "GET"
+    description: "Multiple parameter types"
+    sql: |
+      SELECT
+        @name AS name,
+        @age AS age,
+        @score AS score,
+        @active AS active,
+        @created AS created
+    parameters:
+      - name: "name"
+        type: "string"
+        required: true
+      - name: "age"
+        type: "int"
+        required: false
+        default: "0"
+      - name: "score"
+        type: "float"
+        required: false
+        default: "0.0"
+      - name: "active"
+        type: "bool"
+        required: false
+        default: "true"
+      - name: "created"
+        type: "datetime"
+        required: false
+        default: "2024-01-01"
+
+  # POST endpoint with JSON parameter
+  - name: "post_json"
+    database: "writable"
+    path: "/api/data/json"
+    method: "POST"
+    description: "Accept JSON parameter"
+    sql: "SELECT @data AS data"
+    parameters:
+      - name: "data"
+        type: "json"
+        required: true
+
+  # POST endpoint with array parameters
+  - name: "post_int_array"
+    database: "primary"
+    path: "/api/data/int-array"
+    method: "POST"
+    description: "Accept integer array"
+    sql: "SELECT @ids AS ids"
+    parameters:
+      - name: "ids"
+        type: "int[]"
+        required: true
+
+  - name: "post_string_array"
+    database: "primary"
+    path: "/api/data/string-array"
+    method: "POST"
+    description: "Accept string array"
+    sql: "SELECT @names AS names"
+    parameters:
+      - name: "names"
+        type: "string[]"
+        required: true
+
+  - name: "post_float_array"
+    database: "primary"
+    path: "/api/data/float-array"
+    method: "POST"
+    description: "Accept float array"
+    sql: "SELECT @values AS values"
+    parameters:
+      - name: "values"
+        type: "float[]"
+        required: true
+
+  - name: "post_bool_array"
+    database: "primary"
+    path: "/api/data/bool-array"
+    method: "POST"
+    description: "Accept boolean array"
+    sql: "SELECT @flags AS flags"
+    parameters:
+      - name: "flags"
+        type: "bool[]"
+        required: true
+
+  # Query with custom timeout
+  - name: "slow_query"
+    database: "primary"
+    path: "/api/slow"
+    method: "GET"
+    description: "Query with custom timeout"
+    timeout_sec: 60
+    sql: "SELECT 'slow' AS result"
+
+  # Query with cache - simple key
+  - name: "cached_simple"
+    database: "primary"
+    path: "/api/cached/simple"
+    method: "GET"
+    description: "Cached query with simple key"
+    sql: "SELECT datetime('now') AS timestamp"
+    cache:
+      enabled: true
+      key: "simple"
+      ttl_sec: 60
+
+  # Query with cache - parameter key
+  - name: "cached_param"
+    database: "primary"
+    path: "/api/cached/param"
+    method: "GET"
+    description: "Cached query with parameter key"
+    sql: "SELECT @status AS status, datetime('now') AS timestamp"
+    parameters:
+      - name: "status"
+        type: "string"
+        required: false
+        default: "active"
+    cache:
+      enabled: true
+      key: "status:{{.status}}"
+      ttl_sec: 120
+      max_size_mb: 32
+
+  # Query with cache - multi-param key
+  - name: "cached_multi"
+    database: "primary"
+    path: "/api/cached/multi"
+    method: "GET"
+    description: "Cached query with multiple params in key"
+    sql: "SELECT @from AS from_date, @to AS to_date"
+    parameters:
+      - name: "from"
+        type: "date"
+        required: true
+      - name: "to"
+        type: "date"
+        required: true
+    cache:
+      enabled: true
+      key: "range:{{.from}}:{{.to}}"
+      ttl_sec: 300
+
+  # Query with cache - evict cron
+  - name: "cached_evict"
+    database: "primary"
+    path: "/api/cached/evict"
+    method: "GET"
+    description: "Cached query with scheduled eviction"
+    sql: "SELECT 'data' AS result"
+    cache:
+      enabled: true
+      key: "evicting"
+      ttl_sec: 3600
+      evict_cron: "0 0 * * *"
+
+  # Query with cache - default template function
+  - name: "cached_default"
+    database: "primary"
+    path: "/api/cached/default"
+    method: "GET"
+    description: "Cached query with default function in key"
+    sql: "SELECT @category AS category"
+    parameters:
+      - name: "category"
+        type: "string"
+        required: false
+    cache:
+      enabled: true
+      key: "items:{{.category | default \"all\"}}"
+      ttl_sec: 300
+
+  # Query using secondary database
+  - name: "secondary_query"
+    database: "secondary"
+    path: "/api/secondary"
+    method: "GET"
+    description: "Query on secondary database"
+    sql: "SELECT 'secondary' AS db"
+
+  # Query using minimal database
+  - name: "minimal_query"
+    database: "minimal"
+    path: "/api/minimal"
+    method: "GET"
+    description: "Query on minimal config database"
+    sql: "SELECT 'minimal' AS db"
+
+  # Query with rate limit - pool reference
+  - name: "rate_limited_pool"
+    database: "primary"
+    path: "/api/limited/pool"
+    method: "GET"
+    description: "Rate limited with pool reference"
+    sql: "SELECT 'limited' AS result"
+    rate_limit:
+      - pool: "default"
+
+  # Query with rate limit - strict pool
+  - name: "rate_limited_strict"
+    database: "primary"
+    path: "/api/limited/strict"
+    method: "GET"
+    description: "Rate limited with strict pool"
+    sql: "SELECT 'strict' AS result"
+    rate_limit:
+      - pool: "strict"
+
+  # Query with rate limit - inline
+  - name: "rate_limited_inline"
+    database: "primary"
+    path: "/api/limited/inline"
+    method: "GET"
+    description: "Rate limited with inline config"
+    sql: "SELECT 'inline' AS result"
+    rate_limit:
+      - requests_per_second: 5
+        burst: 10
+        key: "{{.ClientIP}}"
+
+  # Query with rate limit - inline with param key
+  - name: "rate_limited_param"
+    database: "primary"
+    path: "/api/limited/param"
+    method: "GET"
+    description: "Rate limited by parameter"
+    sql: "SELECT @user_id AS user_id"
+    parameters:
+      - name: "user_id"
+        type: "string"
+        required: true
+    rate_limit:
+      - pool: "by_param"
+
+  # Query with multiple rate limits
+  - name: "rate_limited_multi"
+    database: "primary"
+    path: "/api/limited/multi"
+    method: "GET"
+    description: "Multiple rate limits"
+    sql: "SELECT 'multi' AS result"
+    rate_limit:
+      - pool: "default"
+      - requests_per_second: 20
+        burst: 40
+
+  # Query with JSON columns
+  - name: "json_output"
+    database: "primary"
+    path: "/api/json/output"
+    method: "GET"
+    description: "Query with JSON column output"
+    sql: "SELECT '{\"key\": \"value\"}' AS data, '{\"nested\": {\"a\": 1}}' AS metadata"
+    json_columns: ["data", "metadata"]
+
+  # Scheduled query - basic
+  - name: "scheduled_basic"
+    database: "primary"
+    description: "Basic scheduled query"
+    sql: "SELECT datetime('now') AS run_time, 'scheduled' AS type"
+    schedule:
+      cron: "*/5 * * * *"
+      log_results: true
+
+  # Scheduled query with params
+  - name: "scheduled_params"
+    database: "primary"
+    description: "Scheduled query with parameters"
+    sql: "SELECT @report_date AS report_date, @limit AS item_limit"
+    parameters:
+      - name: "report_date"
+        type: "datetime"
+        required: true
+      - name: "limit"
+        type: "int"
+        required: false
+        default: "100"
+    schedule:
+      cron: "0 8 * * *"
+      params:
+        report_date: "yesterday"
+      log_results: true
+
+  # Scheduled query with dynamic dates
+  - name: "scheduled_today"
+    database: "primary"
+    description: "Scheduled query with today"
+    sql: "SELECT @date AS date_value"
+    parameters:
+      - name: "date"
+        type: "datetime"
+        required: true
+    schedule:
+      cron: "0 0 * * *"
+      params:
+        date: "today"
+
+  - name: "scheduled_now"
+    database: "primary"
+    description: "Scheduled query with now"
+    sql: "SELECT @timestamp AS timestamp"
+    parameters:
+      - name: "timestamp"
+        type: "datetime"
+        required: true
+    schedule:
+      cron: "0 * * * *"
+      params:
+        timestamp: "now"
+
+  - name: "scheduled_tomorrow"
+    database: "primary"
+    description: "Scheduled query with tomorrow"
+    sql: "SELECT @date AS date_value"
+    parameters:
+      - name: "date"
+        type: "datetime"
+        required: true
+    schedule:
+      cron: "0 6 * * *"
+      params:
+        date: "tomorrow"
+
+  # Scheduled query with webhook - basic
+  - name: "scheduled_webhook_basic"
+    database: "primary"
+    description: "Scheduled query with basic webhook"
+    sql: "SELECT 'data' AS result, 42 AS count"
+    schedule:
+      cron: "*/15 * * * *"
+      webhook:
+        url: "https://example.com/webhook"
+        method: "POST"
+        headers:
+          Content-Type: "application/json"
+          X-Custom-Header: "test"
+
+  # Scheduled query with webhook - custom body template
+  - name: "scheduled_webhook_template"
+    database: "primary"
+    description: "Scheduled query with templated webhook"
+    sql: "SELECT 'item1' AS name, 100 AS value UNION ALL SELECT 'item2', 200"
+    schedule:
+      cron: "0 */6 * * *"
+      webhook:
+        url: "https://example.com/api/data"
+        method: "POST"
+        headers:
+          Authorization: "Bearer token123"
+        body:
+          header: |
+            {"query": "{{.Query}}", "count": {{.Count}}, "data": [
+          item: |
+            {"name": "{{.name}}", "value": {{.value}}}
+          footer: |
+            ]}
+          separator: ","
+
+  # Scheduled query with webhook - on_empty skip
+  - name: "scheduled_webhook_skip_empty"
+    database: "primary"
+    description: "Webhook skips on empty results"
+    sql: "SELECT * FROM (SELECT 1) WHERE 0"
+    schedule:
+      cron: "0 12 * * *"
+      webhook:
+        url: "https://example.com/notify"
+        body:
+          header: |
+            {"items": [
+          item: |
+            {}
+          footer: |
+            ]}
+          on_empty: "skip"
+
+  # Scheduled query with webhook - custom empty template
+  - name: "scheduled_webhook_empty_template"
+    database: "primary"
+    description: "Webhook with custom empty response"
+    sql: "SELECT * FROM (SELECT 1) WHERE 0"
+    schedule:
+      cron: "0 18 * * *"
+      webhook:
+        url: "https://example.com/status"
+        body:
+          header: |
+            {"results": [
+          item: |
+            {}
+          footer: |
+            ]}
+          on_empty: "send"
+          empty: |
+            {"status": "no_data", "query": "{{.Query}}", "duration_ms": {{.DurationMs}}}
+
+  # Scheduled query with webhook - retry config
+  - name: "scheduled_webhook_retry"
+    database: "primary"
+    description: "Webhook with retry configuration"
+    sql: "SELECT 'important' AS data"
+    schedule:
+      cron: "30 * * * *"
+      webhook:
+        url: "https://example.com/critical"
+        method: "PUT"
+        retry:
+          enabled: true
+          max_attempts: 5
+          initial_backoff_sec: 2
+          max_backoff_sec: 60
+
+  # Scheduled query with webhook - retry disabled
+  - name: "scheduled_webhook_no_retry"
+    database: "primary"
+    description: "Webhook without retry"
+    sql: "SELECT 'fire_and_forget' AS data"
+    schedule:
+      cron: "45 * * * *"
+      webhook:
+        url: "https://example.com/fire"
+        retry:
+          enabled: false
+
+  # Query that is both HTTP and scheduled
+  - name: "dual_query"
+    database: "primary"
+    path: "/api/dual"
+    method: "GET"
+    description: "HTTP endpoint with scheduled execution"
+    sql: "SELECT datetime('now') AS timestamp, 'dual' AS mode"
+    schedule:
+      cron: "*/10 * * * *"
+      log_results: true
+
+  # Query with all session overrides (for SQLite they're no-ops but validate)
+  - name: "session_overrides"
+    database: "primary"
+    path: "/api/session"
+    method: "GET"
+    description: "Query with session overrides"
+    isolation: "read_committed"
+    sql: "SELECT 'session' AS result"
+
+  # Write operation on writable database
+  - name: "write_operation"
+    database: "writable"
+    path: "/api/write"
+    method: "POST"
+    description: "Write operation"
+    sql: "INSERT INTO test_table (value) VALUES (@value)"
+    parameters:
+      - name: "value"
+        type: "string"
+        required: true
+
+  # Complex query combining features
+  - name: "complex_query"
+    database: "primary"
+    path: "/api/complex"
+    method: "GET"
+    description: "Complex query with multiple features"
+    timeout_sec: 45
+    sql: |
+      SELECT
+        @search AS search_term,
+        @page AS page_num,
+        @limit AS page_size,
+        @active AS is_active,
+        datetime('now') AS queried_at
+    parameters:
+      - name: "search"
+        type: "string"
+        required: false
+        default: ""
+      - name: "page"
+        type: "int"
+        required: false
+        default: "1"
+      - name: "limit"
+        type: "int"
+        required: false
+        default: "20"
+      - name: "active"
+        type: "bool"
+        required: false
+        default: "true"
+    cache:
+      enabled: true
+      key: "search:{{.search | default \"all\"}}:{{.page}}:{{.limit}}:{{.active}}"
+      ttl_sec: 60
+    rate_limit:
+      - pool: "default"
+      - requests_per_second: 30
+        burst: 60
+        key: "{{.ClientIP}}:search"
+
+  # Various cron expression formats
+  - name: "cron_every_minute"
+    database: "primary"
+    description: "Every minute"
+    sql: "SELECT 1"
+    schedule:
+      cron: "* * * * *"
+
+  - name: "cron_hourly"
+    database: "primary"
+    description: "Hourly at minute 0"
+    sql: "SELECT 1"
+    schedule:
+      cron: "0 * * * *"
+
+  - name: "cron_daily"
+    database: "primary"
+    description: "Daily at midnight"
+    sql: "SELECT 1"
+    schedule:
+      cron: "0 0 * * *"
+
+  - name: "cron_weekly"
+    database: "primary"
+    description: "Weekly on Monday"
+    sql: "SELECT 1"
+    schedule:
+      cron: "0 0 * * 1"
+
+  - name: "cron_monthly"
+    database: "primary"
+    description: "Monthly on the 1st"
+    sql: "SELECT 1"
+    schedule:
+      cron: "0 0 1 * *"
+
+  - name: "cron_specific"
+    database: "primary"
+    description: "Specific time: 9:30 AM weekdays"
+    sql: "SELECT 1"
+    schedule:
+      cron: "30 9 * * 1-5"
+
+  - name: "cron_range"
+    database: "primary"
+    description: "Every 5 minutes during business hours"
+    sql: "SELECT 1"
+    schedule:
+      cron: "*/5 9-17 * * *"

@@ -57,7 +57,7 @@ jobs:
 
       # Validate example config
       - name: Smoke test - validate config
-        run: ${{ steps.binary.outputs.path }} -validate -config config.yaml
+        run: ${{ steps.binary.outputs.path }} -validate -config testdata/config.ci.yaml
 
   release:
     needs: test
