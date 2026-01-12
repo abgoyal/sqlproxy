@@ -413,6 +413,136 @@ func TestValidateLogging(t *testing.T) {
 	}
 }
 
+// TestValidateDebug tests debug config validation rules
+func TestValidateDebug(t *testing.T) {
+	tests := []struct {
+		name       string
+		enabled    bool
+		debugPort  int
+		debugHost  string
+		serverPort int
+		wantErr    bool
+		errMsg     string
+	}{
+		{
+			name:       "disabled - no validation",
+			enabled:    false,
+			debugPort:  0,
+			debugHost:  "localhost",
+			serverPort: 8080,
+			wantErr:    false,
+		},
+		{
+			name:       "enabled, separate port, with host",
+			enabled:    true,
+			debugPort:  6060,
+			debugHost:  "localhost",
+			serverPort: 8080,
+			wantErr:    false,
+		},
+		{
+			name:       "enabled, separate port, no host",
+			enabled:    true,
+			debugPort:  6060,
+			debugHost:  "",
+			serverPort: 8080,
+			wantErr:    false,
+		},
+		{
+			name:       "enabled, shared port (0), no host",
+			enabled:    true,
+			debugPort:  0,
+			debugHost:  "",
+			serverPort: 8080,
+			wantErr:    false,
+		},
+		{
+			name:       "enabled, shared port (same), no host",
+			enabled:    true,
+			debugPort:  8080,
+			debugHost:  "",
+			serverPort: 8080,
+			wantErr:    false,
+		},
+		{
+			name:       "error: host set with port 0",
+			enabled:    true,
+			debugPort:  0,
+			debugHost:  "localhost",
+			serverPort: 8080,
+			wantErr:    true,
+			errMsg:     "debug.host cannot be set when debug endpoints share the main server port",
+		},
+		{
+			name:       "error: host set with same port as server",
+			enabled:    true,
+			debugPort:  8080,
+			debugHost:  "127.0.0.1",
+			serverPort: 8080,
+			wantErr:    true,
+			errMsg:     "debug.host cannot be set when debug endpoints share the main server port",
+		},
+		{
+			name:       "error: invalid port (negative)",
+			enabled:    true,
+			debugPort:  -1,
+			debugHost:  "",
+			serverPort: 8080,
+			wantErr:    true,
+			errMsg:     "debug.port must be 0-65535",
+		},
+		{
+			name:       "error: invalid port (too high)",
+			enabled:    true,
+			debugPort:  70000,
+			debugHost:  "",
+			serverPort: 8080,
+			wantErr:    true,
+			errMsg:     "debug.port must be 0-65535",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{
+				Server: config.ServerConfig{
+					Port: tt.serverPort,
+				},
+				Debug: config.DebugConfig{
+					Enabled: tt.enabled,
+					Port:    tt.debugPort,
+					Host:    tt.debugHost,
+				},
+			}
+
+			r := &Result{Valid: true}
+			validateDebug(cfg, r)
+
+			if tt.wantErr {
+				if r.Valid {
+					t.Error("expected validation to fail")
+				}
+				if tt.errMsg != "" {
+					found := false
+					for _, err := range r.Errors {
+						if strings.Contains(err, tt.errMsg) {
+							found = true
+							break
+						}
+					}
+					if !found {
+						t.Errorf("expected error containing %q, got: %v", tt.errMsg, r.Errors)
+					}
+				}
+			} else {
+				if !r.Valid {
+					t.Errorf("expected validation to pass, got errors: %v", r.Errors)
+				}
+			}
+		})
+	}
+}
+
 // TestValidateQueries_NoQueries tests empty queries list generates warning
 func TestValidateQueries_NoQueries(t *testing.T) {
 	cfg := &config.Config{

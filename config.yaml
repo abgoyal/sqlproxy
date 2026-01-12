@@ -64,6 +64,13 @@ logging:
 metrics:
   enabled: true
 
+# Debug Configuration (pprof endpoints for profiling)
+# Disabled by default for security. Enable only when debugging.
+# debug:
+#   enabled: true      # Enable /_/debug/pprof/* endpoints
+#   port: 6060         # Separate port (0 = same as main server)
+#   host: "localhost"  # Only valid with separate port; defaults to localhost
+
 # Query Definitions - each query requires: name, database, sql
 # HTTP endpoints also require: path, method
 queries:

@@ -12,6 +12,7 @@ type Config struct {
 	Databases  []DatabaseConfig      `yaml:"databases"`
 	Logging    LoggingConfig         `yaml:"logging"`
 	Metrics    MetricsConfig         `yaml:"metrics"`
+	Debug      DebugConfig           `yaml:"debug"`       // Debug/pprof endpoints
 	RateLimits []RateLimitPoolConfig `yaml:"rate_limits"` // Named rate limit pools
 	Queries    []QueryConfig         `yaml:"queries"`
 }
@@ -26,6 +27,13 @@ type LoggingConfig struct {
 
 type MetricsConfig struct {
 	Enabled bool `yaml:"enabled"`
+}
+
+// DebugConfig configures debug endpoints (pprof)
+type DebugConfig struct {
+	Enabled bool   `yaml:"enabled"`       // Enable pprof endpoints (default: false)
+	Port    int    `yaml:"port"`          // Port for debug endpoints (0 = same as main server)
+	Host    string `yaml:"host"`          // Host for debug endpoints (default: localhost for security)
 }
 
 type ServerConfig struct {

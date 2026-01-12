@@ -279,7 +279,7 @@ Run `make test-cover` for current coverage statistics.
 
 - **TestServer_New**: TestServer_New verifies server initialization creates dbManager and httpServer
 - **TestServer_HealthHandler**: TestServer_HealthHandler tests /health returns status and database connections
-- **TestServer_MetricsHandler_Disabled**: TestServer_MetricsHandler_Disabled tests /_/metrics returns not-enabled message when disabled
+- **TestServer_MetricsHandler_Disabled**: TestServer_MetricsHandler_Disabled tests /_/metrics.json returns not-enabled message when disabled
 - **TestServer_LogLevelHandler**: TestServer_LogLevelHandler tests log level GET retrieval and POST update operations
 - **TestServer_ListEndpointsHandler**: TestServer_ListEndpointsHandler tests root path returns service info and endpoint listing
 - **TestServer_ListEndpointsHandler_NotFound**: TestServer_ListEndpointsHandler_NotFound tests unknown paths return 404
@@ -613,7 +613,7 @@ Run `make test-cover` for current coverage statistics.
 
 - **TestE2E_ServerStartupAndShutdown**: TestE2E_ServerStartupAndShutdown tests the server starts and stops cleanly
 - **TestE2E_HealthEndpoint**: TestE2E_HealthEndpoint tests /health returns database status
-- **TestE2E_MetricsEndpoint**: TestE2E_MetricsEndpoint tests /_/metrics returns runtime stats
+- **TestE2E_MetricsEndpoint**: TestE2E_MetricsEndpoint tests /_/metrics.json returns runtime stats
 - **TestE2E_OpenAPIEndpoint**: TestE2E_OpenAPIEndpoint tests /_/openapi.json returns valid spec
 - **TestE2E_RootEndpoint**: TestE2E_RootEndpoint tests / returns endpoint listing
 - **TestE2E_QueryEndpoint**: TestE2E_QueryEndpoint tests query execution returns data

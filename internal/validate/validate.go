@@ -41,6 +41,7 @@ func Run(cfg *config.Config) *Result {
 	validateServer(cfg, r)
 	validateDatabase(cfg, r)
 	validateLogging(cfg, r)
+	validateDebug(cfg, r)
 	validateRateLimits(cfg, r)
 	validateQueries(cfg, r)
 
@@ -199,6 +200,24 @@ func validateLogging(cfg *config.Config, r *Result) {
 		r.addError("logging.max_age_days is required")
 	} else if cfg.Logging.MaxAgeDays < 0 {
 		r.addError("logging.max_age_days cannot be negative")
+	}
+}
+
+func validateDebug(cfg *config.Config, r *Result) {
+	if !cfg.Debug.Enabled {
+		return // Skip validation if debug is disabled
+	}
+
+	// Port validation
+	if cfg.Debug.Port < 0 || cfg.Debug.Port > 65535 {
+		r.addError("debug.port must be 0-65535, got: %d", cfg.Debug.Port)
+	}
+
+	// If debug.host is set but port is shared with main server, it's an error
+	// because the host setting will be silently ignored
+	sharesMainPort := cfg.Debug.Port == 0 || cfg.Debug.Port == cfg.Server.Port
+	if cfg.Debug.Host != "" && sharesMainPort {
+		r.addError("debug.host cannot be set when debug endpoints share the main server port (debug.port is 0 or same as server.port); debug.host only applies when using a separate debug port")
 	}
 }
 

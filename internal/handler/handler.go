@@ -115,6 +115,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	m := metrics.RequestMetrics{
 		Endpoint:   h.queryConfig.Path,
 		QueryName:  h.queryConfig.Name,
+		Database:   h.dbName,
+		Method:     r.Method,
 		StatusCode: http.StatusOK,
 	}
 

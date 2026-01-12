@@ -14,6 +14,7 @@ import (
 
 	"sql-proxy/internal/config"
 	"sql-proxy/internal/handler"
+	"sql-proxy/internal/metrics"
 )
 
 func createTestConfig() *config.Config {
@@ -120,8 +121,190 @@ func TestServer_HealthHandler(t *testing.T) {
 	}
 }
 
-// TestServer_MetricsHandler_Disabled tests /_/metrics returns not-enabled message when disabled
+// TestServer_MetricsHandler_Disabled tests /_/metrics.json returns not-enabled message when disabled
 func TestServer_MetricsHandler_Disabled(t *testing.T) {
+	// Clear global metrics state from previous tests
+	metrics.Clear()
+
+	cfg := createTestConfig()
+	cfg.Metrics.Enabled = false
+
+	srv, err := New(cfg, true)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	req := httptest.NewRequest("GET", "/_/metrics.json", nil)
+	w := httptest.NewRecorder()
+
+	srv.metricsJSONHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "not enabled") {
+		t.Errorf("expected 'not enabled' in response, got: %s", body)
+	}
+}
+
+// TestServer_MetricsJSONHandler_Enabled tests /_/metrics.json returns valid JSON metrics
+func TestServer_MetricsJSONHandler_Enabled(t *testing.T) {
+	// Clear global metrics state from previous tests
+	metrics.Clear()
+
+	cfg := createTestConfig()
+	cfg.Metrics.Enabled = true
+
+	srv, err := New(cfg, true)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	req := httptest.NewRequest("GET", "/_/metrics.json", nil)
+	w := httptest.NewRecorder()
+
+	srv.metricsJSONHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/json" {
+		t.Errorf("expected Content-Type application/json, got %s", contentType)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to parse JSON response: %v", err)
+	}
+
+	// Check required fields exist
+	requiredFields := []string{"timestamp", "uptime_sec", "total_requests", "total_errors", "db_healthy", "runtime", "endpoints"}
+	for _, field := range requiredFields {
+		if _, ok := result[field]; !ok {
+			t.Errorf("expected field %q in metrics response", field)
+		}
+	}
+
+	// Check runtime stats
+	runtime, ok := result["runtime"].(map[string]any)
+	if !ok {
+		t.Fatal("expected runtime to be a map")
+	}
+	if runtime["go_version"] == nil {
+		t.Error("expected go_version in runtime stats")
+	}
+	if runtime["goroutines"] == nil {
+		t.Error("expected goroutines in runtime stats")
+	}
+}
+
+// TestServer_MetricsPrometheusHandler_Enabled tests /_/metrics returns Prometheus format
+func TestServer_MetricsPrometheusHandler_Enabled(t *testing.T) {
+	// Clear global metrics state from previous tests
+	metrics.Clear()
+
+	cfg := createTestConfig()
+	cfg.Metrics.Enabled = true
+
+	srv, err := New(cfg, true)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	// Build test server with query endpoints to generate metrics
+	mux := http.NewServeMux()
+	for _, q := range cfg.Queries {
+		if q.Path != "" {
+			h := createQueryHandler(srv, q)
+			mux.Handle(q.Path, h)
+		}
+	}
+	mux.HandleFunc("/_/metrics", srv.metricsPrometheusHandler)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// Make requests to generate metrics data
+	resp, err := http.Get(ts.URL + "/api/test")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+
+	// Make another request with params (different endpoint)
+	resp2, err := http.Get(ts.URL + "/api/params?name=test")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp2.Body.Close()
+
+	// Now get Prometheus metrics
+	resp3, err := http.Get(ts.URL + "/_/metrics")
+	if err != nil {
+		t.Fatalf("metrics request failed: %v", err)
+	}
+	defer resp3.Body.Close()
+
+	if resp3.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp3.StatusCode)
+	}
+
+	bodyBytes, _ := io.ReadAll(resp3.Body)
+	body := string(bodyBytes)
+
+	// Check for expected Prometheus metrics
+	expectedMetrics := []string{
+		"sqlproxy_info",
+		"sqlproxy_uptime_seconds",
+		"sqlproxy_requests_total",
+		"sqlproxy_request_duration_seconds",
+		"sqlproxy_query_duration_seconds",
+		"sqlproxy_query_rows_total",
+		"go_goroutines",
+		"process_cpu_seconds_total",
+	}
+
+	for _, metric := range expectedMetrics {
+		if !strings.Contains(body, metric) {
+			t.Errorf("expected metric %q in Prometheus output", metric)
+		}
+	}
+
+	// Check it's valid Prometheus format (has HELP and TYPE lines)
+	if !strings.Contains(body, "# HELP") {
+		t.Error("expected # HELP lines in Prometheus output")
+	}
+	if !strings.Contains(body, "# TYPE") {
+		t.Error("expected # TYPE lines in Prometheus output")
+	}
+
+	// Verify sqlproxy_info has correct labels with version
+	if !strings.Contains(body, `sqlproxy_info{`) {
+		t.Error("expected sqlproxy_info with labels")
+	}
+
+	// Verify request counter has endpoint labels
+	if !strings.Contains(body, `sqlproxy_requests_total{endpoint="/api/test"`) {
+		t.Error("expected sqlproxy_requests_total with endpoint label")
+	}
+
+	// Verify histogram has bucket data
+	if !strings.Contains(body, `sqlproxy_request_duration_seconds_bucket{`) {
+		t.Error("expected histogram buckets in output")
+	}
+}
+
+// TestServer_MetricsPrometheusHandler_Disabled tests /_/metrics returns error when disabled
+func TestServer_MetricsPrometheusHandler_Disabled(t *testing.T) {
+	// Clear global metrics state from previous tests
+	metrics.Clear()
+
 	cfg := createTestConfig()
 	cfg.Metrics.Enabled = false
 
@@ -134,10 +317,10 @@ func TestServer_MetricsHandler_Disabled(t *testing.T) {
 	req := httptest.NewRequest("GET", "/_/metrics", nil)
 	w := httptest.NewRecorder()
 
-	srv.metricsHandler(w, req)
+	srv.metricsPrometheusHandler(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected status 503, got %d", w.Code)
 	}
 
 	body := w.Body.String()
@@ -442,7 +625,7 @@ func TestServer_Integration_QueryEndpoint(t *testing.T) {
 	// Create a test server using the handler
 	mux := http.NewServeMux()
 	mux.HandleFunc("/_/health", srv.healthHandler)
-	mux.HandleFunc("/_/metrics", srv.metricsHandler)
+	mux.HandleFunc("/_/metrics.json", srv.metricsJSONHandler)
 	mux.HandleFunc("/_/openapi.json", srv.openAPIHandler)
 	mux.HandleFunc("/_/config/loglevel", srv.logLevelHandler)
 	mux.HandleFunc("/", srv.listEndpointsHandler)
@@ -991,7 +1174,7 @@ func TestServer_Integration_CacheMetrics(t *testing.T) {
 			mux.Handle(q.Path, h)
 		}
 	}
-	mux.HandleFunc("/_/metrics", srv.metricsHandler)
+	mux.HandleFunc("/_/metrics.json", srv.metricsJSONHandler)
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
@@ -1001,7 +1184,7 @@ func TestServer_Integration_CacheMetrics(t *testing.T) {
 	http.Get(ts.URL + "/api/cached")
 
 	// Get metrics
-	resp, err := http.Get(ts.URL + "/_/metrics")
+	resp, err := http.Get(ts.URL + "/_/metrics.json")
 	if err != nil {
 		t.Fatalf("metrics request failed: %v", err)
 	}

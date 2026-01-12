@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/pprof"
 	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"sql-proxy/internal/cache"
 	"sql-proxy/internal/config"
@@ -50,6 +53,7 @@ const (
 
 type Server struct {
 	httpServer  *http.Server
+	debugServer *http.Server // Separate debug server (pprof) if configured on different port
 	dbManager   *db.Manager
 	cache       *cache.Cache
 	rateLimiter *ratelimit.Limiter
@@ -238,6 +242,54 @@ func New(cfg *config.Config, interactive bool) (*Server, error) {
 		IdleTimeout:  httpIdleTimeout,
 	}
 
+	// Setup debug server (pprof) if enabled
+	if cfg.Debug.Enabled {
+		debugPort := cfg.Debug.Port
+
+		if debugPort == 0 || debugPort == cfg.Server.Port {
+			// Same port as main server - add pprof routes to main mux
+			// Note: debug.host is not allowed in this case (caught by config validation)
+			mux.HandleFunc("/_/debug/pprof/", pprof.Index)
+			mux.HandleFunc("/_/debug/pprof/cmdline", pprof.Cmdline)
+			mux.HandleFunc("/_/debug/pprof/profile", pprof.Profile)
+			mux.HandleFunc("/_/debug/pprof/symbol", pprof.Symbol)
+			mux.HandleFunc("/_/debug/pprof/trace", pprof.Trace)
+
+			logging.Info("debug_endpoints_enabled", map[string]any{
+				"host": cfg.Server.Host,
+				"port": cfg.Server.Port,
+				"path": "/_/debug/pprof/",
+			})
+		} else {
+			// Separate port for debug server - host setting applies
+			debugHost := cfg.Debug.Host
+			if debugHost == "" {
+				debugHost = "localhost" // Default to localhost for security
+			}
+
+			debugMux := http.NewServeMux()
+			debugMux.HandleFunc("/_/debug/pprof/", pprof.Index)
+			debugMux.HandleFunc("/_/debug/pprof/cmdline", pprof.Cmdline)
+			debugMux.HandleFunc("/_/debug/pprof/profile", pprof.Profile)
+			debugMux.HandleFunc("/_/debug/pprof/symbol", pprof.Symbol)
+			debugMux.HandleFunc("/_/debug/pprof/trace", pprof.Trace)
+
+			s.debugServer = &http.Server{
+				Addr:         fmt.Sprintf("%s:%d", debugHost, debugPort),
+				Handler:      debugMux,
+				ReadTimeout:  httpReadTimeout,
+				WriteTimeout: 60 * time.Second, // Longer for profiling
+				IdleTimeout:  httpIdleTimeout,
+			}
+
+			logging.Info("debug_server_configured", map[string]any{
+				"host": debugHost,
+				"port": debugPort,
+				"path": "/_/debug/pprof/",
+			})
+		}
+	}
+
 	return s, nil
 }
 
@@ -320,8 +372,9 @@ func (s *Server) setupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/_/health", s.healthHandler)       // Aggregate health
 	mux.HandleFunc("/_/health/", s.dbHealthHandler)    // Per-database health: /_/health/{dbname}
 
-	// Metrics endpoint (returns current snapshot)
-	mux.HandleFunc("/_/metrics", s.metricsHandler)
+	// Metrics endpoints
+	mux.HandleFunc("/_/metrics.json", s.metricsJSONHandler)  // Human-readable JSON metrics
+	mux.HandleFunc("/_/metrics", s.metricsPrometheusHandler) // Prometheus format
 
 	// OpenAPI spec endpoint
 	mux.HandleFunc("/_/openapi.json", s.openAPIHandler)
@@ -461,7 +514,8 @@ func (s *Server) dbHealthHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) metricsHandler(w http.ResponseWriter, r *http.Request) {
+// metricsJSONHandler returns metrics in human-readable JSON format
+func (s *Server) metricsJSONHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	snap := metrics.GetSnapshot()
@@ -473,6 +527,22 @@ func (s *Server) metricsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, snap)
+}
+
+// metricsPrometheusHandler returns metrics in Prometheus/OpenMetrics format
+func (s *Server) metricsPrometheusHandler(w http.ResponseWriter, r *http.Request) {
+	registry := metrics.Registry()
+	if registry == nil {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("# metrics not enabled\n"))
+		return
+	}
+
+	// Use promhttp handler with our custom registry
+	promhttp.HandlerFor(registry, promhttp.HandlerOpts{
+		EnableOpenMetrics: true,
+	}).ServeHTTP(w, r)
 }
 
 func (s *Server) openAPIHandler(w http.ResponseWriter, r *http.Request) {
@@ -799,6 +869,20 @@ func (s *Server) Start() error {
 		s.scheduler.Start()
 	}
 
+	// Start debug server if configured on separate port
+	if s.debugServer != nil {
+		go func() {
+			logging.Info("debug_server_starting", map[string]any{
+				"addr": s.debugServer.Addr,
+			})
+			if err := s.debugServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logging.Error("debug_server_error", map[string]any{
+					"error": err.Error(),
+				})
+			}
+		}()
+	}
+
 	logging.Info("server_starting", map[string]any{
 		"addr": s.httpServer.Addr,
 	})
@@ -817,6 +901,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// Stop health checker
 	if s.healthChecker != nil {
 		s.healthChecker()
+	}
+
+	// Shutdown debug server if running
+	if s.debugServer != nil {
+		if err := s.debugServer.Shutdown(ctx); err != nil {
+			logging.Error("debug_server_shutdown_error", map[string]any{
+				"error": err.Error(),
+			})
+		}
 	}
 
 	// Shutdown HTTP server

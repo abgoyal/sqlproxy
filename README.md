@@ -11,7 +11,7 @@ A lightweight, production-grade Go service that exposes predefined SQL queries a
 - **Scheduled Queries** - Run queries on cron schedule with retry
 - **Rate Limiting** - Per-endpoint and per-client rate limiting with token bucket
 - **Structured Logging** - JSON logs with automatic rotation
-- **Metrics Endpoint** - `/_/metrics` for monitoring
+- **Metrics Endpoints** - `/_/metrics` (Prometheus) and `/_/metrics.json` (human-readable)
 - **Request Tracing** - Wide events with request IDs
 - **Runtime Config** - Change log level without restart
 - **Auto-Recovery** - Automatic database reconnection
@@ -24,7 +24,7 @@ This service is designed for long-running, fire-and-forget operation:
 | Feature | Description |
 |---------|-------------|
 | **Log Rotation** | Automatic rotation by size, age retention, compression |
-| **Metrics Endpoint** | `/_/metrics` endpoint for monitoring |
+| **Metrics Endpoints** | `/_/metrics` (Prometheus) and `/_/metrics.json` (JSON) |
 | **Scheduled Queries** | Cron-based execution with retry and backoff |
 | **DB Health Checks** | Every 30s, auto-reconnect after 3 failures |
 | **Panic Recovery** | Catches panics, logs them, returns 500 |
@@ -303,6 +303,12 @@ logging:
 
 metrics:
   enabled: true
+
+# Optional: Debug endpoints (pprof) for profiling
+# debug:
+#   enabled: true     # Enable /_/debug/pprof/* endpoints
+#   port: 6060        # Separate port (0 = same as main server)
+#   host: "localhost" # Only valid with separate port; defaults to localhost
 
 queries:
   - name: "list_machines"
@@ -934,10 +940,32 @@ curl -X POST "http://localhost:8081/_/config/loglevel?level=info"
 
 ## Metrics
 
-Get metrics via the `/_/metrics` endpoint:
+SQL Proxy exposes metrics in two formats:
+
+### Prometheus Format (`/_/metrics`)
+
+For monitoring systems like Prometheus, Grafana, etc.:
 
 ```bash
 curl http://localhost:8081/_/metrics
+```
+
+Returns OpenMetrics/Prometheus format with metrics including:
+- `sqlproxy_requests_total` - Request counts by endpoint, method, status
+- `sqlproxy_request_duration_seconds` - Request latency histogram
+- `sqlproxy_query_duration_seconds` - SQL query latency histogram
+- `sqlproxy_errors_total` - Errors by type
+- `sqlproxy_db_healthy` - Database health (1=healthy, 0=unhealthy)
+- `sqlproxy_cache_hits_total`, `sqlproxy_cache_misses_total` - Cache statistics
+- `sqlproxy_ratelimit_allowed_total`, `sqlproxy_ratelimit_denied_total` - Rate limit stats
+- Standard Go runtime metrics (`go_*`, `process_*`)
+
+### JSON Format (`/_/metrics.json`)
+
+Human-readable JSON for debugging and dashboards:
+
+```bash
+curl http://localhost:8081/_/metrics.json
 ```
 
 Response:
@@ -1009,11 +1037,57 @@ All internal service endpoints use the `/_/` prefix (reserved, user queries cann
 | `/` | GET | List all query endpoints with parameters |
 | `/_/health` | GET | Aggregate health check (always 200, parse `status` field) |
 | `/_/health/{dbname}` | GET | Per-database health check (200 or 404 if not found) |
-| `/_/metrics` | GET | Current metrics snapshot |
+| `/_/metrics` | GET | Prometheus/OpenMetrics format for monitoring |
+| `/_/metrics.json` | GET | Human-readable JSON metrics snapshot |
 | `/_/openapi.json` | GET | OpenAPI 3.0 specification |
 | `/_/config/loglevel` | GET/POST | View/change log level |
 | `/_/cache/clear` | POST/DELETE | Clear cache (all or specific endpoint via `?endpoint=/api/path`) |
 | `/_/ratelimits` | GET | Rate limit pool status and metrics |
+| `/_/debug/pprof/*` | GET | Go profiling endpoints (if enabled) |
+
+### Debug Endpoints (pprof)
+
+When enabled via `debug.enabled: true` in config, Go profiling endpoints are available:
+
+| Endpoint | Description |
+|----------|-------------|
+| `/_/debug/pprof/` | Index page with links to all profiles |
+| `/_/debug/pprof/heap` | Memory allocation profile |
+| `/_/debug/pprof/goroutine` | Stack traces of all goroutines |
+| `/_/debug/pprof/profile` | CPU profile (30s by default, add `?seconds=N`) |
+| `/_/debug/pprof/trace` | Execution trace (add `?seconds=N`) |
+
+**Configuration:**
+```yaml
+debug:
+  enabled: true      # Enable debug endpoints
+  port: 6060         # Separate port (0 = same as main server)
+  host: "localhost"  # Only valid with separate port; defaults to localhost
+```
+
+**Port and host behavior:**
+- `port: 0` or same as main server: Debug endpoints share main server's binding (`host` must not be set)
+- `port: <different>`: Debug endpoints run on separate server, `host` setting applies
+- `host` defaults to `localhost` when using separate port (for security)
+- Setting `host` when sharing the main server port is a config validation error
+
+**Security considerations:**
+- Debug endpoints can expose sensitive information
+- For production: use separate port bound to localhost, restrict via firewall
+- If sharing main port: debug endpoints are exposed on same interface as main server
+- Consider disabling in production unless actively debugging
+
+**Usage with pprof:**
+```bash
+# View profiles in browser
+curl http://localhost:6060/_/debug/pprof/
+
+# Capture CPU profile and analyze
+go tool pprof http://localhost:6060/_/debug/pprof/profile?seconds=30
+
+# Capture heap profile
+go tool pprof http://localhost:6060/_/debug/pprof/heap
+```
 
 ### Health Check Design
 
@@ -1383,7 +1457,7 @@ your-domain.com {
 - Add indexes for frequently-queried columns
 
 ### High latency
-- Check `/_/metrics` for `avg_duration_ms` and `max_duration_ms`
+- Check `/_/metrics.json` for `avg_duration_ms` and `max_duration_ms`
 - Look for `slow_query` warnings in logs
 - Consider adding indexes on SQL Server side
 - Increase `timeout_sec` for known slow queries
@@ -1474,7 +1548,7 @@ sudo launchctl load /Library/LaunchDaemons/com.sqlproxy.sql-proxy.plist
 ### 4. Verify and monitor
 ```bash
 curl http://localhost:8081/_/health
-curl http://localhost:8081/_/metrics
+curl http://localhost:8081/_/metrics.json
 ```
 
 Check logs:
@@ -1486,7 +1560,7 @@ Check logs:
 
 - **Caddy/nginx in front**: Don't expose sql-proxy directly to the internet
 - **Monitor `/_/health`**: Set up alerting on unhealthy status
-- **Review metrics**: Check `/_/metrics` endpoint for slow queries
+- **Review metrics**: Check `/_/metrics.json` endpoint for slow queries
 - **Log level**: Use `info` in production, `debug` only for troubleshooting
 - **Backup config**: Keep config.yaml in version control
 

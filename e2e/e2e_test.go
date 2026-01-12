@@ -356,7 +356,7 @@ func TestE2E_HealthEndpoint(t *testing.T) {
 	}
 }
 
-// TestE2E_MetricsEndpoint tests /_/metrics returns runtime stats
+// TestE2E_MetricsEndpoint tests /_/metrics.json returns runtime stats
 func TestE2E_MetricsEndpoint(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test in short mode")
@@ -376,7 +376,7 @@ func TestE2E_MetricsEndpoint(t *testing.T) {
 	defer ts.stop()
 
 	var result map[string]any
-	resp, err := ts.getJSON("/_/metrics", &result)
+	resp, err := ts.getJSON("/_/metrics.json", &result)
 	if err != nil {
 		t.Fatalf("metrics request failed: %v", err)
 	}

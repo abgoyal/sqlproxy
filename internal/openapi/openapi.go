@@ -87,8 +87,26 @@ func buildPaths(cfg *config.Config) map[string]any {
 
 	paths["/_/metrics"] = map[string]any{
 		"get": map[string]any{
-			"summary":     "Metrics snapshot",
-			"description": "Returns current metrics including request counts, latencies, and error rates",
+			"summary":     "Prometheus metrics",
+			"description": "Returns metrics in Prometheus/OpenMetrics format for scraping by monitoring systems",
+			"tags":        []string{"System"},
+			"responses": map[string]any{
+				"200": map[string]any{
+					"description": "Prometheus metrics",
+					"content": map[string]any{
+						"text/plain": map[string]any{
+							"schema": map[string]any{"type": "string"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	paths["/_/metrics.json"] = map[string]any{
+		"get": map[string]any{
+			"summary":     "JSON metrics snapshot",
+			"description": "Returns current metrics in human-readable JSON format including request counts, latencies, and error rates",
 			"tags":        []string{"System"},
 			"responses": map[string]any{
 				"200": map[string]any{

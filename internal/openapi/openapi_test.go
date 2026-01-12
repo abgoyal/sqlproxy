@@ -80,13 +80,22 @@ func TestSpec_BuiltInPaths(t *testing.T) {
 		t.Error("expected GET method for /_/health")
 	}
 
-	// Check /_/metrics endpoint
+	// Check /_/metrics endpoint (Prometheus format)
 	metrics, ok := paths["/_/metrics"].(map[string]any)
 	if !ok {
 		t.Fatal("expected /_/metrics path")
 	}
 	if metrics["get"] == nil {
 		t.Error("expected GET method for /_/metrics")
+	}
+
+	// Check /_/metrics.json endpoint (JSON format)
+	metricsJSON, ok := paths["/_/metrics.json"].(map[string]any)
+	if !ok {
+		t.Fatal("expected /_/metrics.json path")
+	}
+	if metricsJSON["get"] == nil {
+		t.Error("expected GET method for /_/metrics.json")
 	}
 
 	// Check /_/config/loglevel endpoint
