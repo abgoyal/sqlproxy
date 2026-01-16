@@ -33,8 +33,8 @@ const (
 
 // Cache wraps Ristretto with per-endpoint tracking and metrics
 type Cache struct {
-	store     *ristretto.Cache
-	maxCost   int64 // Total max size in bytes
+	store      *ristretto.Cache
+	maxCost    int64 // Total max size in bytes
 	defaultTTL time.Duration
 
 	mu        sync.RWMutex
@@ -50,11 +50,11 @@ type Cache struct {
 
 // EndpointCache tracks per-endpoint cache state
 type EndpointCache struct {
-	mu          sync.RWMutex
-	name        string
-	maxCost     int64                  // Per-endpoint limit (0 = no limit)
-	keys        map[string]*entryMeta  // Track keys and their metadata
-	cronEvict   *cron.Cron             // Optional cron for scheduled eviction
+	mu        sync.RWMutex
+	name      string
+	maxCost   int64                 // Per-endpoint limit (0 = no limit)
+	keys      map[string]*entryMeta // Track keys and their metadata
+	cronEvict *cron.Cron            // Optional cron for scheduled eviction
 
 	// Metrics
 	hits      atomic.Int64
@@ -139,7 +139,7 @@ func New(cfg config.CacheConfig) (*Cache, error) {
 }
 
 // RegisterEndpoint sets up per-endpoint tracking with optional cron eviction
-func (c *Cache) RegisterEndpoint(endpoint string, cfg *config.QueryCacheConfig) error {
+func (c *Cache) RegisterEndpoint(endpoint string, cfg *config.EndpointCacheConfig) error {
 	if c == nil || cfg == nil || !cfg.Enabled {
 		return nil
 	}

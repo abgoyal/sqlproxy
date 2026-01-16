@@ -16,7 +16,7 @@ func TestIsolationToSQL(t *testing.T) {
 		{"repeatable_read", "REPEATABLE READ"},
 		{"serializable", "SERIALIZABLE"},
 		{"snapshot", "SNAPSHOT"},
-		{"", "READ COMMITTED"},      // default
+		{"", "READ COMMITTED"},        // default
 		{"invalid", "READ COMMITTED"}, // fallback
 	}
 
@@ -39,8 +39,8 @@ func TestDeadlockPriorityToSQL(t *testing.T) {
 		{"low", "LOW"},
 		{"normal", "NORMAL"},
 		{"high", "HIGH"},
-		{"", "LOW"},         // default
-		{"invalid", "LOW"},  // fallback
+		{"", "LOW"},        // default
+		{"invalid", "LOW"}, // fallback
 	}
 
 	for _, tc := range tests {
@@ -96,7 +96,7 @@ func TestSQLServerDriver_BuildArgs(t *testing.T) {
 			name:          "param not in map",
 			query:         "SELECT * FROM users WHERE id = @id",
 			params:        map[string]any{}, // Empty map
-			expectedCount: 1,                 // Still extracts param, value will be nil
+			expectedCount: 1,                // Still extracts param, value will be nil
 			expectedNames: []string{"id"},
 		},
 		{
@@ -193,4 +193,3 @@ func TestSQLServerDriver_BuildArgs_NilValue(t *testing.T) {
 		t.Errorf("value = %v, want nil", named.Value)
 	}
 }
-

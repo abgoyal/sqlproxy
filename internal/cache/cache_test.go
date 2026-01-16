@@ -60,7 +60,7 @@ func TestCache_GetSet(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.QueryCacheConfig{Enabled: true, Key: "{{.id}}"})
+	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	data := []map[string]any{
 		{"id": 1, "name": "test"},
@@ -97,7 +97,7 @@ func TestCache_Delete(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.QueryCacheConfig{Enabled: true, Key: "{{.id}}"})
+	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	data := []map[string]any{{"id": 1}}
 	c.Set(endpoint, "key1", data, 5*time.Minute)
@@ -119,7 +119,7 @@ func TestCache_Clear(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.QueryCacheConfig{Enabled: true, Key: "{{.id}}"})
+	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	// Add multiple entries
 	for i := 0; i < 5; i++ {
@@ -145,8 +145,8 @@ func TestCache_ClearAll(t *testing.T) {
 	defer c.Close()
 
 	ep1, ep2 := "/api/one", "/api/two"
-	c.RegisterEndpoint(ep1, &config.QueryCacheConfig{Enabled: true, Key: "{{.id}}"})
-	c.RegisterEndpoint(ep2, &config.QueryCacheConfig{Enabled: true, Key: "{{.id}}"})
+	c.RegisterEndpoint(ep1, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
+	c.RegisterEndpoint(ep2, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	c.Set(ep1, "key1", []map[string]any{{"id": 1}}, 5*time.Minute)
 	c.Set(ep2, "key2", []map[string]any{{"id": 2}}, 5*time.Minute)
@@ -171,7 +171,7 @@ func TestCache_TTL(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.QueryCacheConfig{Enabled: true, Key: "{{.id}}"})
+	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	c.Set(endpoint, "key1", []map[string]any{{"id": 1}}, 100*time.Millisecond)
 	time.Sleep(10 * time.Millisecond)
@@ -199,7 +199,7 @@ func TestCache_GetSnapshot(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.QueryCacheConfig{Enabled: true, Key: "{{.id}}"})
+	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	// Generate some traffic
 	c.Set(endpoint, "key1", []map[string]any{{"id": 1}}, 5*time.Minute)
@@ -245,7 +245,7 @@ func TestCache_GetTTLRemaining(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.QueryCacheConfig{Enabled: true, Key: "{{.id}}"})
+	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	c.Set(endpoint, "key1", []map[string]any{{"id": 1}}, 5*time.Second)
 	time.Sleep(10 * time.Millisecond)
@@ -359,8 +359,8 @@ func TestCache_MultipleEndpoints(t *testing.T) {
 	defer c.Close()
 
 	ep1, ep2 := "/api/users", "/api/orders"
-	c.RegisterEndpoint(ep1, &config.QueryCacheConfig{Enabled: true, Key: "{{.id}}"})
-	c.RegisterEndpoint(ep2, &config.QueryCacheConfig{Enabled: true, Key: "{{.id}}"})
+	c.RegisterEndpoint(ep1, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
+	c.RegisterEndpoint(ep2, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	// Set same key on different endpoints
 	c.Set(ep1, "key1", []map[string]any{{"type": "user"}}, 5*time.Minute)
@@ -402,7 +402,7 @@ func TestCache_PerEndpointSizeLimit(t *testing.T) {
 	// through the size tracking mechanism
 
 	// Register with a small limit - we'll use internal tracking to verify
-	c.RegisterEndpoint(endpoint, &config.QueryCacheConfig{
+	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{
 		Enabled:   true,
 		Key:       "{{.id}}",
 		MaxSizeMB: 1, // 1MB limit
@@ -437,7 +437,7 @@ func TestRegisterEndpoint_CronEviction(t *testing.T) {
 	defer c.Close()
 
 	// Invalid cron should return error
-	err = c.RegisterEndpoint("/api/test", &config.QueryCacheConfig{
+	err = c.RegisterEndpoint("/api/test", &config.EndpointCacheConfig{
 		Enabled:   true,
 		Key:       "{{.id}}",
 		EvictCron: "invalid cron",
@@ -447,7 +447,7 @@ func TestRegisterEndpoint_CronEviction(t *testing.T) {
 	}
 
 	// Valid cron should work
-	err = c.RegisterEndpoint("/api/valid", &config.QueryCacheConfig{
+	err = c.RegisterEndpoint("/api/valid", &config.EndpointCacheConfig{
 		Enabled:   true,
 		Key:       "{{.id}}",
 		EvictCron: "* * * * *", // Every minute
@@ -480,7 +480,7 @@ func TestCache_UpdateExistingKey(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.QueryCacheConfig{Enabled: true, Key: "{{.id}}"})
+	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	// Set initial value
 	initialData := []map[string]any{{"id": 1, "value": "initial"}}
@@ -528,7 +528,7 @@ func TestCache_DefaultTTL(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.QueryCacheConfig{Enabled: true, Key: "{{.id}}"})
+	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	// Set with TTL=0 (should use default)
 	c.Set(endpoint, "key1", []map[string]any{{"id": 1}}, 0)
@@ -631,7 +631,7 @@ func TestGetOrCompute(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.QueryCacheConfig{Enabled: true, Key: "{{.id}}"})
+	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	// First call - should compute and cache
 	data, hit, err := c.GetOrCompute(endpoint, "key1", 5*time.Minute, func() ([]map[string]any, error) {
@@ -679,7 +679,7 @@ func TestGetOrCompute_Error(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.QueryCacheConfig{Enabled: true, Key: "{{.id}}"})
+	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	expectedErr := errors.New("compute error")
 	data, hit, err := c.GetOrCompute(endpoint, "key1", 5*time.Minute, func() ([]map[string]any, error) {
@@ -729,7 +729,7 @@ func TestGetOrCompute_Singleflight(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.QueryCacheConfig{Enabled: true, Key: "{{.id}}"})
+	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	// Track how many times compute is called
 	var computeCount atomic.Int32
@@ -826,7 +826,7 @@ func TestCache_EvictionMetrics(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.QueryCacheConfig{Enabled: true, Key: "{{.id}}"})
+	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	// Add entries
 	for i := 0; i < 5; i++ {
@@ -867,7 +867,7 @@ func TestCache_CronEvictionExecution(t *testing.T) {
 	// Register with cron that runs every second for testing
 	// Note: In real tests, we'd use a mock cron, but for integration test
 	// we use a real short interval
-	err = c.RegisterEndpoint(endpoint, &config.QueryCacheConfig{
+	err = c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{
 		Enabled:   true,
 		Key:       "{{.id}}",
 		EvictCron: "* * * * * *", // Every second (extended cron format - may not work with standard parser)
@@ -908,7 +908,7 @@ func TestCache_ClearTriggersEvictionMetric(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.QueryCacheConfig{Enabled: true, Key: "{{.id}}"})
+	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	// Add entries
 	for i := 0; i < 5; i++ {

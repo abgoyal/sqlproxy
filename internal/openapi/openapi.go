@@ -4,6 +4,7 @@ import (
 	"strconv"
 
 	"sql-proxy/internal/config"
+	"sql-proxy/internal/workflow"
 )
 
 // Spec generates an OpenAPI 3.0 specification from the config
@@ -18,7 +19,7 @@ func Spec(cfg *config.Config) map[string]any {
 		"openapi": "3.0.3",
 		"info": map[string]any{
 			"title":       "SQL Proxy API",
-			"description": "Auto-generated API for database query endpoints (SQL Server, SQLite)",
+			"description": "Auto-generated API for workflow endpoints (SQL Server, SQLite)",
 			"version":     apiVersion,
 		},
 		"servers": []map[string]any{
@@ -123,8 +124,8 @@ func buildPaths(cfg *config.Config) map[string]any {
 
 	paths["/_/config/loglevel"] = map[string]any{
 		"get": map[string]any{
-			"summary":     "Get current log level",
-			"tags":        []string{"System"},
+			"summary": "Get current log level",
+			"tags":    []string{"System"},
 			"responses": map[string]any{
 				"200": map[string]any{
 					"description": "Current log level",
@@ -203,19 +204,21 @@ func buildPaths(cfg *config.Config) map[string]any {
 		},
 	}
 
-	// Add query endpoints (skip schedule-only queries without HTTP paths)
-	for _, q := range cfg.Queries {
-		if q.Path != "" {
-			paths[q.Path] = buildQueryPath(q, cfg.Server)
+	// Add workflow HTTP trigger endpoints
+	for _, wf := range cfg.Workflows {
+		for _, trigger := range wf.Triggers {
+			if trigger.Type == "http" && trigger.Path != "" {
+				paths[trigger.Path] = buildWorkflowPath(wf, trigger, cfg.Server)
+			}
 		}
 	}
 
 	return paths
 }
 
-func buildQueryPath(q config.QueryConfig, serverCfg config.ServerConfig) map[string]any {
+func buildWorkflowPath(wf workflow.WorkflowConfig, trigger workflow.TriggerConfig, serverCfg config.ServerConfig) map[string]any {
 	method := "get"
-	if q.Method == "POST" {
+	if trigger.Method == "POST" {
 		method = "post"
 	}
 
@@ -225,7 +228,7 @@ func buildQueryPath(q config.QueryConfig, serverCfg config.ServerConfig) map[str
 			"name":        "_timeout",
 			"in":          "query",
 			"required":    false,
-			"description": "Query timeout in seconds (max: " + strconv.Itoa(serverCfg.MaxTimeoutSec) + ")",
+			"description": "Workflow timeout in seconds (max: " + strconv.Itoa(serverCfg.MaxTimeoutSec) + ")",
 			"schema": map[string]any{
 				"type":    "integer",
 				"default": serverCfg.DefaultTimeoutSec,
@@ -244,7 +247,7 @@ func buildQueryPath(q config.QueryConfig, serverCfg config.ServerConfig) map[str
 		},
 	}
 
-	for _, p := range q.Parameters {
+	for _, p := range trigger.Parameters {
 		param := map[string]any{
 			"name":        p.Name,
 			"in":          "query",
@@ -256,16 +259,16 @@ func buildQueryPath(q config.QueryConfig, serverCfg config.ServerConfig) map[str
 	}
 
 	effectiveTimeout := serverCfg.DefaultTimeoutSec
-	if q.TimeoutSec > 0 {
-		effectiveTimeout = q.TimeoutSec
+	if wf.TimeoutSec > 0 {
+		effectiveTimeout = wf.TimeoutSec
 	}
 
 	responses := map[string]any{
 		"200": map[string]any{
-			"description": "Successful query",
+			"description": "Successful workflow execution",
 			"content": map[string]any{
 				"application/json": map[string]any{
-					"schema": map[string]any{"$ref": "#/components/schemas/QueryResponse"},
+					"schema": map[string]any{"$ref": "#/components/schemas/WorkflowResponse"},
 				},
 			},
 		},
@@ -278,7 +281,7 @@ func buildQueryPath(q config.QueryConfig, serverCfg config.ServerConfig) map[str
 			},
 		},
 		"500": map[string]any{
-			"description": "Query execution failed",
+			"description": "Workflow execution failed",
 			"content": map[string]any{
 				"application/json": map[string]any{
 					"schema": map[string]any{"$ref": "#/components/schemas/ErrorResponse"},
@@ -286,7 +289,7 @@ func buildQueryPath(q config.QueryConfig, serverCfg config.ServerConfig) map[str
 			},
 		},
 		"504": map[string]any{
-			"description": "Query timeout",
+			"description": "Workflow timeout",
 			"content": map[string]any{
 				"application/json": map[string]any{
 					"schema": map[string]any{"$ref": "#/components/schemas/ErrorResponse"},
@@ -295,8 +298,8 @@ func buildQueryPath(q config.QueryConfig, serverCfg config.ServerConfig) map[str
 		},
 	}
 
-	// Add 429 response if rate limiting is configured for this query
-	if len(q.RateLimit) > 0 {
+	// Add 429 response if rate limiting is configured for this trigger
+	if len(trigger.RateLimit) > 0 {
 		responses["429"] = map[string]any{
 			"description": "Rate limit exceeded",
 			"headers": map[string]any{
@@ -317,17 +320,17 @@ func buildQueryPath(q config.QueryConfig, serverCfg config.ServerConfig) map[str
 
 	return map[string]any{
 		method: map[string]any{
-			"summary":     q.Name,
-			"description": q.Description + " (default timeout: " + strconv.Itoa(effectiveTimeout) + "s)",
-			"tags":        []string{"Queries"},
-			"operationId": q.Name,
+			"summary":     wf.Name,
+			"description": "Workflow endpoint (default timeout: " + strconv.Itoa(effectiveTimeout) + "s)",
+			"tags":        []string{"Workflows"},
+			"operationId": wf.Name,
 			"parameters":  params,
 			"responses":   responses,
 		},
 	}
 }
 
-func buildParamDescription(p config.ParamConfig) string {
+func buildParamDescription(p workflow.ParamConfig) string {
 	desc := "Type: " + p.Type
 	if p.Default != "" {
 		desc += ", Default: " + p.Default
@@ -408,7 +411,7 @@ func paramTypeToSchema(typeName string, defaultVal string) map[string]any {
 func buildComponents() map[string]any {
 	return map[string]any{
 		"schemas": map[string]any{
-			"QueryResponse": map[string]any{
+			"WorkflowResponse": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"success": map[string]any{
@@ -418,15 +421,11 @@ func buildComponents() map[string]any {
 					"data": map[string]any{
 						"type":        "array",
 						"items":       map[string]any{"type": "object"},
-						"description": "Array of result rows",
+						"description": "Array of result rows (from query steps)",
 					},
 					"count": map[string]any{
 						"type":        "integer",
 						"description": "Number of rows returned",
-					},
-					"timeout_sec": map[string]any{
-						"type":        "integer",
-						"description": "Timeout used for this query",
 					},
 					"request_id": map[string]any{
 						"type":        "string",
@@ -582,4 +581,3 @@ func buildComponents() map[string]any {
 		},
 	}
 }
-

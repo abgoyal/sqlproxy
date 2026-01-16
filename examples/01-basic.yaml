@@ -1,0 +1,95 @@
+# Basic SQL Proxy Configuration
+# Demonstrates: minimal setup, simple HTTP workflows, response templates
+
+server:
+  host: "127.0.0.1"
+  port: 8080
+  default_timeout_sec: 30
+  max_timeout_sec: 300
+
+databases:
+  - name: "main"
+    type: "sqlite"
+    path: ":memory:"
+
+logging:
+  level: "info"
+  file_path: ""  # Empty = stdout
+  max_size_mb: 100
+  max_backups: 5
+  max_age_days: 30
+
+metrics:
+  enabled: true
+
+workflows:
+  # Simplest possible workflow - single query, JSON response
+  - name: "health_check"
+    triggers:
+      - type: http
+        path: "/api/health"
+        method: GET
+    steps:
+      - name: check
+        type: query
+        database: "main"
+        sql: "SELECT 'ok' AS status, datetime('now') AS timestamp"
+      - type: response
+        template: |
+          {"success": true, "status": "{{index .steps.check.data 0 \"status\"}}", "timestamp": "{{index .steps.check.data 0 \"timestamp\"}}"}
+
+  # List endpoint - return array of results
+  - name: "list_items"
+    triggers:
+      - type: http
+        path: "/api/items"
+        method: GET
+    steps:
+      - name: fetch
+        type: query
+        database: "main"
+        sql: |
+          SELECT 1 AS id, 'Item One' AS name
+          UNION ALL SELECT 2, 'Item Two'
+          UNION ALL SELECT 3, 'Item Three'
+      - type: response
+        template: |
+          {"success": true, "count": {{.steps.fetch.count}}, "data": {{json .steps.fetch.data}}}
+
+  # Multiple query steps
+  - name: "dashboard"
+    triggers:
+      - type: http
+        path: "/api/dashboard"
+        method: GET
+    steps:
+      - name: stats
+        type: query
+        database: "main"
+        sql: "SELECT 100 AS total, 42 AS active"
+      - name: recent
+        type: query
+        database: "main"
+        sql: "SELECT 'Activity 1' AS activity UNION ALL SELECT 'Activity 2'"
+      - type: response
+        template: |
+          {
+            "success": true,
+            "stats": {{json (index .steps.stats.data 0)}},
+            "recent": {{json .steps.recent.data}}
+          }
+
+  # Using workflow metadata in response
+  - name: "info"
+    triggers:
+      - type: http
+        path: "/api/info"
+        method: GET
+    steps:
+      - type: response
+        template: |
+          {
+            "workflow": "{{.workflow.name}}",
+            "request_id": "{{.workflow.request_id}}",
+            "client_ip": "{{.trigger.client_ip}}"
+          }

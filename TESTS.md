@@ -26,15 +26,9 @@ Run `make test-cover` for current coverage statistics.
 - **TestLoad_SQLiteMissingPath**: TestLoad_SQLiteMissingPath ensures SQLite databases require a path field
 - **TestLoad_SQLServerMissingFields**: TestLoad_SQLServerMissingFields validates SQL Server requires host, port, user, password, database
 - **TestLoad_InvalidLogLevel**: TestLoad_InvalidLogLevel rejects log levels other than debug/info/warn/error
-- **TestLoad_QueryMissingName**: TestLoad_QueryMissingName ensures every query must have a name field
-- **TestLoad_QueryUnknownDatabase**: TestLoad_QueryUnknownDatabase rejects queries referencing non-existent database connections
-- **TestLoad_QueryInvalidMethod**: TestLoad_QueryInvalidMethod ensures query method must be GET or POST only
-- **TestLoad_QueryNegativeTimeout**: TestLoad_QueryNegativeTimeout rejects negative timeout_sec values on queries
 - **TestLoad_InvalidIsolationLevel**: TestLoad_InvalidIsolationLevel rejects invalid SQL Server isolation level names
-- **TestLoad_ScheduleOnlyQuery**: TestLoad_ScheduleOnlyQuery verifies queries can have schedule without HTTP path
 - **TestDatabaseConfig_IsReadOnly**: TestDatabaseConfig_IsReadOnly verifies readonly defaults to true when nil
 - **TestDatabaseConfig_DefaultSessionConfig**: TestDatabaseConfig_DefaultSessionConfig checks implicit defaults based on readonly flag
-- **TestResolveSessionConfig**: TestResolveSessionConfig validates priority: query overrides > db overrides > defaults
 - **TestValidIsolationLevels**: TestValidIsolationLevels checks the ValidIsolationLevels map contains correct entries
 - **TestValidDeadlockPriorities**: TestValidDeadlockPriorities checks the ValidDeadlockPriorities map for low/normal/high
 - **TestValidJournalModes**: TestValidJournalModes checks ValidJournalModes for SQLite: wal/delete/truncate/memory/off
@@ -42,8 +36,8 @@ Run `make test-cover` for current coverage statistics.
 - **TestIsArrayType**: TestIsArrayType verifies IsArrayType correctly identifies array types
 - **TestArrayBaseType**: TestArrayBaseType verifies ArrayBaseType extracts the base type from array types
 - **TestValidParameterTypes**: TestValidParameterTypes verifies all expected parameter types are in ValidParameterTypes
-- **TestQueryRateLimitConfig_IsPoolReference**: TestQueryRateLimitConfig_IsPoolReference verifies IsPoolReference returns true only when Pool is set
-- **TestQueryRateLimitConfig_IsInline**: TestQueryRateLimitConfig_IsInline verifies IsInline returns true only when both RequestsPerSecond and Burst are positive
+- **TestRateLimitConfig_IsPoolReference**: TestRateLimitConfig_IsPoolReference verifies IsPoolReference returns true only when Pool is set
+- **TestRateLimitConfig_IsInline**: TestRateLimitConfig_IsInline verifies IsInline returns true only when both RequestsPerSecond and Burst are positive
 
 
 ---
@@ -73,7 +67,7 @@ Run `make test-cover` for current coverage statistics.
 
 - **TestNewDriver_SQLite**: TestNewDriver_SQLite verifies factory creates SQLite driver with :memory: path
 - **TestNewDriver_SQLiteExplicit**: TestNewDriver_SQLiteExplicit confirms returned driver is *SQLiteDriver type
-- **TestNewDriver_EmptyTypeDefaultsToSQLServer**: TestNewDriver_EmptyTypeDefaultsToSQLServer ensures empty type falls back to sqlserver
+- **TestNewDriver_EmptyTypeReturnsError**: TestNewDriver_EmptyTypeReturnsError ensures empty type is rejected
 - **TestNewDriver_MySQL_NotImplemented**: TestNewDriver_MySQL_NotImplemented confirms mysql type returns not-implemented error
 - **TestNewDriver_Postgres_NotImplemented**: TestNewDriver_Postgres_NotImplemented confirms postgres type returns not-implemented error
 - **TestNewDriver_UnknownType**: TestNewDriver_UnknownType rejects unrecognized database types like oracle
@@ -120,6 +114,8 @@ Run `make test-cover` for current coverage statistics.
 - **TestSQLiteDriver_Reconnect**: TestSQLiteDriver_Reconnect tests connection re-establishment after close
 - **TestSQLiteDriver_Config**: TestSQLiteDriver_Config verifies Config() returns original configuration
 - **TestSQLiteDriver_TranslateQuery**: TestSQLiteDriver_TranslateQuery tests @param to sql.Named translation and deduplication
+- **TestIsWriteQuery**: TestIsWriteQuery tests the SQL statement type detection
+- **TestSQLiteDriver_WriteOperations_RowsAffected**: TestSQLiteDriver_WriteOperations_RowsAffected tests that write operations return correct rows affected
 
 ### sqlserver_test.go
 
@@ -128,91 +124,6 @@ Run `make test-cover` for current coverage statistics.
 - **TestSQLServerDriver_BuildArgs**: TestSQLServerDriver_BuildArgs verifies parameter extraction from SQL
 - **TestSQLServerDriver_BuildArgs_Values**: TestSQLServerDriver_BuildArgs_Values verifies parameter values are correctly assigned
 - **TestSQLServerDriver_BuildArgs_NilValue**: TestSQLServerDriver_BuildArgs_NilValue verifies nil values are handled correctly
-
-
----
-
-## Handler
-
-**Package**: `internal/handler`
-
-### benchmark_test.go
-
-- **BenchmarkHandler_ServeHTTP_SimpleQuery**: BenchmarkHandler_ServeHTTP_SimpleQuery measures simple query handling throughput
-- **BenchmarkHandler_ServeHTTP_WithParams**: BenchmarkHandler_ServeHTTP_WithParams measures parameterized query performance
-- **BenchmarkHandler_ServeHTTP_Concurrent**: BenchmarkHandler_ServeHTTP_Concurrent measures parallel request handling
-- **BenchmarkConvertValue_String**: BenchmarkConvertValue_String measures string type conversion speed
-- **BenchmarkConvertValue_Int**: BenchmarkConvertValue_Int measures integer type conversion speed
-- **BenchmarkConvertValue_Float**: BenchmarkConvertValue_Float measures float type conversion speed
-- **BenchmarkConvertValue_Bool**: BenchmarkConvertValue_Bool measures boolean type conversion speed
-- **BenchmarkConvertValue_DateTime**: BenchmarkConvertValue_DateTime measures datetime parsing performance
-- **BenchmarkGenerateRequestID**: BenchmarkGenerateRequestID measures random ID generation throughput
-- **BenchmarkGetOrGenerateRequestID_WithHeader**: BenchmarkGetOrGenerateRequestID_WithHeader measures header extraction speed
-- **BenchmarkGetOrGenerateRequestID_NoHeader**: BenchmarkGetOrGenerateRequestID_NoHeader measures ID generation when no header
-- **BenchmarkHandler_ParseParameters_NoParams**: BenchmarkHandler_ParseParameters_NoParams measures parsing overhead with zero params
-- **BenchmarkHandler_ParseParameters_ManyParams**: BenchmarkHandler_ParseParameters_ManyParams measures parsing 5 params with type conversion
-- **BenchmarkHandler_ResolveTimeout**: BenchmarkHandler_ResolveTimeout measures timeout resolution with query params
-
-### handler_test.go
-
-- **TestHandler_ServeHTTP_SimpleQuery**: TestHandler_ServeHTTP_SimpleQuery validates basic GET query returns JSON with success and data
-- **TestHandler_ServeHTTP_WithParameters**: TestHandler_ServeHTTP_WithParameters tests query string parameters are bound to SQL
-- **TestHandler_ServeHTTP_MissingRequiredParam**: TestHandler_ServeHTTP_MissingRequiredParam returns 400 when required parameter missing
-- **TestHandler_ServeHTTP_DefaultParameter**: TestHandler_ServeHTTP_DefaultParameter uses default value when optional param omitted
-- **TestHandler_ServeHTTP_WrongMethod**: TestHandler_ServeHTTP_WrongMethod returns 405 when HTTP method doesn't match config
-- **TestHandler_ServeHTTP_InvalidParamType**: TestHandler_ServeHTTP_InvalidParamType returns 400 when int param gets non-numeric value
-- **TestHandler_ServeHTTP_POSTMethod**: TestHandler_ServeHTTP_POSTMethod tests form-encoded POST parameters are parsed
-- **TestHandler_ServeHTTP_CustomRequestID**: TestHandler_ServeHTTP_CustomRequestID echoes X-Request-ID or X-Correlation-ID headers
-- **TestHandler_ResolveTimeout**: TestHandler_ResolveTimeout validates timeout priority: _timeout param > query > default, capped by max
-- **TestConvertValue**: TestConvertValue tests type conversion for string/int/bool/float/datetime parameters
-- **TestHandler_ParseParameters**: TestHandler_ParseParameters validates required/optional/default parameter handling
-- **TestHandler_ServeHTTP_EmptyResult**: TestHandler_ServeHTTP_EmptyResult returns success with count=0 for no matching rows
-- **TestHandler_ServeHTTP_SQLError**: TestHandler_ServeHTTP_SQLError returns 500 for queries against non-existent tables
-- **TestHandler_ServeHTTP_DateTimeParam**: TestHandler_ServeHTTP_DateTimeParam tests datetime parameter parsing and SQL binding
-- **TestGenerateRequestID**: TestGenerateRequestID validates unique 16-char hex IDs are generated
-- **TestGetOrGenerateRequestID**: TestGetOrGenerateRequestID checks header extraction priority and fallback generation
-- **TestSanitizeHeaderValue**: TestSanitizeHeaderValue tests header value sanitization for security
-- **TestGetOrGenerateRequestID_Sanitizes**: TestGetOrGenerateRequestID_Sanitizes validates that request IDs from headers are sanitized
-- **TestHandler_ServeHTTP_JSONBody**: TestHandler_ServeHTTP_JSONBody tests JSON body parsing for POST endpoints
-- **TestHandler_ServeHTTP_JSONBody_RejectsNestedForNonJSONType**: TestHandler_ServeHTTP_JSONBody_RejectsNestedForNonJSONType tests that nested JSON is rejected for non-json types
-- **TestHandler_ServeHTTP_JSONTypeParam**: TestHandler_ServeHTTP_JSONTypeParam tests json type parameter accepts nested objects
-- **TestHandler_ServeHTTP_ArrayTypeParam**: TestHandler_ServeHTTP_ArrayTypeParam tests array type parameters (int[], string[], etc.)
-- **TestHandler_ServeHTTP_ArrayTypeParam_InvalidElement**: TestHandler_ServeHTTP_ArrayTypeParam_InvalidElement tests array type rejects wrong element types
-- **TestHandler_ServeHTTP_StringArrayParam**: TestHandler_ServeHTTP_StringArrayParam tests string[] type parameter
-- **TestConvertJSONValue**: TestConvertJSONValue tests JSON value type conversion
-- **TestConvertJSONValue_JSONType**: TestConvertJSONValue_JSONType tests json type serializes to JSON string
-- **TestConvertJSONValue_ArrayTypes**: TestConvertJSONValue_ArrayTypes tests array types serialize to JSON array string
-- **TestConvertValue_JSONType**: TestConvertValue_JSONType tests json type from query string
-- **TestConvertValue_ArrayTypes**: TestConvertValue_ArrayTypes tests array types from query string
-- **TestValidateArrayElements**: TestValidateArrayElements tests array element validation
-- **TestParseJSONColumns**: TestParseJSONColumns tests parsing JSON string columns into objects
-- **TestHandler_ServeHTTP_JSONColumns**: TestHandler_ServeHTTP_JSONColumns tests json_columns config parses JSON in response
-- **TestHandler_ServeHTTP_JSONColumns_WithoutConfig**: TestHandler_ServeHTTP_JSONColumns_WithoutConfig tests default behavior (no json_columns)
-
-
----
-
-## Scheduler
-
-**Package**: `internal/scheduler`
-
-### scheduler_test.go
-
-- **TestNew**: TestNew verifies scheduler creation only registers queries with schedule config
-- **TestScheduler_StartStop**: TestScheduler_StartStop confirms scheduler starts and stops gracefully
-- **TestScheduler_RunQuery**: TestScheduler_RunQuery tests direct query execution returns correct count
-- **TestScheduler_RunQueryWithParams**: TestScheduler_RunQueryWithParams tests scheduled query with bound parameter values
-- **TestScheduler_RunQueryError**: TestScheduler_RunQueryError verifies error handling for queries against non-existent tables
-- **TestScheduler_BuildParams**: TestScheduler_BuildParams tests parameter resolution using defaults and schedule overrides
-- **TestScheduler_ResolveValue_DynamicDates**: TestScheduler_ResolveValue_DynamicDates tests dynamic date keywords: now, today, yesterday, tomorrow
-- **TestScheduler_ResolveValue_Types**: TestScheduler_ResolveValue_Types tests type conversion for string, int, and bool parameters
-- **TestScheduler_ResolveValue_DateFormats**: TestScheduler_ResolveValue_DateFormats tests datetime parsing with various input formats
-- **TestHasScheduledQueries**: TestHasScheduledQueries tests detection of scheduled queries in config list
-- **TestScheduler_InvalidCron**: TestScheduler_InvalidCron verifies invalid cron expressions are rejected without panic
-- **TestScheduler_UnknownDatabase**: TestScheduler_UnknownDatabase tests error for queries referencing non-existent database
-- **TestScheduler_CustomTimeout**: TestScheduler_CustomTimeout tests query-specific timeout configuration is applied
-- **TestScheduler_ExecuteJob**: TestScheduler_ExecuteJob tests job execution wrapper runs query and logs results
-- **TestScheduler_ExecuteJob_WithFailure**: TestScheduler_ExecuteJob_WithFailure tests job execution handles query failures without panic
 
 
 ---
@@ -233,40 +144,16 @@ Run `make test-cover` for current coverage statistics.
 - **TestValidateDatabase_SQLServer**: TestValidateDatabase_SQLServer tests SQL Server validation: host, port, isolation, timeout
 - **TestValidateDatabase_EnvVarWarning**: TestValidateDatabase_EnvVarWarning tests unresolved env vars generate warnings
 - **TestValidateLogging**: TestValidateLogging tests log level and rotation settings validation
-- **TestValidateQueries_NoQueries**: TestValidateQueries_NoQueries tests empty queries list generates warning
-- **TestValidateQueries_DuplicateName**: TestValidateQueries_DuplicateName ensures duplicate query names are rejected
-- **TestValidateQueries_DuplicatePath**: TestValidateQueries_DuplicatePath ensures duplicate endpoint paths are rejected
-- **TestValidateQueries_InvalidPath**: TestValidateQueries_InvalidPath ensures path must start with leading /
-- **TestValidateQueries_InvalidMethod**: TestValidateQueries_InvalidMethod ensures only GET/POST methods are allowed
-- **TestValidateQueries_UnknownDatabase**: TestValidateQueries_UnknownDatabase ensures query must reference existing database
-- **TestValidateQueries_WriteOnReadOnly**: TestValidateQueries_WriteOnReadOnly ensures write SQL rejected on read-only database
-- **TestValidateQueries_WriteOnReadWrite**: TestValidateQueries_WriteOnReadWrite confirms write SQL allowed on write-enabled database
-- **TestValidateQueries_UnusedDatabase**: TestValidateQueries_UnusedDatabase tests unused database generates warning
-- **TestValidateParams**: TestValidateParams tests SQL/parameter cross-validation for mismatches and reserved names
-- **TestValidateSchedule**: TestValidateSchedule tests cron expression and required parameter validation
+- **TestValidateDebug**: TestValidateDebug tests debug config validation rules
 - **TestRun_ValidConfig**: TestRun_ValidConfig tests complete valid configuration passes all checks
 - **TestRun_InvalidConfig**: TestRun_InvalidConfig tests configuration with invalid port fails validation
 - **TestRun_DBConnectionTest**: TestRun_DBConnectionTest verifies SQLite :memory: connection succeeds
 - **TestRun_DBConnectionFail**: TestRun_DBConnectionFail verifies invalid SQLite path fails connection test
 - **TestRun_SQLServerUnresolvedEnvVar**: TestRun_SQLServerUnresolvedEnvVar tests that SQL Server with unresolved env vars is skipped during connection test
 - **TestRun_SQLServerUnresolvedPassword**: TestRun_SQLServerUnresolvedPassword tests SQL Server with unresolved password env var is skipped
-- **TestValidateQueries_ScheduleOnlyQuery**: TestValidateQueries_ScheduleOnlyQuery tests schedule-only queries (no HTTP path) are valid
-- **TestValidateQueries_QueryWithTimeout**: TestValidateQueries_QueryWithTimeout tests query with custom timeout is validated
-- **TestValidateQueries_AllWriteOperations**: TestValidateQueries_AllWriteOperations tests all write operations are detected
-- **TestValidateWebhook**: TestValidateWebhook tests webhook configuration validation
-- **TestValidateWebhookBody**: TestValidateWebhookBody tests webhook body configuration validation
-- **TestValidateScheduleWithWebhook**: TestValidateScheduleWithWebhook tests schedule validation with webhook
-- **TestValidateCache**: TestValidateCache tests cache configuration validation
 - **TestValidateServerCache**: TestValidateServerCache tests server-level cache configuration validation
-- **TestValidateQueries_WithCache**: TestValidateQueries_WithCache tests query-level cache validation integration
-- **TestValidateTemplate**: TestValidateTemplate tests template syntax validation
-- **TestValidateJSONColumns**: TestValidateJSONColumns tests json_columns validation
-- **TestValidateQueries_JSONColumns**: TestValidateQueries_JSONColumns tests json_columns in full query validation
-- **TestValidateQueries_JSONColumns_EmptyColumn**: TestValidateQueries_JSONColumns_EmptyColumn tests validation catches empty column name
 - **TestValidateRateLimits**: TestValidateRateLimits tests server-level rate limit pool validation
-- **TestValidateQueryRateLimits**: TestValidateQueryRateLimits tests per-query rate limit validation
-- **TestValidateQueries_RateLimits**: TestValidateQueries_RateLimits tests rate limit validation in full query validation
-- **TestValidateQueries_RateLimits_UnknownPool**: TestValidateQueries_RateLimits_UnknownPool tests that unknown pool reference is caught
+- **TestRun_NoWorkflowsWarning**: TestRun_NoWorkflowsWarning tests that empty workflows list generates a warning
 
 
 ---
@@ -280,29 +167,33 @@ Run `make test-cover` for current coverage statistics.
 - **TestServer_New**: TestServer_New verifies server initialization creates dbManager and httpServer
 - **TestServer_HealthHandler**: TestServer_HealthHandler tests /health returns status and database connections
 - **TestServer_MetricsHandler_Disabled**: TestServer_MetricsHandler_Disabled tests /_/metrics.json returns not-enabled message when disabled
+- **TestServer_MetricsJSONHandler_Enabled**: TestServer_MetricsJSONHandler_Enabled tests /_/metrics.json returns valid JSON metrics
+- **TestServer_MetricsPrometheusHandler_Enabled**: TestServer_MetricsPrometheusHandler_Enabled tests /_/metrics returns Prometheus format
+- **TestServer_MetricsPrometheusHandler_Disabled**: TestServer_MetricsPrometheusHandler_Disabled tests /_/metrics returns error when disabled
 - **TestServer_LogLevelHandler**: TestServer_LogLevelHandler tests log level GET retrieval and POST update operations
-- **TestServer_ListEndpointsHandler**: TestServer_ListEndpointsHandler tests root path returns service info and endpoint listing
+- **TestServer_ListEndpointsHandler**: TestServer_ListEndpointsHandler tests root path returns service info and workflow listing
 - **TestServer_ListEndpointsHandler_NotFound**: TestServer_ListEndpointsHandler_NotFound tests unknown paths return 404
 - **TestServer_OpenAPIHandler**: TestServer_OpenAPIHandler tests /openapi.json returns valid spec with CORS headers
 - **TestServer_RecoveryMiddleware**: TestServer_RecoveryMiddleware tests panic recovery returns 500 without server crash
 - **TestServer_GzipMiddleware**: TestServer_GzipMiddleware tests gzip compression when Accept-Encoding header set
 - **TestServer_GzipMiddleware_NoGzip**: TestServer_GzipMiddleware_NoGzip tests no compression without Accept-Encoding header
 - **TestServer_StartShutdown**: TestServer_StartShutdown tests server start and graceful shutdown sequence
-- **TestServer_Integration_QueryEndpoint**: TestServer_Integration_QueryEndpoint tests query execution via httptest server
-- **TestServer_Integration_ParameterizedQuery**: TestServer_Integration_ParameterizedQuery tests parameterized query with required and optional params
+- **TestServer_Integration_WorkflowEndpoint**: TestServer_Integration_WorkflowEndpoint tests workflow execution via httptest server
+- **TestServer_Integration_ParameterizedWorkflow**: TestServer_Integration_ParameterizedWorkflow tests parameterized workflow with required and optional params
 - **TestServer_Integration_WithGzip**: TestServer_Integration_WithGzip tests HTTP request/response cycle with gzip encoding
 - **TestServer_HealthHandler_Degraded**: TestServer_HealthHandler_Degraded tests /health returns degraded status when database is unreachable
 - **TestServer_HealthHandler_DatabaseDown**: TestServer_HealthHandler_DatabaseDown tests /_/health shows database as disconnected when ping fails
 - **TestServer_HealthHandler_MultipleDatabases**: TestServer_HealthHandler_MultipleDatabases tests /_/health with multiple database connections
 - **TestServer_DBHealthHandler**: TestServer_DBHealthHandler tests /_/health/{dbname} endpoint
 - **TestServer_DBHealthHandler_Disconnected**: TestServer_DBHealthHandler_Disconnected tests /_/health/{dbname} when db is down
-- **TestServer_Integration_WithCache**: TestServer_Integration_WithCache tests cache hit/miss behavior and headers
-- **TestServer_Integration_CacheMetrics**: TestServer_Integration_CacheMetrics tests cache stats appear in metrics snapshot
 - **TestServer_CacheClearHandler**: TestServer_CacheClearHandler tests /_/cache/clear endpoint
 - **TestServer_CacheClearHandler_NoCacheConfigured**: TestServer_CacheClearHandler_NoCacheConfigured tests cache clear when cache disabled
 - **TestServer_RateLimitsHandler**: TestServer_RateLimitsHandler tests the /_/ratelimits endpoint
 - **TestServer_RateLimitsHandler_NotConfigured**: TestServer_RateLimitsHandler_NotConfigured tests the endpoint when rate limiting is disabled
 - **TestServer_RateLimitResponse**: TestServer_RateLimitResponse tests that 429 response includes retry_after_sec
+- **TestServer_CronWorkflowSetup**: TestServer_CronWorkflowSetup verifies cron workflow jobs are registered correctly
+- **TestServer_CronWorkflowExecution**: TestServer_CronWorkflowExecution verifies cron workflow execution path works
+- **TestServer_NoCronWorkflow**: TestServer_NoCronWorkflow verifies server works without cron triggers
 
 
 ---
@@ -380,20 +271,20 @@ Run `make test-cover` for current coverage statistics.
 
 - **TestSpec_BasicStructure**: TestSpec_BasicStructure verifies OpenAPI spec has required root elements
 - **TestSpec_BuiltInPaths**: TestSpec_BuiltInPaths verifies /health, /metrics, /config/loglevel paths are present
-- **TestSpec_QueryEndpoints**: TestSpec_QueryEndpoints tests query config generates correct path operations
-- **TestSpec_SkipsScheduleOnlyQueries**: TestSpec_SkipsScheduleOnlyQueries verifies schedule-only queries are excluded from paths
-- **TestBuildQueryPath_GET**: TestBuildQueryPath_GET tests GET path generation with parameters and tags
-- **TestBuildQueryPath_POST**: TestBuildQueryPath_POST tests POST method creates post operation, not get
-- **TestBuildQueryPath_Responses**: TestBuildQueryPath_Responses verifies 200, 400, 500, 504 response codes present
+- **TestSpec_WorkflowEndpoints**: TestSpec_WorkflowEndpoints tests workflow config generates correct path operations
+- **TestSpec_SkipsCronOnlyWorkflows**: TestSpec_SkipsCronOnlyWorkflows verifies cron-only workflows are excluded from paths
+- **TestBuildWorkflowPath_GET**: TestBuildWorkflowPath_GET tests GET path generation with parameters and tags
+- **TestBuildWorkflowPath_POST**: TestBuildWorkflowPath_POST tests POST method creates post operation, not get
+- **TestBuildWorkflowPath_Responses**: TestBuildWorkflowPath_Responses verifies 200, 400, 500, 504 response codes present
 - **TestBuildParamDescription**: TestBuildParamDescription tests parameter description includes type and default
 - **TestParamTypeToSchema**: TestParamTypeToSchema tests parameter type to JSON Schema conversion
 - **TestBuildComponents**: TestBuildComponents verifies required schema definitions are present
 - **TestSpec_ValidJSON**: TestSpec_ValidJSON verifies spec serializes to valid JSON and back
 - **TestSpec_TimeoutParameter**: TestSpec_TimeoutParameter tests _timeout param has correct default and maximum
-- **TestSpec_QueryDescription**: TestSpec_QueryDescription tests custom description and timeout info in spec
+- **TestSpec_WorkflowDescription**: TestSpec_WorkflowDescription tests custom timeout info in spec
 - **TestParamTypeToSchema_ArrayTypes**: TestParamTypeToSchema_ArrayTypes tests array type schema generation
 - **TestParamTypeToSchema_JSONType**: TestParamTypeToSchema_JSONType tests json type schema generation
-- **TestBuildQueryPath_DefaultTimeout**: TestBuildQueryPath_DefaultTimeout tests server default timeout used when query has none
+- **TestBuildWorkflowPath_DefaultTimeout**: TestBuildWorkflowPath_DefaultTimeout tests server default timeout used when workflow has none
 
 
 ---
@@ -406,56 +297,6 @@ Run `make test-cover` for current coverage statistics.
 
 - **TestDefaultServiceName**: TestDefaultServiceName verifies the default service name constant
 - **TestJoinErrors**: TestJoinErrors verifies error joining function
-
-
----
-
-## Webhook
-
-**Package**: `internal/webhook`
-
-### benchmark_test.go
-
-- **BenchmarkExecuteTemplate**: BenchmarkExecuteTemplate benchmarks template execution with various complexity
-- **BenchmarkBuildBody**: BenchmarkBuildBody benchmarks body building for webhook payloads
-- **BenchmarkExecute**: BenchmarkExecute benchmarks end-to-end webhook execution
-- **BenchmarkExecute_WithBodyTemplate**: BenchmarkExecute_WithBodyTemplate benchmarks execution with body templates
-- **BenchmarkResolveRetryConfig**: BenchmarkResolveRetryConfig benchmarks retry config resolution
-- **BenchmarkBuildBody_Parallel**: BenchmarkBuildBody_Parallel benchmarks concurrent body building
-
-### webhook_test.go
-
-- **TestExecuteTemplate_Basic**: TestExecuteTemplate_Basic tests basic template execution
-- **TestExecuteTemplate_Functions**: TestExecuteTemplate_Functions tests custom template functions
-- **TestExecuteItemTemplate**: TestExecuteItemTemplate tests item template with row data
-- **TestBuildBody_RawJSON**: TestBuildBody_RawJSON tests raw JSON output when no body config
-- **TestBuildBody_HeaderItemFooter**: TestBuildBody_HeaderItemFooter tests templated body building
-- **TestBuildBody_EmptyTemplate**: TestBuildBody_EmptyTemplate tests alternate empty template
-- **TestBuildBody_DefaultSeparator**: TestBuildBody_DefaultSeparator tests default comma separator when not specified
-- **TestBuildBody_NewlineSeparator**: TestBuildBody_NewlineSeparator tests newline separator for list format
-- **TestBuildBody_ParamsAccess**: TestBuildBody_ParamsAccess tests access to params in templates
-- **TestExecute_RawPayload**: TestExecute_RawPayload tests webhook execution with raw JSON
-- **TestExecute_TemplatedURL**: TestExecute_TemplatedURL tests URL template execution
-- **TestExecute_SkipOnEmpty**: TestExecute_SkipOnEmpty tests on_empty: skip behavior
-- **TestExecute_SendOnEmpty**: TestExecute_SendOnEmpty tests on_empty: send (default) behavior
-- **TestExecute_HTTPError**: TestExecute_HTTPError tests error handling for non-2xx responses
-- **TestExecute_Timeout**: TestExecute_Timeout tests context timeout
-- **TestExecute_HTTPMethods**: TestExecute_HTTPMethods tests default POST and explicit GET methods
-- **TestBuildBody_SlackFormat**: TestBuildBody_SlackFormat tests building Slack-style webhook body
-- **TestExecuteTemplate_InvalidTemplate**: TestExecuteTemplate_InvalidTemplate tests error handling for invalid templates
-- **TestExecute_URLTemplateError**: TestExecute_URLTemplateError tests error when URL template is invalid
-- **TestExecute_InvalidURL**: TestExecute_InvalidURL tests error when URL is malformed
-- **TestBuildBody_TemplateErrors**: TestBuildBody_TemplateErrors tests error messages identify which template failed
-- **TestExecuteTemplate_ExecutionError**: TestExecuteTemplate_ExecutionError tests template execution error (not parse error)
-- **TestJsonFunction_Error**: TestJsonFunction_Error tests json function with unmarshalable value
-- **TestJsonFunctions_Error**: TestJsonFunctions_Error tests json/jsonIndent functions with unmarshalable values
-- **TestExecute_ConnectionError**: TestExecute_ConnectionError tests error when server is unreachable
-- **TestResolveRetryConfig**: TestResolveRetryConfig tests retry configuration resolution
-- **TestExecute_RetryDisabled**: TestExecute_RetryDisabled tests that retries are skipped when disabled
-- **TestExecute_CustomRetryConfig**: TestExecute_CustomRetryConfig tests custom retry settings
-- **TestExecute_BackoffTiming**: TestExecute_BackoffTiming tests exponential backoff with cap
-- **TestExecute_BackoffCapping**: TestExecute_BackoffCapping tests that backoff is capped at MaxBackoff
-- **TestExecutionContext_Version**: TestExecutionContext_Version tests that version is included in ExecutionContext
 
 
 ---
@@ -605,6 +446,178 @@ Run `make test-cover` for current coverage statistics.
 
 ---
 
+## Types
+
+**Package**: `internal/types`
+
+### params_test.go
+
+- **TestIsArrayType**: IsArrayType
+- **TestArrayBaseType**: ArrayBaseType
+- **TestConvertValue**: ConvertValue
+- **TestConvertJSONValue**: ConvertJSONValue
+- **TestValidateArrayElements**: ValidateArrayElements
+- **TestValidParamTypes**: ValidParamTypes
+
+
+---
+
+## Workflow
+
+**Package**: `internal/workflow`
+
+### compile_test.go
+
+- **TestCompile_BasicWorkflow**: Compile BasicWorkflow
+- **TestCompile_ConditionAliases**: Compile ConditionAliases
+- **TestCompile_HTTPCallStep**: Compile HTTPCallStep
+- **TestCompile_BlockWithIteration**: Compile BlockWithIteration
+- **TestCompile_CacheKeyTemplate**: Compile CacheKeyTemplate
+- **TestCompile_InvalidTemplateSyntax**: Compile InvalidTemplateSyntax
+- **TestResolveCondition**: ResolveCondition
+- **TestEvalCondition**: EvalCondition
+- **TestEvalExpression**: EvalExpression
+- **TestTemplateFuncs**: TestTemplateFuncs tests all template functions available in workflow templates.
+- **TestTemplateFuncs_InWorkflowContext**: TestTemplateFuncs_InWorkflowContext tests template functions with realistic workflow data.
+
+### config_test.go
+
+- **TestStepConfig_StepType**: StepConfig StepType
+- **TestStepConfig_IsBlock**: StepConfig IsBlock
+- **TestStepConfig_IsQuery**: StepConfig IsQuery
+- **TestStepConfig_IsHTTPCall**: StepConfig IsHTTPCall
+- **TestStepConfig_IsResponse**: StepConfig IsResponse
+- **TestRateLimitRefConfig**: RateLimitRefConfig
+
+### context_test.go
+
+- **TestNewContext**: NewContext
+- **TestContext_Context**: Context Context
+- **TestContext_SetGetStepResult**: Context SetGetStepResult
+- **TestContext_BuildExprEnv_HTTPTrigger**: Context BuildExprEnv HTTPTrigger
+- **TestContext_BuildExprEnv_CronTrigger**: Context BuildExprEnv CronTrigger
+- **TestContext_BuildTemplateData**: Context BuildTemplateData
+- **TestStepResultToMap**: StepResultToMap
+- **TestHeaderToMap**: HeaderToMap
+- **TestBlockContext**: BlockContext
+- **TestBlockContext_SetGetStepResult**: BlockContext SetGetStepResult
+- **TestBlockContext_BuildExprEnv**: BlockContext BuildExprEnv
+- **TestBlockContext_BuildTemplateData**: BlockContext BuildTemplateData
+
+### executor_test.go
+
+- **TestNewExecutor**: NewExecutor
+- **TestExecutor_Execute_SimpleQuery**: Executor Execute SimpleQuery
+- **TestExecutor_Execute_DisabledStep**: Executor Execute DisabledStep
+- **TestExecutor_Execute_ConditionalStep**: Executor Execute ConditionalStep
+- **TestExecutor_Execute_StepFailure_Abort**: Executor Execute StepFailure Abort
+- **TestExecutor_Execute_StepFailure_Continue**: Executor Execute StepFailure Continue
+- **TestExecutor_Execute_ResponseStep**: Executor Execute ResponseStep
+- **TestExecutor_Execute_HTTPCallStep**: Executor Execute HTTPCallStep
+- **TestExecutor_Execute_ContextCancellation**: Executor Execute ContextCancellation
+- **TestExecutor_Execute_WorkflowTimeout**: Executor Execute WorkflowTimeout
+- **TestExecutor_Execute_HTTPTriggerWithoutResponse**: Executor Execute HTTPTriggerWithoutResponse
+- **TestExecutor_Execute_UnknownStepType**: Executor Execute UnknownStepType
+- **TestExecutor_Execute_BlockStep**: Executor Execute BlockStep
+- **TestExecutor_Execute_BlockStep_IterationError_Abort**: Executor Execute BlockStep IterationError Abort
+- **TestExecutor_Execute_BlockStep_WithoutIteration**: Executor Execute BlockStep WithoutIteration
+- **TestExecutor_Execute_StepNames_Auto**: Executor Execute StepNames Auto
+- **TestExecutor_Execute_LoggingCalls**: Executor Execute LoggingCalls
+- **TestExecutor_StepCache_Hit**: Executor StepCache Hit
+- **TestExecutor_StepCache_Miss**: Executor StepCache Miss
+- **TestExecutor_StepCache_NilCache**: Executor StepCache NilCache
+- **TestExecutor_ConditionalResponse_NegatedAlias**: TestExecutor_ConditionalResponse_NegatedAlias tests that negated condition aliases work correctly
+- **TestExecutor_ConditionalResponse_FromConfig**: TestExecutor_ConditionalResponse_FromConfig tests conditional responses compiled from config (like E2E).
+- **TestCompileAndEvaluate_ConditionAliases**: TestCompileAndEvaluate_ConditionAliases tests that condition aliases and negated aliases are properly compiled and evaluated.
+
+### handler_test.go
+
+- **TestNewHTTPHandler**: NewHTTPHandler
+- **TestHTTPHandler_ServeHTTP_MethodNotAllowed**: HTTPHandler ServeHTTP MethodNotAllowed
+- **TestHTTPHandler_ServeHTTP_Success**: HTTPHandler ServeHTTP Success
+- **TestHTTPHandler_ServeHTTP_VersionWithBuildTime**: HTTPHandler ServeHTTP VersionWithBuildTime
+- **TestHTTPHandler_ServeHTTP_RequestID_FromHeader**: HTTPHandler ServeHTTP RequestID FromHeader
+- **TestHTTPHandler_ServeHTTP_CorrelationID**: HTTPHandler ServeHTTP CorrelationID
+- **TestHTTPHandler_ParseParameters_QueryString**: HTTPHandler ParseParameters QueryString
+- **TestHTTPHandler_ParseParameters_MissingRequired**: HTTPHandler ParseParameters MissingRequired
+- **TestHTTPHandler_ParseParameters_JSONBody**: HTTPHandler ParseParameters JSONBody
+- **TestHTTPHandler_ParseParameters_InvalidJSON**: HTTPHandler ParseParameters InvalidJSON
+- **TestHTTPHandler_ParseParameters_TypeConversion**: HTTPHandler ParseParameters TypeConversion
+- **TestHTTPHandler_WorkflowError_DefaultResponse**: HTTPHandler WorkflowError DefaultResponse
+- **TestHTTPHandler_NoResponse_EmptySuccess**: HTTPHandler NoResponse EmptySuccess
+- **TestGetOrGenerateRequestID**: GetOrGenerateRequestID
+- **TestGenerateRequestID**: GenerateRequestID
+- **TestSanitizeHeaderValue**: SanitizeHeaderValue
+- **TestResolveClientIP**: ResolveClientIP
+- **TestDBManagerAdapter**: DBManagerAdapter
+- **TestLoggerAdapter**: LoggerAdapter
+- **TestHTTPHandler_ParseParameters_NestedObject**: HTTPHandler ParseParameters NestedObject
+- **TestHTTPHandler_ParseParameters_JSONType**: HTTPHandler ParseParameters JSONType
+- **TestHTTPHandler_ParseParameters_ArrayType**: HTTPHandler ParseParameters ArrayType
+- **TestHTTPHandler_TriggerCache_Hit**: HTTPHandler TriggerCache Hit
+- **TestHTTPHandler_TriggerCache_Miss**: HTTPHandler TriggerCache Miss
+- **TestHTTPHandler_TriggerCache_NilCache**: HTTPHandler TriggerCache NilCache
+
+### step_test.go
+
+- **TestQueryStep**: TestQueryStep tests the QueryStep implementation.
+- **TestExtractSQLParams**: TestExtractSQLParams tests the extractSQLParams function.
+- **TestHTTPCallStep**: TestHTTPCallStep tests the HTTPCallStep implementation.
+- **TestNormalizeJSONResponse**: TestNormalizeJSONResponse tests the normalizeJSONResponse function.
+- **TestResponseStep**: TestResponseStep tests the ResponseStep implementation.
+- **TestResponseStepWriteError**: TestResponseStepWriteError tests the ResponseStep with a failing ResponseWriter.
+- **TestHTTPCallRetry**: TestHTTPCallRetry tests the retry logic in HTTPCallStep.
+- **TestHTTPCallWithBody**: TestHTTPCallWithBody tests POST requests with body.
+- **TestHTTPCallWithHeaders**: TestHTTPCallWithHeaders tests requests with custom headers.
+
+### validate_test.go
+
+- **TestValidate_BasicWorkflow**: Validate BasicWorkflow
+- **TestValidate_MissingName**: Validate MissingName
+- **TestValidate_MissingTriggers**: Validate MissingTriggers
+- **TestValidate_MissingSteps**: Validate MissingSteps
+- **TestValidate_HTTPTrigger**: Validate HTTPTrigger
+- **TestValidate_CronTrigger**: Validate CronTrigger
+- **TestValidate_QueryStep**: Validate QueryStep
+- **TestValidate_HTTPCallStep**: Validate HTTPCallStep
+- **TestValidate_ResponseStep**: Validate ResponseStep
+- **TestValidate_BlockStep**: Validate BlockStep
+- **TestValidate_ConditionAliases**: Validate ConditionAliases
+- **TestValidate_Warnings**: Validate Warnings
+- **TestValidate_DuplicateStepNames**: Validate DuplicateStepNames
+- **TestValidate_MultiStepRequiresNames**: Validate MultiStepRequiresNames
+- **TestValidate_PathParameters**: Validate PathParameters
+- **TestExtractPathParams**: ExtractPathParams
+- **TestValidate_SQLTemplateInjection**: Validate SQLTemplateInjection
+- **TestContainsTemplateInterpolation**: ContainsTemplateInterpolation
+- **TestValidate_RateLimitPool**: TestValidate_RateLimitPool verifies rate limit validation accepts valid pool references
+- **TestValidate_RateLimitInline**: TestValidate_RateLimitInline verifies rate limit validation accepts valid inline config
+- **TestValidate_RateLimitErrors**: TestValidate_RateLimitErrors verifies rate limit validation catches invalid configurations
+- **TestValidate_HTTPCallRetry**: TestValidate_HTTPCallRetry verifies httpcall retry configuration validation
+- **TestValidate_HTTPCallRetryValid**: TestValidate_HTTPCallRetryValid verifies valid httpcall retry configuration passes
+
+
+---
+
+## Workflow Steps
+
+**Package**: `internal/workflow/step`
+
+### step_test.go
+
+- **TestQueryStep**: TestQueryStep tests the QueryStep implementation.
+- **TestExtractSQLParams**: TestExtractSQLParams tests the extractSQLParams function.
+- **TestHTTPCallStep**: TestHTTPCallStep tests the HTTPCallStep implementation.
+- **TestNormalizeJSONResponse**: TestNormalizeJSONResponse tests the normalizeJSONResponse function.
+- **TestResponseStep**: TestResponseStep tests the ResponseStep implementation.
+- **TestResponseStepWriteError**: TestResponseStepWriteError tests the ResponseStep with a failing ResponseWriter.
+- **TestHTTPCallRetry**: TestHTTPCallRetry tests the retry logic in HTTPCallStep.
+- **TestHTTPCallWithBody**: TestHTTPCallWithBody tests POST requests with body.
+- **TestHTTPCallWithHeaders**: TestHTTPCallWithHeaders tests requests with custom headers.
+
+
+---
+
 ## End-to-End
 
 **Package**: `e2e`
@@ -616,15 +629,35 @@ Run `make test-cover` for current coverage statistics.
 - **TestE2E_MetricsEndpoint**: TestE2E_MetricsEndpoint tests /_/metrics.json returns runtime stats
 - **TestE2E_OpenAPIEndpoint**: TestE2E_OpenAPIEndpoint tests /_/openapi.json returns valid spec
 - **TestE2E_RootEndpoint**: TestE2E_RootEndpoint tests / returns endpoint listing
-- **TestE2E_QueryEndpoint**: TestE2E_QueryEndpoint tests query execution returns data
-- **TestE2E_QueryWithParameters**: TestE2E_QueryWithParameters tests parameterized query execution
+- **TestE2E_WorkflowEndpoint**: TestE2E_WorkflowEndpoint tests workflow execution returns data
+- **TestE2E_ErrorHandling_MissingRequiredParameter**: TestE2E_ErrorHandling_MissingRequiredParameter tests 400 response for missing required parameters
+- **TestE2E_ErrorHandling_InvalidParameterType**: TestE2E_ErrorHandling_InvalidParameterType tests 400 response for wrong parameter types
+- **TestE2E_ErrorHandling_DatabaseError**: TestE2E_ErrorHandling_DatabaseError tests 500 response for database errors
+- **TestE2E_ErrorHandling_NotFound**: TestE2E_ErrorHandling_NotFound tests 404 response for non-existent endpoints
+- **TestE2E_ErrorHandling_MethodNotAllowed**: TestE2E_ErrorHandling_MethodNotAllowed tests 405 response for wrong HTTP methods
 - **TestE2E_LogLevelEndpoint**: TestE2E_LogLevelEndpoint tests runtime log level changes
 - **TestE2E_GzipCompression**: TestE2E_GzipCompression tests response compression
 - **TestE2E_RequestID**: TestE2E_RequestID tests request ID propagation
 - **TestE2E_NotFound**: TestE2E_NotFound tests 404 for unknown paths
 - **TestE2E_GracefulShutdown**: TestE2E_GracefulShutdown tests server handles SIGTERM gracefully
+- **TestE2E_ErrorHandling_RateLimited**: TestE2E_ErrorHandling_RateLimited tests 429 response when rate limit is exceeded
 - **TestE2E_ConfigValidation**: TestE2E_ConfigValidation tests -validate flag
 - **TestE2E_InvalidConfig**: TestE2E_InvalidConfig tests server rejects invalid config
+
+### taskapp_test.go
+
+- **TestTaskApp_PathParameters**: TestTaskApp_PathParameters tests path parameter extraction for /api/tasks/{id}
+- **TestTaskApp_AllHTTPMethods**: TestTaskApp_AllHTTPMethods tests all 7 HTTP methods on /api/tasks
+- **TestTaskApp_TriggerCaching**: TestTaskApp_TriggerCaching tests X-Cache header behavior
+- **TestTaskApp_RateLimiting**: TestTaskApp_RateLimiting tests 429 response when rate limit exceeded
+- **TestTaskApp_ConditionalResponses**: TestTaskApp_ConditionalResponses tests different response codes based on conditions
+- **TestTaskApp_TemplateFunctions**: TestTaskApp_TemplateFunctions tests template functions in responses
+- **TestTaskApp_BatchOperations**: TestTaskApp_BatchOperations tests block iteration for batch create/delete
+- **TestTaskApp_StepCaching**: TestTaskApp_StepCaching tests step-level cache behavior
+- **TestTaskApp_Pagination**: TestTaskApp_Pagination tests pagination parameters
+- **TestTaskApp_Filtering**: TestTaskApp_Filtering tests status and priority filters
+- **TestTaskApp_Categories**: TestTaskApp_Categories tests secondary entity CRUD
+- **TestTaskApp_CompleteTask**: TestTaskApp_CompleteTask tests the complete workflow with disabled audit step
 
 
 ---

@@ -12,12 +12,12 @@ server:
   # cache:
   #   enabled: true
   #   max_size_mb: 256       # Total cache memory limit (default: 256)
-  #   default_ttl_sec: 300   # Default TTL if not specified per-query (default: 300)
+  #   default_ttl_sec: 300   # Default TTL if not specified per-workflow (default: 300)
 
 # Database connections - type-specific fields required
 databases:
-  - name: "primary"                # Connection name (referenced by queries)
-    type: "sqlserver"              # Database type: sqlserver, sqlite (default: sqlserver)
+  - name: "primary"                # Connection name (referenced by workflows)
+    type: "sqlserver"              # Database type: sqlserver or sqlite (required)
     host: "${DB_HOST}"             # SQL Server host
     port: 1433                     # SQL Server port (typically 1433)
     user: "${DB_USER}"             # Database user
@@ -71,473 +71,236 @@ metrics:
 #   port: 6060         # Separate port (0 = same as main server)
 #   host: "localhost"  # Only valid with separate port; defaults to localhost
 
-# Query Definitions - each query requires: name, database, sql
-# HTTP endpoints also require: path, method
-queries:
-  # Example: Get all machines
-  - name: "list_machines"
-    database: "primary"
-    path: "/api/machines"
-    method: "GET"
-    description: "List all biometric machines"
-    sql: |
-      SELECT
-        MachineId,
-        MachineName,
-        MachineIP,
-        LastPingTime,
-        IsOnline
-      FROM Machines
-      ORDER BY MachineName
+# Rate Limit Pools (optional)
+# Named rate limit pools that can be referenced by workflows
+# rate_limits:
+#   - name: "default"
+#     requests_per_second: 100
+#     burst: 200
+#     key: "{{.ClientIP}}"
+#   - name: "strict"
+#     requests_per_second: 10
+#     burst: 20
+#     key: "{{.ClientIP}}"
 
-  # Example: Get machine by ID
-  - name: "get_machine"
-    database: "primary"
-    path: "/api/machines/details"
-    method: "GET"
-    description: "Get machine details by ID"
-    sql: |
-      SELECT
-        MachineId,
-        MachineName,
-        MachineIP,
-        LastPingTime,
-        IsOnline,
-        Location,
-        SerialNumber
-      FROM Machines
-      WHERE MachineId = @machineId
-    parameters:
-      - name: "machineId"
-        type: "int"
-        required: true
+# ============================================================================
+# WORKFLOWS
+# ============================================================================
+# Workflows define query pipelines with triggers, steps, and conditional execution.
+#
+# A workflow consists of:
+# - triggers: How the workflow is initiated (HTTP request or cron schedule)
+# - steps: Sequential execution of query, httpcall, or response steps
+# - conditions: Named expressions for conditional step execution
+#
+# Workflows support:
+# - HTTP and cron triggers
+# - Query steps for database operations
+# - HTTPCall steps for external API calls
+# - Response steps with templated output
+# - Iteration over results with blocks
+# - Conditional execution based on results
+# - Caching and rate limiting per trigger
+#
+# HTTP Methods: GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS
+# Note: Same path with different methods is supported (RESTful pattern)
 
-  # Example: Get machine ping history
-  - name: "machine_ping_history"
-    database: "primary"
-    path: "/api/machines/ping-history"
-    method: "GET"
-    description: "Get ping history for a machine"
-    sql: |
-      SELECT TOP (@limit)
-        PingTime,
-        Status,
-        ResponseTime
-      FROM MachinePingLog
-      WHERE MachineId = @machineId
-        AND PingTime >= @fromDate
-      ORDER BY PingTime DESC
-    parameters:
-      - name: "machineId"
-        type: "int"
-        required: true
-      - name: "fromDate"
-        type: "datetime"
-        required: false
-        default: "2024-01-01"
-      - name: "limit"
-        type: "int"
-        required: false
-        default: "100"
+workflows:
+  # ============================================================================
+  # BASIC HTTP WORKFLOW
+  # ============================================================================
+  # Simple workflow exposing a query as an HTTP endpoint
 
-  # Example: Get check-in/out logs
-  # This query has a custom timeout since it may scan large date ranges
-  - name: "checkin_logs"
-    database: "primary"
-    path: "/api/checkins"
-    method: "GET"
-    description: "Get check-in/out logs for a date range"
-    timeout_sec: 60  # Query-specific timeout (overrides server default)
-    sql: |
-      SELECT TOP (@limit)
-        l.LogId,
-        l.EmployeeId,
-        l.MachineId,
-        l.PunchTime,
-        l.PunchType,
-        m.MachineName
-      FROM AttendanceLog l
-      INNER JOIN Machines m ON l.MachineId = m.MachineId
-      WHERE l.PunchTime BETWEEN @fromDate AND @toDate
-      ORDER BY l.PunchTime DESC
-    parameters:
-      - name: "fromDate"
-        type: "datetime"
-        required: true
-      - name: "toDate"
-        type: "datetime"
-        required: true
-      - name: "limit"
-        type: "int"
-        required: false
-        default: "1000"
-
-  # Example: Get check-ins for specific employee
-  # This query overrides isolation to READ COMMITTED for consistent reads
-  - name: "employee_checkins"
-    database: "primary"
-    path: "/api/checkins/employee"
-    method: "GET"
-    description: "Get check-in/out logs for a specific employee"
-    isolation: "read_committed"    # Override: need consistent reads (no dirty reads)
-    sql: |
-      SELECT
-        l.LogId,
-        l.PunchTime,
-        l.PunchType,
-        m.MachineName,
-        m.Location
-      FROM AttendanceLog l
-      INNER JOIN Machines m ON l.MachineId = m.MachineId
-      WHERE l.EmployeeId = @employeeId
-        AND l.PunchTime BETWEEN @fromDate AND @toDate
-      ORDER BY l.PunchTime DESC
-    parameters:
-      - name: "employeeId"
-        type: "string"
-        required: true
-      - name: "fromDate"
-        type: "datetime"
-        required: true
-      - name: "toDate"
-        type: "datetime"
-        required: true
-
-  # Example: Machine status summary (HTTP + scheduled)
-  # This query is both an HTTP endpoint AND runs on a schedule
-  - name: "machine_status_summary"
-    database: "primary"
-    path: "/api/machines/status-summary"
-    method: "GET"
-    description: "Get summary of machine online/offline status"
-    sql: |
-      SELECT
-        COUNT(*) AS TotalMachines,
-        SUM(CASE WHEN IsOnline = 1 THEN 1 ELSE 0 END) AS OnlineMachines,
-        SUM(CASE WHEN IsOnline = 0 THEN 1 ELSE 0 END) AS OfflineMachines,
-        MIN(LastPingTime) AS OldestPing,
-        MAX(LastPingTime) AS LatestPing
-      FROM Machines
-    schedule:
-      cron: "*/5 * * * *"    # Run every 5 minutes
-      log_results: true      # Log the actual row data
-
-  # Example: Scheduled-only query (no HTTP endpoint)
-  # This query runs daily and logs yesterday's attendance count
-  # - name: "daily_attendance_count"
-  #   database: "primary"
-  #   description: "Count yesterday's attendance records"
-  #   sql: |
-  #     SELECT
-  #       COUNT(*) AS TotalCheckins,
-  #       COUNT(DISTINCT EmployeeId) AS UniqueEmployees,
-  #       CAST(@reportDate AS DATE) AS ReportDate
-  #     FROM AttendanceLog
-  #     WHERE CAST(PunchTime AS DATE) = CAST(@reportDate AS DATE)
-  #   parameters:
-  #     - name: "reportDate"
-  #       type: "datetime"
-  #       required: true
-  #   schedule:
-  #     cron: "0 8 * * *"      # Run at 8 AM daily
-  #     params:
-  #       reportDate: "yesterday"  # Dynamic date: resolves to yesterday at runtime
-  #     log_results: true
+  # - name: "list_machines"
+  #   triggers:
+  #     - type: http
+  #       path: "/api/machines"
+  #       method: GET
+  #   steps:
+  #     - name: fetch
+  #       type: query
+  #       database: "primary"
+  #       sql: |
+  #         SELECT MachineId, MachineName, MachineIP, LastPingTime, IsOnline
+  #         FROM Machines ORDER BY MachineName
+  #     - type: response
+  #       template: |
+  #         {"success": true, "count": {{.steps.fetch.count}}, "data": {{json .steps.fetch.data}}}
 
   # ============================================================================
-  # CACHE EXAMPLES
+  # WORKFLOW WITH PARAMETERS
   # ============================================================================
-  # Per-query caching with templated keys, TTL, and cron-based eviction
 
-  # Example: Cached query with templated key
-  # - name: "get_machine_status"
-  #   database: "primary"
-  #   path: "/api/machines/status"
-  #   method: "GET"
-  #   sql: SELECT * FROM Machines WHERE status = @status
-  #   parameters:
-  #     - name: "status"
-  #       type: "string"
-  #       default: "active"
-  #   cache:
-  #     enabled: true
-  #     key: "machines:{{.status}}"      # Key from params: "machines:active"
-  #     ttl_sec: 300                      # Cache for 5 minutes
-  #     max_size_mb: 32                   # Per-endpoint limit (optional)
-
-  # Example: Cached query with multiple params in key
-  # - name: "date_range_report"
-  #   database: "primary"
-  #   path: "/api/reports/range"
-  #   method: "GET"
-  #   sql: SELECT * FROM Reports WHERE date BETWEEN @from AND @to
-  #   parameters:
-  #     - name: "from"
-  #       type: "date"
-  #       required: true
-  #     - name: "to"
-  #       type: "date"
-  #       required: true
-  #   cache:
-  #     enabled: true
-  #     key: "report:{{.from}}:{{.to}}"   # Key: "report:2024-01-01:2024-01-31"
-  #     ttl_sec: 3600                      # Cache for 1 hour
-
-  # Example: Cached query with cron-based eviction (cache clears on schedule)
-  # - name: "daily_summary"
-  #   database: "primary"
-  #   path: "/api/summary"
-  #   method: "GET"
-  #   sql: SELECT * FROM DailySummary
-  #   cache:
-  #     enabled: true
-  #     key: "summary"                    # Static key (no params)
-  #     ttl_sec: 86400                    # 24 hour TTL
-  #     evict_cron: "0 0 * * *"           # Also clear cache at midnight
-
-  # Example: Key with default value for optional param
-  # - name: "filtered_items"
-  #   database: "primary"
-  #   path: "/api/items"
-  #   method: "GET"
-  #   sql: SELECT * FROM Items WHERE (@category = '' OR category = @category)
-  #   parameters:
-  #     - name: "category"
-  #       type: "string"
-  #       required: false
-  #   cache:
-  #     enabled: true
-  #     key: "items:{{.category | default \"all\"}}"   # "items:all" or "items:electronics"
-  #     ttl_sec: 600
-
-  # Cache Bypass: Add ?_nocache=1 to any request to bypass cache
-  # Response Headers: X-Cache (HIT/MISS), X-Cache-Key, X-Cache-TTL
+  # - name: "get_machine"
+  #   triggers:
+  #     - type: http
+  #       path: "/api/machines/details"
+  #       method: GET
+  #       parameters:
+  #         - name: "machineId"
+  #           type: "int"
+  #           required: true
+  #   steps:
+  #     - name: fetch
+  #       type: query
+  #       database: "primary"
+  #       sql: |
+  #         SELECT * FROM Machines WHERE MachineId = @machineId
+  #     - type: response
+  #       condition: "steps.fetch.count > 0"
+  #       template: |
+  #         {"success": true, "data": {{json (index .steps.fetch.data 0)}}}
+  #     - type: response
+  #       condition: "steps.fetch.count == 0"
+  #       status_code: 404
+  #       template: |
+  #         {"success": false, "error": "Machine not found"}
 
   # ============================================================================
-  # WEBHOOK EXAMPLES
+  # SCHEDULED WORKFLOW (CRON)
   # ============================================================================
-  # Webhooks can be attached to scheduled queries to POST results to external URLs
 
-  # Example: Simple webhook - sends raw JSON with all query results
-  # - name: "offline_machines_alert"
-  #   database: "primary"
-  #   sql: |
-  #     SELECT MachineId, MachineName, LastPingTime
-  #     FROM Machines WHERE IsOnline = 0
-  #   schedule:
-  #     cron: "*/15 * * * *"    # Every 15 minutes
-  #     webhook:
+  # - name: "machine_status_summary"
+  #   triggers:
+  #     - type: cron
+  #       schedule: "*/5 * * * *"    # Every 5 minutes
+  #   steps:
+  #     - name: fetch
+  #       type: query
+  #       database: "primary"
+  #       sql: |
+  #         SELECT
+  #           COUNT(*) AS TotalMachines,
+  #           SUM(CASE WHEN IsOnline = 1 THEN 1 ELSE 0 END) AS OnlineMachines,
+  #           SUM(CASE WHEN IsOnline = 0 THEN 1 ELSE 0 END) AS OfflineMachines
+  #         FROM Machines
+
+  # ============================================================================
+  # WORKFLOW WITH HTTPCALL (WEBHOOK)
+  # ============================================================================
+
+  # - name: "alert_offline_machines"
+  #   triggers:
+  #     - type: cron
+  #       schedule: "*/15 * * * *"   # Every 15 minutes
+  #   conditions:
+  #     has_offline: "steps.fetch.count > 0"
+  #   steps:
+  #     - name: fetch
+  #       type: query
+  #       database: "primary"
+  #       sql: |
+  #         SELECT MachineId, MachineName, LastPingTime
+  #         FROM Machines WHERE IsOnline = 0
+  #
+  #     - name: notify
+  #       type: httpcall
+  #       condition: "has_offline"
   #       url: "https://hooks.slack.com/services/XXX/YYY/ZZZ"
-  #       method: "POST"
+  #       http_method: POST
   #       headers:
-  #         Authorization: "Bearer ${SLACK_TOKEN}"
-
-  # Example: Slack webhook with custom payload template
-  # - name: "daily_summary_slack"
-  #   database: "primary"
-  #   sql: |
-  #     SELECT
-  #       COUNT(*) AS total,
-  #       SUM(CASE WHEN IsOnline = 1 THEN 1 ELSE 0 END) AS online
-  #     FROM Machines
-  #   schedule:
-  #     cron: "0 9 * * *"       # 9 AM daily
-  #     webhook:
-  #       url: "https://hooks.slack.com/services/XXX/YYY/ZZZ"
-  #       body:
-  #         header: |
-  #           {"text": "Daily Machine Status Report ({{.Count}} rows)", "blocks": [
-  #         item: |
-  #           {"type": "section", "text": {"type": "mrkdwn", "text": "*Total:* {{.total}} | *Online:* {{.online}}"}}
-  #         footer: |
-  #           ]}
-  #         separator: ","
-
-  # Example: Teams webhook with custom payload
-  # - name: "alert_to_teams"
-  #   database: "primary"
-  #   sql: SELECT MachineName, Location FROM Machines WHERE IsOnline = 0
-  #   schedule:
-  #     cron: "*/30 * * * *"
-  #     webhook:
-  #       url: "https://outlook.office.com/webhook/..."
-  #       body:
-  #         header: |
-  #           {"@type": "MessageCard", "title": "Offline Machines Alert", "sections": [{"facts": [
-  #         item: |
-  #           {"name": "{{.MachineName}}", "value": "{{.Location}}"}
-  #         footer: |
-  #           ]}]}
-  #         separator: ","
-  #         on_empty: "skip"    # Don't send webhook if no offline machines
-
-  # Example: Custom API endpoint with templated URL and all features
-  # - name: "sync_data_to_api"
-  #   database: "primary"
-  #   sql: |
-  #     SELECT EmployeeId, PunchTime, PunchType
-  #     FROM AttendanceLog
-  #     WHERE PunchTime >= @since
-  #   parameters:
-  #     - name: "since"
-  #       type: "datetime"
-  #       required: true
-  #   schedule:
-  #     cron: "*/10 * * * *"
-  #     params:
-  #       since: "today"        # Dynamic date
-  #     webhook:
-  #       url: "https://api.example.com/sync/{{.Query}}?count={{.Count}}"
-  #       method: "POST"
-  #       headers:
-  #         Authorization: "Bearer ${API_TOKEN}"
   #         Content-Type: "application/json"
-  #       body:
-  #         # Build JSON array with header/item/footer
-  #         header: |
-  #           {"query": "{{.Query}}", "timestamp": "{{.DurationMs}}ms", "data": [
-  #         item: |
-  #           {"employee": "{{.EmployeeId}}", "time": "{{.PunchTime}}", "type": "{{.PunchType}}"}
-  #         footer: |
-  #           ]}
-  #         separator: ","
-  #         on_empty: "send"    # Send even with empty results
-  #         empty: |
-  #           {"query": "{{.Query}}", "timestamp": "{{.DurationMs}}ms", "data": [], "message": "No new records"}
-  #       retry:                  # Retry configuration (optional)
-  #         enabled: true         # Enable retries (default: true)
-  #         max_attempts: 3       # Maximum retry attempts (default: 3)
-  #         initial_backoff_sec: 1  # Initial backoff in seconds (default: 1)
-  #         max_backoff_sec: 30   # Maximum backoff in seconds (default: 30)
-  #                               # Backoff doubles each retry: 1s, 2s, 4s... capped at max
-
-  # Template Reference:
-  # Header/Footer context: .Query, .Count, .Success, .DurationMs, .Params, .Data, .Error
-  # Item context: row fields (e.g., .MachineName), plus ._index (0-based) and ._count (total)
-  # Functions: add, mod, json, jsonIndent
-  # Conditionals: {{if eq ._index 0}}first{{end}}, {{if .Success}}ok{{else}}fail{{end}}
+  #       body: |
+  #         {"text": "Offline machines: {{.steps.fetch.count}}", "data": {{json .steps.fetch.data}}}
 
   # ============================================================================
-  # PARAMETER TYPE EXAMPLES
+  # WORKFLOW WITH CACHING
   # ============================================================================
-  # Supported types: string, int, integer, float, double, bool, boolean,
-  #                  datetime, date, json, int[], string[], float[], bool[]
 
-  # Example: JSON type parameter for storing/querying JSON data
-  # - name: "save_config"
-  #   database: "primary"
-  #   path: "/api/config"
-  #   method: "POST"
-  #   description: "Save configuration with nested JSON data"
-  #   sql: |
-  #     INSERT INTO configs (name, data, updated_at)
-  #     VALUES (@name, @data, GETDATE())
-  #   parameters:
-  #     - name: "name"
-  #       type: "string"
-  #       required: true
-  #     - name: "data"
-  #       type: "json"         # Accepts any JSON: objects, arrays, primitives
-  #       required: true
-  #   # Usage: curl -X POST -H "Content-Type: application/json" \
-  #   #   -d '{"name": "settings", "data": {"theme": "dark", "notifications": {"email": true}}}' \
-  #   #   http://localhost:8081/api/config
-
-  # Example: Query JSON data using SQL Server JSON_VALUE
-  # - name: "get_config_theme"
-  #   database: "primary"
-  #   path: "/api/config/theme"
-  #   method: "GET"
-  #   sql: |
-  #     SELECT name, JSON_VALUE(data, '$.theme') AS theme
-  #     FROM configs
-  #     WHERE name = @name
-
-  # Example: Integer array for IN clause queries (SQL Server)
-  # - name: "get_machines_by_ids"
-  #   database: "primary"
-  #   path: "/api/machines/batch"
-  #   method: "POST"
-  #   description: "Get multiple machines by ID list"
-  #   sql: |
-  #     SELECT MachineId, MachineName, IsOnline
-  #     FROM Machines
-  #     WHERE MachineId IN (SELECT CAST(value AS INT) FROM OPENJSON(@ids))
-  #   parameters:
-  #     - name: "ids"
-  #       type: "int[]"        # Array of integers: [1, 2, 3]
-  #       required: true
-  #   # Usage: curl -X POST -H "Content-Type: application/json" \
-  #   #   -d '{"ids": [1, 2, 3, 5, 8]}' \
-  #   #   http://localhost:8081/api/machines/batch
-
-  # Example: String array for filtering by multiple values (SQL Server)
-  # - name: "filter_by_status"
-  #   database: "primary"
-  #   path: "/api/machines/filter"
-  #   method: "POST"
-  #   description: "Filter machines by multiple status values"
-  #   sql: |
-  #     SELECT MachineId, MachineName, Status
-  #     FROM Machines
-  #     WHERE Status IN (SELECT value FROM OPENJSON(@statuses))
-  #   parameters:
-  #     - name: "statuses"
-  #       type: "string[]"     # Array of strings: ["active", "maintenance"]
-  #       required: true
-  #   # Usage: curl -X POST -H "Content-Type: application/json" \
-  #   #   -d '{"statuses": ["active", "pending", "maintenance"]}' \
-  #   #   http://localhost:8081/api/machines/filter
-
-  # Example: SQLite array query using json_each
-  # - name: "get_users_by_ids"
-  #   database: "test_db"      # SQLite database
-  #   path: "/api/users/batch"
-  #   method: "POST"
-  #   sql: |
-  #     SELECT * FROM users
-  #     WHERE id IN (SELECT value FROM json_each(@ids))
-  #   parameters:
-  #     - name: "ids"
-  #       type: "int[]"
-  #       required: true
+  # - name: "get_dashboard_stats"
+  #   triggers:
+  #     - type: http
+  #       path: "/api/dashboard"
+  #       method: GET
+  #       parameters:
+  #         - name: "period"
+  #           type: "string"
+  #           default: "day"
+  #       cache:
+  #         enabled: true
+  #         key: "dashboard:{{.period}}"
+  #         ttl_sec: 60
+  #   steps:
+  #     - name: stats
+  #       type: query
+  #       database: "primary"
+  #       sql: |
+  #         SELECT COUNT(*) AS total, SUM(CASE WHEN IsOnline = 1 THEN 1 ELSE 0 END) AS online
+  #         FROM Machines
+  #     - type: response
+  #       template: |
+  #         {"success": true, "stats": {{json (index .steps.stats.data 0)}}}
 
   # ============================================================================
-  # JSON COLUMN OUTPUT EXAMPLES
+  # WORKFLOW WITH RATE LIMITING
   # ============================================================================
-  # By default, JSON stored in database columns is returned as escaped strings.
-  # Use json_columns to parse specified columns as JSON objects in the response.
 
-  # Example: Parse JSON column in response
-  # - name: "get_config"
-  #   database: "primary"
-  #   path: "/api/config"
-  #   method: "GET"
-  #   description: "Get configuration with parsed JSON data column"
-  #   sql: |
-  #     SELECT id, name, data FROM configs WHERE name = @name
-  #   json_columns: ["data"]     # Parse 'data' column as JSON object
-  #   parameters:
-  #     - name: "name"
-  #       type: "string"
-  #       required: true
-  #   # Without json_columns: {"data": "{\"theme\":\"dark\"}"}
-  #   # With json_columns:    {"data": {"theme": "dark"}}
+  # - name: "expensive_report"
+  #   triggers:
+  #     - type: http
+  #       path: "/api/reports/full"
+  #       method: GET
+  #       rate_limit:
+  #         - pool: "strict"           # Reference named pool
+  #         - requests_per_second: 1   # Or inline rate limit
+  #           burst: 5
+  #           key: "{{.ClientIP}}"
+  #   steps:
+  #     - name: fetch
+  #       type: query
+  #       database: "primary"
+  #       sql: "SELECT * FROM LargeTable"
+  #     - type: response
+  #       template: |
+  #         {"success": true, "data": {{json .steps.fetch.data}}}
 
-  # Example: Parse multiple JSON columns
-  # - name: "get_user_with_settings"
-  #   database: "primary"
-  #   path: "/api/user/full"
-  #   method: "GET"
-  #   sql: |
-  #     SELECT id, name, settings, preferences FROM users WHERE id = @id
-  #   json_columns: ["settings", "preferences"]   # Parse both columns
-  #   parameters:
-  #     - name: "id"
-  #       type: "int"
-  #       required: true
+  # ============================================================================
+  # WORKFLOW WITH ITERATION (BLOCK)
+  # ============================================================================
 
-  # Note: json_columns only affects columns that contain valid JSON strings.
-  # - Non-string values are left unchanged
-  # - Empty strings are left as empty strings
-  # - Invalid JSON in a configured column returns a 500 error
+  # - name: "process_pending_orders"
+  #   triggers:
+  #     - type: cron
+  #       schedule: "*/5 * * * *"
+  #   conditions:
+  #     has_orders: "steps.fetch.count > 0"
+  #   steps:
+  #     - name: fetch
+  #       type: query
+  #       database: "primary"
+  #       sql: "SELECT * FROM Orders WHERE Status = 'pending' ORDER BY CreatedAt"
+  #
+  #     - name: process_each
+  #       condition: "has_orders"
+  #       iterate:
+  #         over: "steps.fetch.data"
+  #         as: "order"
+  #         on_error: continue      # Continue on error, abort, or skip
+  #       steps:
+  #         - name: call_api
+  #           type: httpcall
+  #           url: "https://api.example.com/process/{{.order.OrderId}}"
+  #           http_method: POST
+  #           body: |
+  #             {"amount": {{.order.Amount}}}
+
+  # ============================================================================
+  # PARAMETER TYPES
+  # ============================================================================
+  # Supported: string, int, integer, float, double, bool, boolean,
+  #            datetime, date, json, int[], string[], float[], bool[]
+
+  # ============================================================================
+  # TEMPLATE REFERENCE
+  # ============================================================================
+  # Available in templates:
+  #   .steps.<name>.data      - Query results (array of maps)
+  #   .steps.<name>.count     - Row count
+  #   .steps.<name>.success   - Boolean success status
+  #   .trigger.params.<name>  - Parameter values
+  #   .trigger.headers.<name> - HTTP headers
+  #   .trigger.client_ip      - Client IP address
+  #   .workflow.request_id    - Request ID
+  #   .workflow.name          - Workflow name
+  #
+  # Template functions: json, len, index, add, mod, default, eq, ne, lt, gt

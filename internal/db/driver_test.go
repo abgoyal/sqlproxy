@@ -50,24 +50,19 @@ func TestNewDriver_SQLiteExplicit(t *testing.T) {
 	}
 }
 
-// TestNewDriver_EmptyTypeDefaultsToSQLServer ensures empty type falls back to sqlserver
-func TestNewDriver_EmptyTypeDefaultsToSQLServer(t *testing.T) {
+// TestNewDriver_EmptyTypeReturnsError ensures empty type is rejected
+func TestNewDriver_EmptyTypeReturnsError(t *testing.T) {
 	cfg := config.DatabaseConfig{
 		Name: "test",
-		Type: "", // Empty type should default to sqlserver
-		// SQL Server configs would be needed here, but we expect this to fail
-		// since we don't have valid SQL Server connection params
+		Type: "", // Empty type should be rejected
 	}
 
 	_, err := NewDriver(cfg)
-	// We expect an error since SQL Server connection params are invalid
-	// The key point is it tries SQL Server, not SQLite or unknown type
 	if err == nil {
-		t.Error("expected error for invalid SQL Server config")
+		t.Error("expected error for empty type")
 	}
-	// The error should be from SQL Server connection, not "unknown database type"
-	if strings.Contains(err.Error(), "unknown database type") {
-		t.Error("empty type should default to sqlserver, not be treated as unknown")
+	if !strings.Contains(err.Error(), "unknown database type") {
+		t.Errorf("expected 'unknown database type' error, got: %v", err)
 	}
 }
 
@@ -170,8 +165,8 @@ func TestDriverInterface_SQLite(t *testing.T) {
 	if err != nil {
 		t.Errorf("query failed: %v", err)
 	}
-	if len(results) != 1 {
-		t.Errorf("expected 1 row, got %d", len(results))
+	if len(results.Rows) != 1 {
+		t.Errorf("expected 1 row, got %d", len(results.Rows))
 	}
 }
 

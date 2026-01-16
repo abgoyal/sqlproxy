@@ -3,6 +3,8 @@ package server
 import (
 	"compress/gzip"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,17 +17,18 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/robfig/cron/v3"
 
 	"sql-proxy/internal/cache"
 	"sql-proxy/internal/config"
 	"sql-proxy/internal/db"
-	"sql-proxy/internal/handler"
 	"sql-proxy/internal/logging"
 	"sql-proxy/internal/metrics"
 	"sql-proxy/internal/openapi"
 	"sql-proxy/internal/ratelimit"
-	"sql-proxy/internal/scheduler"
 	"sql-proxy/internal/tmpl"
+	"sql-proxy/internal/workflow"
+	"sql-proxy/internal/workflow/step"
 )
 
 const (
@@ -65,8 +68,14 @@ type Server struct {
 	dbHealthy     atomic.Bool
 	healthChecker context.CancelFunc
 
-	// Scheduled query execution
-	scheduler *scheduler.Scheduler
+	// Cron job scheduler for workflow triggers
+	cron       *cron.Cron
+	cronCtx    context.Context    // Context for cron job execution
+	cronCancel context.CancelFunc // Cancel function for graceful shutdown
+
+	// Workflow execution (written once during initialization, read-only after)
+	workflowExecutor *workflow.Executor
+	workflows        []*workflow.CompiledWorkflow
 }
 
 // Response types for JSON encoding
@@ -126,7 +135,7 @@ func New(cfg *config.Config, interactive bool) (*Server, error) {
 	logging.Info("service_starting", map[string]any{
 		"version":   cfg.Server.Version,
 		"log_level": cfg.Logging.Level,
-		"queries":   len(cfg.Queries),
+		"workflows": len(cfg.Workflows),
 		"databases": len(cfg.Databases),
 	})
 
@@ -214,9 +223,16 @@ func New(cfg *config.Config, interactive bool) (*Server, error) {
 		logging.Info("metrics_initialized", nil)
 	}
 
-	// Initialize scheduler if there are scheduled queries
-	if scheduler.HasScheduledQueries(cfg.Queries) {
-		s.scheduler = scheduler.New(dbManager, cfg.Queries, cfg.Server)
+	// Initialize workflows if configured
+	if len(cfg.Workflows) > 0 {
+		if err := s.initWorkflows(cfg); err != nil {
+			return nil, err
+		}
+
+		// Add workflow cron triggers to scheduler
+		if err := s.addWorkflowCronJobs(); err != nil {
+			return nil, err
+		}
 	}
 
 	// Start background health checker
@@ -369,8 +385,8 @@ func (s *Server) checkDBHealth() bool {
 func (s *Server) setupRoutes(mux *http.ServeMux) {
 	// Internal endpoints (/_/ prefix is reserved, user queries cannot use it)
 	// Health check endpoints
-	mux.HandleFunc("/_/health", s.healthHandler)       // Aggregate health
-	mux.HandleFunc("/_/health/", s.dbHealthHandler)    // Per-database health: /_/health/{dbname}
+	mux.HandleFunc("/_/health", s.healthHandler)    // Aggregate health
+	mux.HandleFunc("/_/health/", s.dbHealthHandler) // Per-database health: /_/health/{dbname}
 
 	// Metrics endpoints
 	mux.HandleFunc("/_/metrics.json", s.metricsJSONHandler)  // Human-readable JSON metrics
@@ -391,41 +407,48 @@ func (s *Server) setupRoutes(mux *http.ServeMux) {
 	// List available endpoints
 	mux.HandleFunc("/", s.listEndpointsHandler)
 
-	// Register query endpoints (only for queries with HTTP paths)
-	for _, q := range s.config.Queries {
-		if q.Path == "" {
-			continue // Schedule-only query, no HTTP endpoint
+	// Create rate limiter adapter for workflows
+	var rateLimiterAdapter workflow.RateLimiter
+	if s.rateLimiter != nil {
+		rateLimiterAdapter = &workflowRateLimiterAdapter{
+			limiter:    s.rateLimiter,
+			ctxBuilder: s.ctxBuilder,
 		}
+	}
 
-		// Register cache endpoint if caching is enabled for this query
-		if s.cache != nil && q.Cache != nil && q.Cache.Enabled {
-			if err := s.cache.RegisterEndpoint(q.Path, q.Cache); err != nil {
-				logging.Warn("cache_endpoint_registration_failed", map[string]any{
-					"path":  q.Path,
-					"error": err.Error(),
-				})
+	// Create trigger cache adapter for workflows
+	var triggerCache workflow.TriggerCache
+	if s.cache != nil {
+		triggerCache = &triggerCacheAdapter{cache: s.cache}
+	}
+
+	// Register workflow HTTP triggers
+	for _, wf := range s.workflows {
+		for _, trigger := range wf.Triggers {
+			if trigger.Config.Type != "http" {
+				continue
 			}
-		}
 
-		h := handler.New(s.dbManager, s.cache, s.rateLimiter, s.ctxBuilder, q, s.config.Server)
-		mux.Handle(q.Path, h)
+			h := workflow.NewHTTPHandler(
+				s.workflowExecutor,
+				wf,
+				trigger,
+				rateLimiterAdapter,
+				triggerCache,
+				s.config.Server.TrustProxyHeaders,
+				s.config.Server.Version,
+				s.config.Server.BuildTime,
+			)
+			// Register with method prefix for Go 1.22+ routing (e.g., "GET /api/items")
+			pattern := trigger.Config.Method + " " + trigger.Config.Path
+			mux.Handle(pattern, h)
 
-		logFields := map[string]any{
-			"method":      q.Method,
-			"path":        q.Path,
-			"name":        q.Name,
-			"database":    q.Database,
-			"description": q.Description,
-			"scheduled":   q.Schedule != nil,
+			logging.Info("workflow_endpoint_registered", map[string]any{
+				"workflow": wf.Config.Name,
+				"method":   trigger.Config.Method,
+				"path":     trigger.Config.Path,
+			})
 		}
-		if q.Cache != nil && q.Cache.Enabled {
-			logFields["cached"] = true
-			logFields["cache_key"] = q.Cache.Key
-			if q.Cache.TTLSec > 0 {
-				logFields["cache_ttl_sec"] = q.Cache.TTLSec
-			}
-		}
-		logging.Info("endpoint_registered", logFields)
 	}
 }
 
@@ -540,8 +563,10 @@ func (s *Server) metricsPrometheusHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	// Use promhttp handler with our custom registry
+	// DisableCompression: true because our gzip middleware handles compression
 	promhttp.HandlerFor(registry, promhttp.HandlerOpts{
-		EnableOpenMetrics: true,
+		EnableOpenMetrics:  true,
+		DisableCompression: true,
 	}).ServeHTTP(w, r)
 }
 
@@ -702,60 +727,42 @@ func (s *Server) listEndpointsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	type endpointInfo struct {
-		Name        string               `json:"name"`
-		Path        string               `json:"path"`
-		Method      string               `json:"method"`
-		Database    string               `json:"database"`
-		Description string               `json:"description"`
-		Parameters  []config.ParamConfig `json:"parameters,omitempty"`
-		TimeoutSec  int                  `json:"timeout_sec"`
-		TimeoutNote string               `json:"timeout_note"`
-		Schedule    string               `json:"schedule,omitempty"`
+		Name       string                 `json:"name"`
+		Path       string                 `json:"path"`
+		Method     string                 `json:"method"`
+		Parameters []workflow.ParamConfig `json:"parameters,omitempty"`
+		TimeoutSec int                    `json:"timeout_sec"`
 	}
 
 	type scheduledInfo struct {
-		Name        string `json:"name"`
-		Database    string `json:"database"`
-		Description string `json:"description"`
-		Cron        string `json:"cron"`
-		LogResults  bool   `json:"log_results"`
+		Name     string `json:"name"`
+		Schedule string `json:"schedule"`
 	}
 
 	endpoints := make([]endpointInfo, 0)
 	scheduled := make([]scheduledInfo, 0)
 
-	for _, q := range s.config.Queries {
-		// Add to HTTP endpoints list if it has a path
-		if q.Path != "" {
-			effectiveTimeout := s.config.Server.DefaultTimeoutSec
-			if q.TimeoutSec > 0 {
-				effectiveTimeout = q.TimeoutSec
-			}
-			ep := endpointInfo{
-				Name:        q.Name,
-				Path:        q.Path,
-				Method:      q.Method,
-				Database:    q.Database,
-				Description: q.Description,
-				Parameters:  q.Parameters,
-				TimeoutSec:  effectiveTimeout,
-				TimeoutNote: fmt.Sprintf("Override with _timeout param (max %d)", s.config.Server.MaxTimeoutSec),
-			}
-			if q.Schedule != nil {
-				ep.Schedule = q.Schedule.Cron
-			}
-			endpoints = append(endpoints, ep)
+	for _, wf := range s.workflows {
+		effectiveTimeout := s.config.Server.DefaultTimeoutSec
+		if wf.Config.TimeoutSec > 0 {
+			effectiveTimeout = wf.Config.TimeoutSec
 		}
 
-		// Add to scheduled list if it has a schedule
-		if q.Schedule != nil {
-			scheduled = append(scheduled, scheduledInfo{
-				Name:        q.Name,
-				Database:    q.Database,
-				Description: q.Description,
-				Cron:        q.Schedule.Cron,
-				LogResults:  q.Schedule.LogResults,
-			})
+		for _, trigger := range wf.Triggers {
+			if trigger.Config.Type == "http" && trigger.Config.Path != "" {
+				endpoints = append(endpoints, endpointInfo{
+					Name:       wf.Config.Name,
+					Path:       trigger.Config.Path,
+					Method:     trigger.Config.Method,
+					Parameters: trigger.Config.Parameters,
+					TimeoutSec: effectiveTimeout,
+				})
+			} else if trigger.Config.Type == "cron" {
+				scheduled = append(scheduled, scheduledInfo{
+					Name:     wf.Config.Name,
+					Schedule: trigger.Config.Schedule,
+				})
+			}
 		}
 	}
 
@@ -767,14 +774,321 @@ func (s *Server) listEndpointsHandler(w http.ResponseWriter, r *http.Request) {
 		"max_timeout_sec":     s.config.Server.MaxTimeoutSec,
 		"databases":           s.dbManager.Names(),
 		"db_healthy":          s.dbHealthy.Load(),
-		"endpoints":           endpoints,
+		"workflows":           endpoints,
 	}
 
 	if len(scheduled) > 0 {
-		response["scheduled_queries"] = scheduled
+		response["scheduled_workflows"] = scheduled
 	}
 
 	writeJSON(w, response)
+}
+
+// initWorkflows validates, compiles, and initializes workflows
+func (s *Server) initWorkflows(cfg *config.Config) error {
+	// Build validation context
+	databases := make(map[string]bool)
+	for _, dbCfg := range cfg.Databases {
+		databases[dbCfg.Name] = dbCfg.IsReadOnly()
+	}
+	rateLimitPools := make(map[string]bool)
+	for _, rl := range cfg.RateLimits {
+		rateLimitPools[rl.Name] = true
+	}
+	validationCtx := &workflow.ValidationContext{
+		Databases:      databases,
+		RateLimitPools: rateLimitPools,
+	}
+
+	// Create DB manager adapter for workflow execution
+	dbAdapter := workflow.NewDBManagerAdapter(func(ctx context.Context, database, sqlQuery string, params map[string]any, opts step.QueryOptions) (*step.QueryResult, error) {
+		driver, err := s.dbManager.Get(database)
+		if err != nil {
+			return nil, err
+		}
+
+		session := config.SessionConfig{
+			Isolation:        opts.Isolation,
+			DeadlockPriority: opts.DeadlockPriority,
+		}
+		if opts.LockTimeoutMs != nil {
+			session.LockTimeoutMs = *opts.LockTimeoutMs
+		}
+
+		dbResult, err := driver.Query(ctx, session, sqlQuery, params)
+		if err != nil {
+			return nil, err
+		}
+
+		// Parse JSON columns if specified
+		if len(opts.JSONColumns) > 0 {
+			if err := parseJSONColumns(dbResult.Rows, opts.JSONColumns); err != nil {
+				return nil, err
+			}
+		}
+
+		return &step.QueryResult{
+			Rows:         dbResult.Rows,
+			RowsAffected: dbResult.RowsAffected,
+		}, nil
+	})
+
+	// Create logger adapter
+	loggerAdapter := &serverLoggerAdapter{}
+
+	// Create workflow executor with cache (cache may be nil if not enabled)
+	s.workflowExecutor = workflow.NewExecutor(dbAdapter, http.DefaultClient, s.cache, loggerAdapter)
+
+	// Validate and compile each workflow
+	s.workflows = make([]*workflow.CompiledWorkflow, 0, len(cfg.Workflows))
+	for _, wfCfg := range cfg.Workflows {
+		wfCfgCopy := wfCfg // Copy to avoid closure issues
+
+		// Validate
+		result := workflow.Validate(&wfCfgCopy, validationCtx)
+		if !result.Valid {
+			logging.Error("workflow_validation_failed", map[string]any{
+				"workflow": wfCfgCopy.Name,
+				"errors":   result.Errors,
+			})
+			return fmt.Errorf("workflow %q validation failed: %v", wfCfgCopy.Name, result.Errors)
+		}
+
+		// Log warnings
+		for _, warning := range result.Warnings {
+			logging.Warn("workflow_validation_warning", map[string]any{
+				"workflow": wfCfgCopy.Name,
+				"warning":  warning,
+			})
+		}
+
+		// Compile
+		compiled, err := workflow.Compile(&wfCfgCopy)
+		if err != nil {
+			logging.Error("workflow_compile_failed", map[string]any{
+				"workflow": wfCfgCopy.Name,
+				"error":    err.Error(),
+			})
+			return fmt.Errorf("workflow %q compilation failed: %w", wfCfgCopy.Name, err)
+		}
+
+		s.workflows = append(s.workflows, compiled)
+
+		logging.Info("workflow_compiled", map[string]any{
+			"workflow": wfCfgCopy.Name,
+			"triggers": len(compiled.Triggers),
+			"steps":    len(compiled.Steps),
+		})
+	}
+
+	logging.Info("workflows_initialized", map[string]any{
+		"count": len(s.workflows),
+	})
+
+	// Check for route clashes across all workflows
+	routes := make(map[string]string) // "METHOD /path" -> workflow name
+	for _, wf := range s.workflows {
+		for _, trigger := range wf.Triggers {
+			if trigger.Config.Type != "http" {
+				continue
+			}
+			route := trigger.Config.Method + " " + trigger.Config.Path
+			if existingWorkflow, exists := routes[route]; exists {
+				return fmt.Errorf("route clash: %s is defined in both %q and %q", route, existingWorkflow, wf.Config.Name)
+			}
+			routes[route] = wf.Config.Name
+		}
+	}
+
+	return nil
+}
+
+// addWorkflowCronJobs adds cron triggers from workflows to the cron scheduler
+func (s *Server) addWorkflowCronJobs() error {
+	hasCronTriggers := false
+	for _, wf := range s.workflows {
+		for _, trigger := range wf.Triggers {
+			if trigger.Config.Type == "cron" {
+				hasCronTriggers = true
+				break
+			}
+		}
+		if hasCronTriggers {
+			break
+		}
+	}
+
+	if !hasCronTriggers {
+		return nil
+	}
+
+	// Create cron scheduler with cancelable context for graceful shutdown
+	s.cronCtx, s.cronCancel = context.WithCancel(context.Background())
+	s.cron = cron.New()
+
+	// Add workflow cron jobs
+	for _, wf := range s.workflows {
+		for _, trigger := range wf.Triggers {
+			if trigger.Config.Type != "cron" {
+				continue
+			}
+
+			// Capture variables for closure
+			wfCopy := wf
+			triggerCopy := trigger
+
+			_, err := s.cron.AddFunc(trigger.Config.Schedule, func() {
+				s.executeWorkflowCron(wfCopy, triggerCopy)
+			})
+			if err != nil {
+				logging.Error("workflow_cron_add_failed", map[string]any{
+					"workflow": wf.Config.Name,
+					"schedule": trigger.Config.Schedule,
+					"error":    err.Error(),
+				})
+				return fmt.Errorf("failed to add workflow %q cron job: %w", wf.Config.Name, err)
+			}
+
+			logging.Info("workflow_cron_job_added", map[string]any{
+				"workflow": wf.Config.Name,
+				"schedule": trigger.Config.Schedule,
+			})
+		}
+	}
+
+	return nil
+}
+
+// executeWorkflowCron executes a workflow for a cron trigger
+func (s *Server) executeWorkflowCron(wf *workflow.CompiledWorkflow, trigger *workflow.CompiledTrigger) {
+	requestID := generateCronRequestID()
+
+	// Build trigger data for cron execution
+	triggerData := &workflow.TriggerData{
+		Type:         "cron",
+		Params:       make(map[string]any),
+		CronExpr:     trigger.Config.Schedule,
+		ScheduleTime: time.Now(),
+	}
+
+	// Add scheduled params if configured
+	for k, v := range trigger.Config.Params {
+		triggerData.Params[k] = resolveDynamicValue(v)
+	}
+
+	logging.Info("workflow_cron_started", map[string]any{
+		"workflow":   wf.Config.Name,
+		"request_id": requestID,
+		"schedule":   trigger.Config.Schedule,
+	})
+
+	// Use server's cron context for graceful shutdown support
+	// Apply workflow timeout if configured
+	ctx := s.cronCtx
+	if wf.Config.TimeoutSec > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(wf.Config.TimeoutSec)*time.Second)
+		defer cancel()
+	}
+
+	// Execute workflow (no HTTP response writer for cron)
+	result := s.workflowExecutor.Execute(ctx, wf, triggerData, requestID, nil)
+
+	if result.Error != nil {
+		logging.Error("workflow_cron_failed", map[string]any{
+			"workflow":    wf.Config.Name,
+			"request_id":  requestID,
+			"error":       result.Error.Error(),
+			"duration_ms": result.DurationMs,
+		})
+	} else {
+		logging.Info("workflow_cron_completed", map[string]any{
+			"workflow":    wf.Config.Name,
+			"request_id":  requestID,
+			"duration_ms": result.DurationMs,
+			"success":     result.Success,
+		})
+	}
+}
+
+func generateCronRequestID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("cron-%x", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("cron-%s", hex.EncodeToString(b))
+}
+
+func resolveDynamicValue(value string) any {
+	lower := strings.ToLower(value)
+	now := time.Now()
+
+	switch lower {
+	case "now":
+		return now
+	case "today":
+		return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	case "yesterday":
+		yesterday := now.AddDate(0, 0, -1)
+		return time.Date(yesterday.Year(), yesterday.Month(), yesterday.Day(), 0, 0, 0, 0, now.Location())
+	case "tomorrow":
+		tomorrow := now.AddDate(0, 0, 1)
+		return time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), 0, 0, 0, 0, now.Location())
+	default:
+		return value
+	}
+}
+
+// serverLoggerAdapter adapts the logging package to workflow.Logger interface
+type serverLoggerAdapter struct{}
+
+func (a *serverLoggerAdapter) Debug(msg string, fields map[string]any) {
+	logging.Debug(msg, fields)
+}
+
+func (a *serverLoggerAdapter) Info(msg string, fields map[string]any) {
+	logging.Info(msg, fields)
+}
+
+func (a *serverLoggerAdapter) Warn(msg string, fields map[string]any) {
+	logging.Warn(msg, fields)
+}
+
+func (a *serverLoggerAdapter) Error(msg string, fields map[string]any) {
+	logging.Error(msg, fields)
+}
+
+// parseJSONColumns parses specified columns from strings to JSON objects in-place.
+func parseJSONColumns(results []map[string]any, columns []string) error {
+	colSet := make(map[string]struct{}, len(columns))
+	for _, col := range columns {
+		colSet[col] = struct{}{}
+	}
+
+	for _, row := range results {
+		for col := range colSet {
+			val, exists := row[col]
+			if !exists {
+				continue
+			}
+
+			strVal, ok := val.(string)
+			if !ok {
+				continue
+			}
+
+			if strVal == "" {
+				continue
+			}
+
+			var parsed any
+			if err := json.Unmarshal([]byte(strVal), &parsed); err != nil {
+				return fmt.Errorf("column '%s': invalid JSON: %w", col, err)
+			}
+			row[col] = parsed
+		}
+	}
+	return nil
 }
 
 // recoveryMiddleware catches panics and logs them with stack traces
@@ -862,11 +1176,14 @@ func (s *Server) gzipMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// Start begins listening for HTTP requests and starts the scheduler
+// Start begins listening for HTTP requests and starts the cron scheduler
 func (s *Server) Start() error {
-	// Start scheduler if configured
-	if s.scheduler != nil {
-		s.scheduler.Start()
+	// Start cron scheduler if configured
+	if s.cron != nil {
+		s.cron.Start()
+		logging.Info("cron_scheduler_started", map[string]any{
+			"jobs": len(s.cron.Entries()),
+		})
 	}
 
 	// Start debug server if configured on separate port
@@ -893,9 +1210,16 @@ func (s *Server) Start() error {
 func (s *Server) Shutdown(ctx context.Context) error {
 	logging.Info("server_shutting_down", nil)
 
-	// Stop scheduler
-	if s.scheduler != nil {
-		s.scheduler.Stop()
+	// Cancel cron job context to stop in-flight cron executions
+	if s.cronCancel != nil {
+		s.cronCancel()
+	}
+
+	// Stop cron scheduler
+	if s.cron != nil {
+		cronCtx := s.cron.Stop()
+		<-cronCtx.Done()
+		logging.Info("cron_scheduler_stopped", nil)
 	}
 
 	// Stop health checker
@@ -939,4 +1263,89 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	logging.Close()
 
 	return nil
+}
+
+// workflowRateLimiterAdapter implements workflow.RateLimiter using ratelimit.Limiter.
+type workflowRateLimiterAdapter struct {
+	limiter    *ratelimit.Limiter
+	ctxBuilder *tmpl.ContextBuilder
+}
+
+// CheckTriggerLimits implements workflow.RateLimiter.
+func (a *workflowRateLimiterAdapter) CheckTriggerLimits(limits []*workflow.CompiledRateLimit, clientIP string, params map[string]any) (bool, int, error) {
+	if a.limiter == nil || len(limits) == 0 {
+		return true, 0, nil
+	}
+
+	// Convert workflow rate limit configs to ratelimit.Limiter format
+	rateLimitConfigs := make([]config.RateLimitConfig, 0, len(limits))
+	for _, rl := range limits {
+		cfg := config.RateLimitConfig{
+			Pool:              rl.Config.Pool,
+			RequestsPerSecond: rl.Config.RequestsPerSecond,
+			Burst:             rl.Config.Burst,
+			Key:               rl.Config.Key,
+		}
+		rateLimitConfigs = append(rateLimitConfigs, cfg)
+	}
+
+	// Build tmpl.Context for key template evaluation
+	ctx := a.ctxBuilder.BuildForRateLimit(clientIP, params)
+
+	allowed, retryAfter, err := a.limiter.Allow(rateLimitConfigs, ctx)
+	if err != nil {
+		return false, 0, err
+	}
+
+	retryAfterSec := int(retryAfter.Seconds())
+	if retryAfterSec < 1 && !allowed {
+		retryAfterSec = 1
+	}
+
+	return allowed, retryAfterSec, nil
+}
+
+// triggerCacheAdapter implements workflow.TriggerCache using cache.Cache.
+// It stores response body and status code in the cache using a special format.
+type triggerCacheAdapter struct {
+	cache *cache.Cache
+}
+
+// Get retrieves a cached trigger response.
+func (a *triggerCacheAdapter) Get(workflowName, key string) ([]byte, int, bool) {
+	if a.cache == nil {
+		return nil, 0, false
+	}
+
+	data, hit := a.cache.Get(workflowName, key)
+	if !hit || len(data) == 0 {
+		return nil, 0, false
+	}
+
+	// Extract response from stored format
+	entry := data[0]
+	bodyStr, ok := entry["__body__"].(string)
+	if !ok {
+		return nil, 0, false
+	}
+	statusFloat, ok := entry["__status__"].(float64)
+	if !ok {
+		return nil, 0, false
+	}
+
+	return []byte(bodyStr), int(statusFloat), true
+}
+
+// Set stores a trigger response in the cache.
+func (a *triggerCacheAdapter) Set(workflowName, key string, body []byte, statusCode int, ttl time.Duration) bool {
+	if a.cache == nil {
+		return false
+	}
+
+	// Store in the format expected by cache.Cache ([]map[string]any)
+	data := []map[string]any{
+		{"__body__": string(body), "__status__": float64(statusCode)},
+	}
+
+	return a.cache.Set(workflowName, key, data, ttl)
 }

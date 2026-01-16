@@ -1,0 +1,310 @@
+# Rate Limiting Configuration
+# Demonstrates: named pools, inline limits, key templates, multiple limits
+
+server:
+  host: "127.0.0.1"
+  port: 8080
+  default_timeout_sec: 30
+  max_timeout_sec: 300
+
+databases:
+  - name: "main"
+    type: "sqlite"
+    path: ":memory:"
+
+logging:
+  level: "info"
+  file_path: ""
+  max_size_mb: 100
+  max_backups: 5
+  max_age_days: 30
+
+metrics:
+  enabled: true
+
+# Named rate limit pools - reusable across workflows
+rate_limits:
+  # Default pool - generous limits
+  - name: "default"
+    requests_per_second: 100
+    burst: 200
+    key: "{{.ClientIP}}"
+
+  # Strict pool - for expensive operations
+  - name: "strict"
+    requests_per_second: 10
+    burst: 20
+    key: "{{.ClientIP}}"
+
+  # Per-user pool - limits per authenticated user
+  - name: "per_user"
+    requests_per_second: 50
+    burst: 100
+    key: "{{.ClientIP}}:{{.Param.user_id}}"
+
+  # Per-API-key pool (use index for headers with hyphens)
+  - name: "per_api_key"
+    requests_per_second: 1000
+    burst: 2000
+    key: "{{index .Header \"X-API-Key\"}}"
+
+workflows:
+  # ============================================================================
+  # NAMED POOL RATE LIMITING
+  # ============================================================================
+
+  # Using default rate limit pool
+  - name: "api_default"
+    triggers:
+      - type: http
+        path: "/api/items"
+        method: GET
+        rate_limit:
+          - pool: "default"
+    steps:
+      - name: fetch
+        type: query
+        database: "main"
+        sql: "SELECT 'items' AS data"
+      - type: response
+        template: |
+          {"data": "{{index .steps.fetch.data 0 \"data\"}}"}
+
+  # Using strict rate limit pool (for expensive queries)
+  - name: "api_report"
+    triggers:
+      - type: http
+        path: "/api/reports/full"
+        method: GET
+        rate_limit:
+          - pool: "strict"
+    steps:
+      - name: generate
+        type: query
+        database: "main"
+        sql: "SELECT 'expensive report' AS data"
+      - type: response
+        template: |
+          {"report": "{{index .steps.generate.data 0 \"data\"}}"}
+
+  # Per-user rate limiting
+  - name: "api_user_actions"
+    triggers:
+      - type: http
+        path: "/api/actions"
+        method: POST
+        parameters:
+          - name: "user_id"
+            type: "string"
+            required: true
+        rate_limit:
+          - pool: "per_user"
+    steps:
+      - name: action
+        type: query
+        database: "main"
+        sql: "SELECT @user_id AS user_id, 'action recorded' AS result"
+      - type: response
+        template: |
+          {"user_id": "{{index .steps.action.data 0 \"user_id\"}}", "result": "{{index .steps.action.data 0 \"result\"}}"}
+
+  # ============================================================================
+  # INLINE RATE LIMITING
+  # ============================================================================
+  # Define limits directly on the trigger (no named pool needed)
+
+  # Simple inline rate limit
+  - name: "api_inline_limited"
+    triggers:
+      - type: http
+        path: "/api/limited"
+        method: GET
+        rate_limit:
+          - requests_per_second: 20
+            burst: 40
+            key: "{{.ClientIP}}"
+    steps:
+      - name: fetch
+        type: query
+        database: "main"
+        sql: "SELECT 'rate limited' AS data"
+      - type: response
+        template: |
+          {"data": "{{index .steps.fetch.data 0 \"data\"}}"}
+
+  # Inline with parameter-based key
+  - name: "api_inline_param_key"
+    triggers:
+      - type: http
+        path: "/api/user/profile"
+        method: GET
+        parameters:
+          - name: "user_id"
+            type: "string"
+            required: true
+        rate_limit:
+          - requests_per_second: 30
+            burst: 60
+            key: "profile:{{.Param.user_id}}"
+    steps:
+      - name: fetch
+        type: query
+        database: "main"
+        sql: "SELECT @user_id AS user_id"
+      - type: response
+        template: |
+          {"user_id": "{{index .steps.fetch.data 0 \"user_id\"}}"}
+
+  # ============================================================================
+  # MULTIPLE RATE LIMITS
+  # ============================================================================
+  # Apply multiple rate limits - request must pass ALL of them
+
+  # Combine named pool with inline limit
+  - name: "api_multi_limit"
+    triggers:
+      - type: http
+        path: "/api/sensitive"
+        method: POST
+        parameters:
+          - name: "user_id"
+            type: "string"
+            required: true
+        rate_limit:
+          # Global rate limit (pool)
+          - pool: "default"
+          # Per-user rate limit (inline)
+          - requests_per_second: 5
+            burst: 10
+            key: "sensitive:{{.Param.user_id}}"
+    steps:
+      - name: process
+        type: query
+        database: "main"
+        sql: "SELECT @user_id AS user_id, 'processed' AS result"
+      - type: response
+        template: |
+          {"user_id": "{{index .steps.process.data 0 \"user_id\"}}", "result": "{{index .steps.process.data 0 \"result\"}}"}
+
+  # Multiple named pools
+  - name: "api_double_pool"
+    triggers:
+      - type: http
+        path: "/api/premium"
+        method: GET
+        rate_limit:
+          - pool: "default"    # Global limit by IP
+          - pool: "strict"     # Additional stricter limit
+    steps:
+      - name: fetch
+        type: query
+        database: "main"
+        sql: "SELECT 'premium data' AS data"
+      - type: response
+        template: |
+          {"data": "{{index .steps.fetch.data 0 \"data\"}}"}
+
+  # Three-tier rate limiting
+  - name: "api_triple_limit"
+    triggers:
+      - type: http
+        path: "/api/critical"
+        method: POST
+        parameters:
+          - name: "user_id"
+            type: "string"
+            required: true
+          - name: "resource_id"
+            type: "string"
+            required: true
+        rate_limit:
+          # 1. Global limit (all requests)
+          - pool: "strict"
+          # 2. Per-user limit
+          - requests_per_second: 10
+            burst: 20
+            key: "user:{{.Param.user_id}}"
+          # 3. Per-resource limit
+          - requests_per_second: 5
+            burst: 10
+            key: "resource:{{.Param.resource_id}}"
+    steps:
+      - name: process
+        type: query
+        database: "main"
+        sql: "SELECT @user_id AS user_id, @resource_id AS resource_id"
+      - type: response
+        template: |
+          {"user_id": "{{index .steps.process.data 0 \"user_id\"}}", "resource_id": "{{index .steps.process.data 0 \"resource_id\"}}"}
+
+  # ============================================================================
+  # RATE LIMIT KEY PATTERNS
+  # ============================================================================
+
+  # By client IP (most common)
+  - name: "limit_by_ip"
+    triggers:
+      - type: http
+        path: "/api/by-ip"
+        method: GET
+        rate_limit:
+          - requests_per_second: 100
+            burst: 200
+            key: "{{.ClientIP}}"
+    steps:
+      - type: response
+        template: |
+          {"limited_by": "ip"}
+
+  # By header value (API key, auth token, etc.)
+  - name: "limit_by_header"
+    triggers:
+      - type: http
+        path: "/api/by-header"
+        method: GET
+        rate_limit:
+          - requests_per_second: 1000
+            burst: 2000
+            key: "{{.Header.X-API-Key}}"
+    steps:
+      - type: response
+        template: |
+          {"limited_by": "api_key"}
+
+  # By query parameter
+  - name: "limit_by_param"
+    triggers:
+      - type: http
+        path: "/api/by-param"
+        method: GET
+        parameters:
+          - name: "tenant"
+            type: "string"
+            required: true
+        rate_limit:
+          - requests_per_second: 50
+            burst: 100
+            key: "tenant:{{.Param.tenant}}"
+    steps:
+      - type: response
+        template: |
+          {"limited_by": "tenant"}
+
+  # Composite key (multiple factors)
+  - name: "limit_composite"
+    triggers:
+      - type: http
+        path: "/api/composite"
+        method: GET
+        parameters:
+          - name: "action"
+            type: "string"
+            required: true
+        rate_limit:
+          - requests_per_second: 20
+            burst: 40
+            key: "{{.ClientIP}}:{{.Param.action}}"
+    steps:
+      - type: response
+        template: |
+          {"limited_by": "ip_and_action"}

@@ -44,7 +44,7 @@ func main() {
 
 	// Handle service install/uninstall
 	if *install {
-		fmt.Printf("SQL Proxy Service v%s\n", Version)
+		fmt.Printf("SQL Proxy Service %s\n", Version)
 		exePath, err := os.Executable()
 		if err != nil {
 			log.Fatalf("Failed to get executable path: %v", err)
@@ -62,7 +62,7 @@ func main() {
 	}
 
 	if *uninstall {
-		fmt.Printf("SQL Proxy Service v%s\n", Version)
+		fmt.Printf("SQL Proxy Service %s\n", Version)
 		if err := service.Uninstall(*serviceName); err != nil {
 			log.Fatalf("Failed to uninstall service: %v", err)
 		}
@@ -123,8 +123,8 @@ func main() {
 	// Interactive mode shows startup info
 	interactive := !*daemon
 	if interactive {
-		fmt.Printf("SQL Proxy Service v%s\n", Version)
-		fmt.Printf("Loaded %d query endpoints\n", len(cfg.Queries))
+		fmt.Printf("SQL Proxy Service %s\n", Version)
+		fmt.Printf("Loaded %d workflows\n", len(cfg.Workflows))
 	}
 
 	// Set service name before running (needed for Windows service mode)
@@ -158,13 +158,17 @@ func printValidationResult(cfg *config.Config, result *validate.Result) {
 			fmt.Printf("  - %s: %s@%s/%s (%s)\n", db.Name, db.User, db.Host, db.Database, mode)
 		}
 	}
-	fmt.Printf("Queries: %d configured\n", len(cfg.Queries))
+	fmt.Printf("Workflows: %d configured\n", len(cfg.Workflows))
 
-	if len(cfg.Queries) > 0 {
-		fmt.Println("\nEndpoints:")
-		for _, q := range cfg.Queries {
-			if q.Path != "" {
-				fmt.Printf("  %s %s - %s [%s] (%d params)\n", q.Method, q.Path, q.Name, q.Database, len(q.Parameters))
+	if len(cfg.Workflows) > 0 {
+		fmt.Println("\nWorkflows:")
+		for _, wf := range cfg.Workflows {
+			for _, trigger := range wf.Triggers {
+				if trigger.Type == "http" && trigger.Path != "" {
+					fmt.Printf("  %s %s - %s (%d params)\n", trigger.Method, trigger.Path, wf.Name, len(trigger.Parameters))
+				} else if trigger.Type == "cron" {
+					fmt.Printf("  [cron] %s - %s\n", trigger.Schedule, wf.Name)
+				}
 			}
 		}
 	}

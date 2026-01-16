@@ -4,12 +4,60 @@ import (
 	"database/sql"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 )
 
 // ParamRegex matches @param style named parameters in SQL queries.
 // Exported for use by other packages (e.g., validation).
 var ParamRegex = regexp.MustCompile(`@(\w+)`)
+
+// QueryResult contains the results of a database query execution.
+// For SELECT queries, Rows contains the returned data.
+// For INSERT/UPDATE/DELETE, RowsAffected contains the number of affected rows.
+type QueryResult struct {
+	Rows         []map[string]any
+	RowsAffected int64
+}
+
+// IsWriteQuery returns true if the SQL appears to be a write operation.
+// This is used to determine whether to use QueryContext or ExecContext.
+func IsWriteQuery(sql string) bool {
+	trimmed := strings.TrimSpace(sql)
+	if trimmed == "" {
+		return false
+	}
+
+	upper := strings.ToUpper(trimmed)
+
+	// Handle CTEs: WITH ... AS (...) INSERT/UPDATE/DELETE
+	// Skip past the WITH clause to find the actual operation
+	if strings.HasPrefix(upper, "WITH ") {
+		// Find the main query after all CTEs
+		// CTEs can be nested, so look for write keywords anywhere after WITH
+		// Write operations in CTEs themselves would also make this a write query
+		for _, keyword := range []string{"INSERT ", "UPDATE ", "DELETE ", "CREATE ", "DROP ", "ALTER ", "TRUNCATE ", "MERGE "} {
+			if strings.Contains(upper, keyword) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Get first word (uppercase for comparison)
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 {
+		return false
+	}
+	firstWord := strings.ToUpper(fields[0])
+
+	switch firstWord {
+	case "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "TRUNCATE", "MERGE":
+		return true
+	default:
+		return false
+	}
+}
 
 // ScanRows converts sql.Rows to []map[string]any.
 // This is shared between SQLite and SQL Server drivers.

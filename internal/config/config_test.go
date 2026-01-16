@@ -34,12 +34,19 @@ logging:
 metrics:
   enabled: true
 
-queries:
-  - name: "test_query"
-    database: "primary"
-    path: "/api/test"
-    method: "GET"
-    sql: "SELECT 1"
+workflows:
+  - name: "test_workflow"
+    triggers:
+      - type: "http"
+        path: "/api/test"
+        method: "GET"
+    steps:
+      - name: "fetch"
+        type: "query"
+        database: "primary"
+        sql: "SELECT 1"
+      - type: "response"
+        template: '{"success": true}'
 `
 	cfg := loadFromString(t, content)
 
@@ -52,8 +59,8 @@ queries:
 	if len(cfg.Databases) != 1 {
 		t.Errorf("expected 1 database, got %d", len(cfg.Databases))
 	}
-	if len(cfg.Queries) != 1 {
-		t.Errorf("expected 1 query, got %d", len(cfg.Queries))
+	if len(cfg.Workflows) != 1 {
+		t.Errorf("expected 1 workflow, got %d", len(cfg.Workflows))
 	}
 }
 
@@ -86,20 +93,27 @@ logging:
 metrics:
   enabled: true
 
-queries:
+workflows:
   - name: "test"
-    database: "primary"
-    path: "/test"
-    method: "GET"
-    sql: "SELECT '${TEST_DB_HOST}' as host"
+    triggers:
+      - type: "http"
+        path: "/test"
+        method: "GET"
+    steps:
+      - name: "fetch"
+        type: "query"
+        database: "primary"
+        sql: "SELECT '${TEST_DB_HOST}' as host"
+      - type: "response"
+        template: '{"success": true}'
 `
 	cfg := loadFromString(t, content)
 
 	// The SQL should have the env var expanded
 	expectedSQL := "SELECT 'testhost.example.com' as host"
-	gotSQL := strings.TrimSpace(cfg.Queries[0].SQL)
+	gotSQL := strings.TrimSpace(cfg.Workflows[0].Steps[0].SQL)
 	if gotSQL != expectedSQL {
-		t.Errorf("expected env var to be expanded, got %q", cfg.Queries[0].SQL)
+		t.Errorf("expected env var to be expanded, got %q", gotSQL)
 	}
 }
 
@@ -125,13 +139,6 @@ logging:
 
 metrics:
   enabled: true
-
-queries:
-  - name: "test"
-    database: "primary"
-    path: "/test"
-    method: "GET"
-    sql: "SELECT 1"
 `
 	expectLoadError(t, content, "server.host is required")
 }
@@ -197,13 +204,6 @@ logging:
 
 metrics:
   enabled: true
-
-queries:
-  - name: "test"
-    database: "primary"
-    path: "/test"
-    method: "GET"
-    sql: "SELECT 1"
 `
 	expectLoadError(t, content, "at least one database connection is required")
 }
@@ -234,13 +234,6 @@ logging:
 
 metrics:
   enabled: true
-
-queries:
-  - name: "test"
-    database: "primary"
-    path: "/test"
-    method: "GET"
-    sql: "SELECT 1"
 `
 	expectLoadError(t, content, "duplicate database name")
 }
@@ -268,13 +261,6 @@ logging:
 
 metrics:
   enabled: true
-
-queries:
-  - name: "test"
-    database: "primary"
-    path: "/test"
-    method: "GET"
-    sql: "SELECT 1"
 `
 	expectLoadError(t, content, "invalid type 'mysql'")
 }
@@ -301,13 +287,6 @@ logging:
 
 metrics:
   enabled: true
-
-queries:
-  - name: "test"
-    database: "primary"
-    path: "/test"
-    method: "GET"
-    sql: "SELECT 1"
 `
 	expectLoadError(t, content, "path is required for sqlite")
 }
@@ -357,151 +336,8 @@ logging:
 
 metrics:
   enabled: true
-
-queries:
-  - name: "test"
-    database: "primary"
-    path: "/test"
-    method: "GET"
-    sql: "SELECT 1"
 `
 	expectLoadError(t, content, "logging.level must be debug, info, warn, or error")
-}
-
-// TestLoad_QueryMissingName ensures every query must have a name field
-func TestLoad_QueryMissingName(t *testing.T) {
-	content := `
-server:
-  host: "127.0.0.1"
-  port: 8080
-  default_timeout_sec: 30
-  max_timeout_sec: 300
-
-databases:
-  - name: "primary"
-    type: "sqlite"
-    path: ":memory:"
-
-logging:
-  level: "info"
-  file_path: ""
-  max_size_mb: 100
-  max_backups: 5
-  max_age_days: 30
-
-metrics:
-  enabled: true
-
-queries:
-  - database: "primary"
-    path: "/test"
-    method: "GET"
-    sql: "SELECT 1"
-`
-	expectLoadError(t, content, "name is required")
-}
-
-// TestLoad_QueryUnknownDatabase rejects queries referencing non-existent database connections
-func TestLoad_QueryUnknownDatabase(t *testing.T) {
-	content := `
-server:
-  host: "127.0.0.1"
-  port: 8080
-  default_timeout_sec: 30
-  max_timeout_sec: 300
-
-databases:
-  - name: "primary"
-    type: "sqlite"
-    path: ":memory:"
-
-logging:
-  level: "info"
-  file_path: ""
-  max_size_mb: 100
-  max_backups: 5
-  max_age_days: 30
-
-metrics:
-  enabled: true
-
-queries:
-  - name: "test"
-    database: "nonexistent"
-    path: "/test"
-    method: "GET"
-    sql: "SELECT 1"
-`
-	expectLoadError(t, content, "unknown database 'nonexistent'")
-}
-
-// TestLoad_QueryInvalidMethod ensures query method must be GET or POST only
-func TestLoad_QueryInvalidMethod(t *testing.T) {
-	content := `
-server:
-  host: "127.0.0.1"
-  port: 8080
-  default_timeout_sec: 30
-  max_timeout_sec: 300
-
-databases:
-  - name: "primary"
-    type: "sqlite"
-    path: ":memory:"
-
-logging:
-  level: "info"
-  file_path: ""
-  max_size_mb: 100
-  max_backups: 5
-  max_age_days: 30
-
-metrics:
-  enabled: true
-
-queries:
-  - name: "test"
-    database: "primary"
-    path: "/test"
-    method: "DELETE"
-    sql: "SELECT 1"
-`
-	expectLoadError(t, content, "method must be GET or POST")
-}
-
-// TestLoad_QueryNegativeTimeout rejects negative timeout_sec values on queries
-func TestLoad_QueryNegativeTimeout(t *testing.T) {
-	content := `
-server:
-  host: "127.0.0.1"
-  port: 8080
-  default_timeout_sec: 30
-  max_timeout_sec: 300
-
-databases:
-  - name: "primary"
-    type: "sqlite"
-    path: ":memory:"
-
-logging:
-  level: "info"
-  file_path: ""
-  max_size_mb: 100
-  max_backups: 5
-  max_age_days: 30
-
-metrics:
-  enabled: true
-
-queries:
-  - name: "test"
-    database: "primary"
-    path: "/test"
-    method: "GET"
-    timeout_sec: -1
-    sql: "SELECT 1"
-`
-	expectLoadError(t, content, "timeout_sec cannot be negative")
 }
 
 // TestLoad_InvalidIsolationLevel rejects invalid SQL Server isolation level names
@@ -532,56 +368,8 @@ logging:
 
 metrics:
   enabled: true
-
-queries:
-  - name: "test"
-    database: "primary"
-    path: "/test"
-    method: "GET"
-    sql: "SELECT 1"
 `
 	expectLoadError(t, content, "invalid isolation level")
-}
-
-// TestLoad_ScheduleOnlyQuery verifies queries can have schedule without HTTP path
-func TestLoad_ScheduleOnlyQuery(t *testing.T) {
-	content := `
-server:
-  host: "127.0.0.1"
-  port: 8080
-  default_timeout_sec: 30
-  max_timeout_sec: 300
-
-databases:
-  - name: "primary"
-    type: "sqlite"
-    path: ":memory:"
-
-logging:
-  level: "info"
-  file_path: ""
-  max_size_mb: 100
-  max_backups: 5
-  max_age_days: 30
-
-metrics:
-  enabled: true
-
-queries:
-  - name: "scheduled_only"
-    database: "primary"
-    sql: "SELECT COUNT(*) FROM users"
-    schedule:
-      cron: "0 * * * *"
-`
-	cfg := loadFromString(t, content)
-
-	if cfg.Queries[0].Path != "" {
-		t.Errorf("expected empty path for schedule-only query")
-	}
-	if cfg.Queries[0].Schedule == nil {
-		t.Error("expected schedule to be set")
-	}
 }
 
 // TestDatabaseConfig_IsReadOnly verifies readonly defaults to true when nil
@@ -609,11 +397,11 @@ func TestDatabaseConfig_IsReadOnly(t *testing.T) {
 // TestDatabaseConfig_DefaultSessionConfig checks implicit defaults based on readonly flag
 func TestDatabaseConfig_DefaultSessionConfig(t *testing.T) {
 	tests := []struct {
-		name      string
-		readonly  *bool
-		wantIso   string
-		wantLock  int
-		wantDead  string
+		name     string
+		readonly *bool
+		wantIso  string
+		wantLock int
+		wantDead string
 	}{
 		{
 			"readonly defaults",
@@ -646,34 +434,6 @@ func TestDatabaseConfig_DefaultSessionConfig(t *testing.T) {
 				t.Errorf("DeadlockPriority = %s, want %s", sess.DeadlockPriority, tt.wantDead)
 			}
 		})
-	}
-}
-
-// TestResolveSessionConfig validates priority: query overrides > db overrides > defaults
-func TestResolveSessionConfig(t *testing.T) {
-	dbCfg := config.DatabaseConfig{
-		ReadOnly:         boolPtr(true),
-		Isolation:        "read_committed",    // Override implicit default
-		LockTimeoutMs:    intPtr(10000),       // Override implicit default
-		DeadlockPriority: "",                  // Use implicit default
-	}
-
-	queryCfg := config.QueryConfig{
-		Isolation:        "repeatable_read",   // Override database setting
-		LockTimeoutMs:    nil,                 // Use database setting
-		DeadlockPriority: "high",              // Override implicit default
-	}
-
-	sess := config.ResolveSessionConfig(dbCfg, queryCfg)
-
-	if sess.Isolation != "repeatable_read" {
-		t.Errorf("expected isolation repeatable_read, got %s", sess.Isolation)
-	}
-	if sess.LockTimeoutMs != 10000 {
-		t.Errorf("expected lock timeout 10000, got %d", sess.LockTimeoutMs)
-	}
-	if sess.DeadlockPriority != "high" {
-		t.Errorf("expected deadlock priority high, got %s", sess.DeadlockPriority)
 	}
 }
 
@@ -816,13 +576,6 @@ logging:
 
 metrics:
   enabled: true
-
-queries:
-  - name: "test"
-    database: "primary"
-    path: "/test"
-    method: "GET"
-    sql: "SELECT 1"
 `
 }
 
@@ -848,13 +601,6 @@ logging:
 
 metrics:
   enabled: true
-
-queries:
-  - name: "test"
-    database: "primary"
-    path: "/test"
-    method: "GET"
-    sql: "SELECT 1"
 `
 }
 
@@ -903,22 +649,11 @@ logging:
 
 metrics:
   enabled: true
-
-queries:
-  - name: "test"
-    database: "primary"
-    path: "/test"
-    method: "GET"
-    sql: "SELECT 1"
 `
 }
 
 func boolPtr(b bool) *bool {
 	return &b
-}
-
-func intPtr(i int) *int {
-	return &i
 }
 
 func itoa(i int) string {
@@ -1006,36 +741,36 @@ func TestValidParameterTypes(t *testing.T) {
 	}
 }
 
-// TestQueryRateLimitConfig_IsPoolReference verifies IsPoolReference returns true only when Pool is set
-func TestQueryRateLimitConfig_IsPoolReference(t *testing.T) {
+// TestRateLimitConfig_IsPoolReference verifies IsPoolReference returns true only when Pool is set
+func TestRateLimitConfig_IsPoolReference(t *testing.T) {
 	tests := []struct {
 		name     string
-		config   config.QueryRateLimitConfig
+		config   config.RateLimitConfig
 		expected bool
 	}{
 		{
 			name:     "empty config",
-			config:   config.QueryRateLimitConfig{},
+			config:   config.RateLimitConfig{},
 			expected: false,
 		},
 		{
 			name:     "pool set",
-			config:   config.QueryRateLimitConfig{Pool: "global"},
+			config:   config.RateLimitConfig{Pool: "global"},
 			expected: true,
 		},
 		{
 			name:     "pool empty string",
-			config:   config.QueryRateLimitConfig{Pool: ""},
+			config:   config.RateLimitConfig{Pool: ""},
 			expected: false,
 		},
 		{
 			name:     "inline only - no pool",
-			config:   config.QueryRateLimitConfig{RequestsPerSecond: 10, Burst: 20, Key: "{{.ClientIP}}"},
+			config:   config.RateLimitConfig{RequestsPerSecond: 10, Burst: 20, Key: "{{.ClientIP}}"},
 			expected: false,
 		},
 		{
 			name:     "pool with inline values (invalid config but tests method)",
-			config:   config.QueryRateLimitConfig{Pool: "test", RequestsPerSecond: 10, Burst: 20},
+			config:   config.RateLimitConfig{Pool: "test", RequestsPerSecond: 10, Burst: 20},
 			expected: true, // Pool is set, so IsPoolReference returns true
 		},
 	}
@@ -1050,61 +785,61 @@ func TestQueryRateLimitConfig_IsPoolReference(t *testing.T) {
 	}
 }
 
-// TestQueryRateLimitConfig_IsInline verifies IsInline returns true only when both RequestsPerSecond and Burst are positive
-func TestQueryRateLimitConfig_IsInline(t *testing.T) {
+// TestRateLimitConfig_IsInline verifies IsInline returns true only when both RequestsPerSecond and Burst are positive
+func TestRateLimitConfig_IsInline(t *testing.T) {
 	tests := []struct {
 		name     string
-		config   config.QueryRateLimitConfig
+		config   config.RateLimitConfig
 		expected bool
 	}{
 		{
 			name:     "empty config",
-			config:   config.QueryRateLimitConfig{},
+			config:   config.RateLimitConfig{},
 			expected: false,
 		},
 		{
 			name:     "only requests_per_second",
-			config:   config.QueryRateLimitConfig{RequestsPerSecond: 10},
+			config:   config.RateLimitConfig{RequestsPerSecond: 10},
 			expected: false, // Burst is 0, so not valid inline
 		},
 		{
 			name:     "only burst",
-			config:   config.QueryRateLimitConfig{Burst: 20},
+			config:   config.RateLimitConfig{Burst: 20},
 			expected: false, // RequestsPerSecond is 0, so not valid inline
 		},
 		{
 			name:     "both positive",
-			config:   config.QueryRateLimitConfig{RequestsPerSecond: 10, Burst: 20},
+			config:   config.RateLimitConfig{RequestsPerSecond: 10, Burst: 20},
 			expected: true,
 		},
 		{
 			name:     "both positive with key",
-			config:   config.QueryRateLimitConfig{RequestsPerSecond: 10, Burst: 20, Key: "{{.ClientIP}}"},
+			config:   config.RateLimitConfig{RequestsPerSecond: 10, Burst: 20, Key: "{{.ClientIP}}"},
 			expected: true, // Key is optional
 		},
 		{
 			name:     "requests_per_second zero",
-			config:   config.QueryRateLimitConfig{RequestsPerSecond: 0, Burst: 20},
+			config:   config.RateLimitConfig{RequestsPerSecond: 0, Burst: 20},
 			expected: false,
 		},
 		{
 			name:     "burst zero",
-			config:   config.QueryRateLimitConfig{RequestsPerSecond: 10, Burst: 0},
+			config:   config.RateLimitConfig{RequestsPerSecond: 10, Burst: 0},
 			expected: false,
 		},
 		{
 			name:     "negative requests_per_second",
-			config:   config.QueryRateLimitConfig{RequestsPerSecond: -1, Burst: 20},
+			config:   config.RateLimitConfig{RequestsPerSecond: -1, Burst: 20},
 			expected: false,
 		},
 		{
 			name:     "negative burst",
-			config:   config.QueryRateLimitConfig{RequestsPerSecond: 10, Burst: -1},
+			config:   config.RateLimitConfig{RequestsPerSecond: 10, Burst: -1},
 			expected: false,
 		},
 		{
 			name:     "pool with inline values (tests method behavior)",
-			config:   config.QueryRateLimitConfig{Pool: "test", RequestsPerSecond: 10, Burst: 20},
+			config:   config.RateLimitConfig{Pool: "test", RequestsPerSecond: 10, Burst: 20},
 			expected: true, // IsInline checks only inline fields, ignores Pool
 		},
 	}

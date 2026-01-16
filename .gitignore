@@ -4,5 +4,5 @@ build/
 .claude
 coverage/
 coverage.out
+dev_notes/
 CLAUDE.md
-NEXT_STEPS.md

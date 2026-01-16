@@ -37,7 +37,8 @@ func findFreePort() (int, error) {
 	return listener.Addr().(*net.TCPAddr).Port, nil
 }
 
-// buildBinary compiles the sql-proxy binary for testing
+// buildBinary compiles the sql-proxy binary for testing.
+// If E2E_COVERAGE_DIR is set, builds with -cover flag for coverage collection.
 func buildBinary(t *testing.T) string {
 	t.Helper()
 
@@ -52,7 +53,14 @@ func buildBinary(t *testing.T) string {
 	// Get project root (e2e is one level down)
 	projectRoot := filepath.Join("..")
 
-	cmd := exec.Command("go", "build", "-o", binaryPath, ".")
+	// Build with coverage if E2E_COVERAGE_DIR is set
+	args := []string{"build", "-o", binaryPath}
+	if os.Getenv("E2E_COVERAGE_DIR") != "" {
+		args = []string{"build", "-cover", "-o", binaryPath}
+	}
+	args = append(args, ".")
+
+	cmd := exec.Command("go", args...)
 	cmd.Dir = projectRoot
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 
@@ -64,7 +72,7 @@ func buildBinary(t *testing.T) string {
 	return binaryPath
 }
 
-// createTestConfig writes a test configuration file with SQLite
+// createTestConfig writes a test configuration file with SQLite using workflows
 func createTestConfig(t *testing.T, port int, dbPath string) string {
 	t.Helper()
 
@@ -73,6 +81,10 @@ func createTestConfig(t *testing.T, port int, dbPath string) string {
   port: %d
   default_timeout_sec: 30
   max_timeout_sec: 300
+  cache:
+    enabled: true
+    max_size_mb: 64
+    default_ttl_sec: 60
 
 databases:
   - name: "test"
@@ -90,58 +102,88 @@ logging:
 metrics:
   enabled: true
 
-queries:
+workflows:
   - name: "health_check"
-    database: "test"
-    path: "/api/ping"
-    method: "GET"
-    description: "Simple health check query"
-    sql: "SELECT 1 as status, 'ok' as message"
+    triggers:
+      - type: "http"
+        path: "/api/ping"
+        method: "GET"
+    steps:
+      - name: "fetch"
+        type: "query"
+        database: "test"
+        sql: "SELECT 1 as status, 'ok' as message"
+      - type: "response"
+        template: '{"success": true, "count": {{len .steps.fetch.data}}, "data": {{json .steps.fetch.data}}, "request_id": "{{.workflow.request_id}}"}'
 
   - name: "list_items"
-    database: "test"
-    path: "/api/items"
-    method: "GET"
-    description: "List all items"
-    sql: "SELECT * FROM items ORDER BY id"
+    triggers:
+      - type: "http"
+        path: "/api/items"
+        method: "GET"
+    steps:
+      - name: "fetch"
+        type: "query"
+        database: "test"
+        sql: "SELECT * FROM items ORDER BY id"
+      - type: "response"
+        template: '{"success": true, "count": {{len .steps.fetch.data}}, "data": {{json .steps.fetch.data}}}'
 
   - name: "get_item"
-    database: "test"
-    path: "/api/item"
-    method: "GET"
-    description: "Get item by ID"
-    sql: "SELECT * FROM items WHERE id = @id"
-    parameters:
-      - name: "id"
-        type: "int"
-        required: true
+    triggers:
+      - type: "http"
+        path: "/api/item"
+        method: "GET"
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    steps:
+      - name: "fetch"
+        type: "query"
+        database: "test"
+        sql: "SELECT * FROM items WHERE id = @id"
+      - type: "response"
+        template: '{"success": true, "count": {{len .steps.fetch.data}}, "data": {{json .steps.fetch.data}}}'
 
   - name: "search_items"
-    database: "test"
-    path: "/api/items/search"
-    method: "GET"
-    description: "Search items by name"
-    sql: "SELECT * FROM items WHERE name LIKE '%%' || @query || '%%'"
-    parameters:
-      - name: "query"
-        type: "string"
-        required: false
-        default: ""
+    triggers:
+      - type: "http"
+        path: "/api/items/search"
+        method: "GET"
+        parameters:
+          - name: "query"
+            type: "string"
+            required: false
+            default: ""
+    steps:
+      - name: "fetch"
+        type: "query"
+        database: "test"
+        sql: "SELECT * FROM items WHERE name LIKE '%%' || @query || '%%'"
+      - type: "response"
+        template: '{"success": true, "count": {{len .steps.fetch.data}}, "data": {{json .steps.fetch.data}}}'
 
   - name: "create_item"
-    database: "test"
-    path: "/api/items/create"
-    method: "POST"
-    description: "Create new item"
-    sql: "INSERT INTO items (name, value) VALUES (@name, @value)"
-    parameters:
-      - name: "name"
-        type: "string"
-        required: true
-      - name: "value"
-        type: "int"
-        required: false
-        default: "0"
+    triggers:
+      - type: "http"
+        path: "/api/items/create"
+        method: "POST"
+        parameters:
+          - name: "name"
+            type: "string"
+            required: true
+          - name: "value"
+            type: "int"
+            required: false
+            default: "0"
+    steps:
+      - name: "insert"
+        type: "query"
+        database: "test"
+        sql: "INSERT INTO items (name, value) VALUES (@name, @value)"
+      - type: "response"
+        template: '{"success": true, "rows_affected": {{.steps.insert.rows_affected}}}'
 `, port, dbPath)
 
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
@@ -165,13 +207,26 @@ func setupTestDatabase(t *testing.T, dbPath string) {
 	// For simplicity, we'll let the server create it and use raw SQL
 }
 
-// startServer starts the sql-proxy server and waits for it to be ready
+// startServer starts the sql-proxy server and waits for it to be ready.
+// If E2E_COVERAGE_DIR is set, passes GOCOVERDIR to collect coverage data.
 func startServer(t *testing.T, binaryPath, configPath string, port int) *testServer {
 	t.Helper()
 
 	cmd := exec.Command(binaryPath, "-config", configPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+
+	// Set GOCOVERDIR for coverage collection if E2E_COVERAGE_DIR is set
+	if coverDir := os.Getenv("E2E_COVERAGE_DIR"); coverDir != "" {
+		// Tests run from e2e/ directory, so resolve relative paths from project root (..)
+		if !filepath.IsAbs(coverDir) {
+			coverDir = filepath.Join("..", coverDir)
+		}
+		if absCoverDir, err := filepath.Abs(coverDir); err == nil {
+			coverDir = absCoverDir
+		}
+		cmd.Env = append(os.Environ(), "GOCOVERDIR="+coverDir)
+	}
 
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("failed to start server: %v", err)
@@ -480,18 +535,18 @@ func TestE2E_RootEndpoint(t *testing.T) {
 		t.Errorf("expected service sql-proxy, got %v", result["service"])
 	}
 
-	endpoints, ok := result["endpoints"].([]any)
+	workflows, ok := result["workflows"].([]any)
 	if !ok {
-		t.Fatal("expected endpoints array")
+		t.Fatal("expected workflows array")
 	}
 
-	if len(endpoints) < 3 {
-		t.Errorf("expected at least 3 endpoints, got %d", len(endpoints))
+	if len(workflows) < 3 {
+		t.Errorf("expected at least 3 workflows, got %d", len(workflows))
 	}
 }
 
-// TestE2E_QueryEndpoint tests query execution returns data
-func TestE2E_QueryEndpoint(t *testing.T) {
+// TestE2E_WorkflowEndpoint tests workflow execution returns data
+func TestE2E_WorkflowEndpoint(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test in short mode")
 	}
@@ -509,11 +564,11 @@ func TestE2E_QueryEndpoint(t *testing.T) {
 	ts := startServer(t, binaryPath, configPath, port)
 	defer ts.stop()
 
-	// Test simple query that doesn't need a table
+	// Test simple workflow that doesn't need a table
 	var result map[string]any
 	resp, err := ts.getJSON("/api/ping", &result)
 	if err != nil {
-		t.Fatalf("query request failed: %v", err)
+		t.Fatalf("workflow request failed: %v", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -539,14 +594,13 @@ func TestE2E_QueryEndpoint(t *testing.T) {
 	}
 }
 
-// TestE2E_QueryWithParameters tests parameterized query execution
-func TestE2E_QueryWithParameters(t *testing.T) {
+// TestE2E_ErrorHandling_MissingRequiredParameter tests 400 response for missing required parameters
+func TestE2E_ErrorHandling_MissingRequiredParameter(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test in short mode")
 	}
 
 	binaryPath := buildBinary(t)
-
 	port, err := findFreePort()
 	if err != nil {
 		t.Fatalf("failed to find free port: %v", err)
@@ -558,27 +612,151 @@ func TestE2E_QueryWithParameters(t *testing.T) {
 	ts := startServer(t, binaryPath, configPath, port)
 	defer ts.stop()
 
-	// Test missing required parameter returns 400
 	resp, err := ts.get("/api/item")
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("expected status 400 for missing param, got %d", resp.StatusCode)
+		t.Errorf("expected status 400 for missing required param, got %d", resp.StatusCode)
 	}
 
-	// Test with parameter (will return empty since table doesn't exist yet)
-	resp, err = ts.get("/api/item?id=1")
+	// Verify error response body
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "id") {
+		t.Errorf("error response should mention missing parameter 'id', got: %s", body)
+	}
+}
+
+// TestE2E_ErrorHandling_InvalidParameterType tests 400 response for wrong parameter types
+func TestE2E_ErrorHandling_InvalidParameterType(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test in short mode")
+	}
+
+	binaryPath := buildBinary(t)
+	port, err := findFreePort()
+	if err != nil {
+		t.Fatalf("failed to find free port: %v", err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	configPath := createTestConfig(t, port, dbPath)
+
+	ts := startServer(t, binaryPath, configPath, port)
+	defer ts.stop()
+
+	// id parameter expects int, send string
+	resp, err := ts.get("/api/item?id=notanumber")
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
 
-	// Should return 500 because table doesn't exist
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected status 400 for invalid param type, got %d", resp.StatusCode)
+	}
+}
+
+// TestE2E_ErrorHandling_DatabaseError tests 500 response for database errors
+func TestE2E_ErrorHandling_DatabaseError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test in short mode")
+	}
+
+	binaryPath := buildBinary(t)
+	port, err := findFreePort()
+	if err != nil {
+		t.Fatalf("failed to find free port: %v", err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	configPath := createTestConfig(t, port, dbPath)
+
+	ts := startServer(t, binaryPath, configPath, port)
+	defer ts.stop()
+
+	// Query against non-existent table should return 500
+	resp, err := ts.get("/api/item?id=1")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusInternalServerError {
-		t.Errorf("expected status 500 for missing table, got %d", resp.StatusCode)
+		t.Errorf("expected status 500 for database error, got %d", resp.StatusCode)
+	}
+
+	// Verify error response has expected structure
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "error") {
+		t.Errorf("error response should contain 'error' field, got: %s", body)
+	}
+}
+
+// TestE2E_ErrorHandling_NotFound tests 404 response for non-existent endpoints
+func TestE2E_ErrorHandling_NotFound(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test in short mode")
+	}
+
+	binaryPath := buildBinary(t)
+	port, err := findFreePort()
+	if err != nil {
+		t.Fatalf("failed to find free port: %v", err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	configPath := createTestConfig(t, port, dbPath)
+
+	ts := startServer(t, binaryPath, configPath, port)
+	defer ts.stop()
+
+	resp, err := ts.get("/api/nonexistent/endpoint")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected status 404 for non-existent endpoint, got %d", resp.StatusCode)
+	}
+}
+
+// TestE2E_ErrorHandling_MethodNotAllowed tests 405 response for wrong HTTP methods
+func TestE2E_ErrorHandling_MethodNotAllowed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test in short mode")
+	}
+
+	binaryPath := buildBinary(t)
+	port, err := findFreePort()
+	if err != nil {
+		t.Fatalf("failed to find free port: %v", err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	configPath := createTestConfig(t, port, dbPath)
+
+	ts := startServer(t, binaryPath, configPath, port)
+	defer ts.stop()
+
+	// /_/cache/clear only accepts POST/DELETE, try GET
+	resp, err := ts.get("/_/cache/clear")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("expected status 405 for wrong method, got %d", resp.StatusCode)
+	}
+
+	// Verify error response
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "method not allowed") {
+		t.Errorf("expected 'method not allowed' in response, got: %s", body)
 	}
 }
 
@@ -810,6 +988,112 @@ func TestE2E_GracefulShutdown(t *testing.T) {
 	_, err = http.Get(ts.baseURL + "/_/health")
 	if err == nil {
 		t.Error("expected connection refused after shutdown")
+	}
+}
+
+// createRateLimitedConfig creates a config with aggressive rate limiting for testing 429 responses
+func createRateLimitedConfig(t *testing.T, port int, dbPath string) string {
+	t.Helper()
+
+	config := fmt.Sprintf(`server:
+  host: "127.0.0.1"
+  port: %d
+  default_timeout_sec: 30
+  max_timeout_sec: 300
+
+databases:
+  - name: "test"
+    type: "sqlite"
+    path: "%s"
+    readonly: false
+
+logging:
+  level: "error"
+  file_path: ""
+  max_size_mb: 10
+  max_backups: 1
+  max_age_days: 1
+
+metrics:
+  enabled: true
+
+rate_limits:
+  - name: "strict"
+    requests_per_second: 1
+    burst: 1
+    key: "{{.ClientIP}}"
+
+workflows:
+  - name: "rate_limited_ping"
+    triggers:
+      - type: "http"
+        path: "/api/rate-limited"
+        method: "GET"
+        rate_limit:
+          - pool: "strict"
+    steps:
+      - name: "fetch"
+        type: "query"
+        database: "test"
+        sql: "SELECT 1 as status"
+      - type: "response"
+        template: '{"success": true}'
+`, port, dbPath)
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	return configPath
+}
+
+// TestE2E_ErrorHandling_RateLimited tests 429 response when rate limit is exceeded
+func TestE2E_ErrorHandling_RateLimited(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test in short mode")
+	}
+
+	binaryPath := buildBinary(t)
+	port, err := findFreePort()
+	if err != nil {
+		t.Fatalf("failed to find free port: %v", err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	configPath := createRateLimitedConfig(t, port, dbPath)
+
+	ts := startServer(t, binaryPath, configPath, port)
+	defer ts.stop()
+
+	// Make rapid requests to exceed rate limit (1 req/sec, burst 1)
+	var got429 bool
+	for i := 0; i < 5; i++ {
+		resp, err := ts.get("/api/rate-limited")
+		if err != nil {
+			t.Fatalf("request %d failed: %v", i, err)
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			got429 = true
+			// Verify Retry-After header is present
+			retryAfter := resp.Header.Get("Retry-After")
+			if retryAfter == "" {
+				t.Error("expected Retry-After header in 429 response")
+			}
+			// Verify response body has retry info
+			body, _ := io.ReadAll(resp.Body)
+			if !strings.Contains(string(body), "retry") {
+				t.Errorf("expected retry info in 429 response body, got: %s", body)
+			}
+			resp.Body.Close()
+			break
+		}
+		resp.Body.Close()
+	}
+
+	if !got429 {
+		t.Error("expected to receive 429 Too Many Requests after exceeding rate limit")
 	}
 }
 

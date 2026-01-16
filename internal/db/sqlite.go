@@ -313,10 +313,12 @@ func (d *SQLiteDriver) configureSession(ctx context.Context, conn *sql.Conn, ses
 	return nil
 }
 
-// Query executes a SQL query and returns results as a slice of maps.
+// Query executes a SQL query and returns results.
 // SQL uses @param syntax which is translated to $param for SQLite.
 // params is a map of parameter name -> value.
-func (d *SQLiteDriver) Query(ctx context.Context, sessCfg config.SessionConfig, query string, params map[string]any) ([]map[string]any, error) {
+// For SELECT queries, returns rows in QueryResult.Rows.
+// For INSERT/UPDATE/DELETE, returns affected count in QueryResult.RowsAffected.
+func (d *SQLiteDriver) Query(ctx context.Context, sessCfg config.SessionConfig, query string, params map[string]any) (*QueryResult, error) {
 	// Get a dedicated connection from the pool
 	conn, err := d.conn.Conn(ctx)
 	if err != nil {
@@ -332,6 +334,16 @@ func (d *SQLiteDriver) Query(ctx context.Context, sessCfg config.SessionConfig, 
 	// Translate @param to $param and build args
 	translatedQuery, args := d.translateQuery(query, params)
 
+	// Use ExecContext for write operations, QueryContext for reads
+	if IsWriteQuery(query) {
+		result, err := conn.ExecContext(ctx, translatedQuery, args...)
+		if err != nil {
+			return nil, fmt.Errorf("exec failed: %w", err)
+		}
+		rowsAffected, _ := result.RowsAffected()
+		return &QueryResult{RowsAffected: rowsAffected}, nil
+	}
+
 	// Execute the query
 	rows, err := conn.QueryContext(ctx, translatedQuery, args...)
 	if err != nil {
@@ -339,7 +351,11 @@ func (d *SQLiteDriver) Query(ctx context.Context, sessCfg config.SessionConfig, 
 	}
 	defer rows.Close()
 
-	return ScanRows(rows)
+	scannedRows, err := ScanRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	return &QueryResult{Rows: scannedRows}, nil
 }
 
 // translateQuery keeps @param syntax for SQLite and builds args.

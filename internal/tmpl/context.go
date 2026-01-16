@@ -82,6 +82,25 @@ func (b *ContextBuilder) Build(r *http.Request, params map[string]any) *Context 
 	return ctx
 }
 
+// BuildForRateLimit creates a Context for rate limit key evaluation.
+// Used when we already have parsed clientIP and params (e.g., from workflow handler).
+func (b *ContextBuilder) BuildForRateLimit(clientIP string, params map[string]any) *Context {
+	ctx := &Context{
+		ClientIP:  clientIP,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Version:   b.version,
+		Header:    make(map[string]string),
+		Query:     make(map[string]string),
+		Param:     params,
+	}
+
+	if ctx.Param == nil {
+		ctx.Param = make(map[string]any)
+	}
+
+	return ctx
+}
+
 // WithResult adds query result to context (for post-query templates)
 func (c *Context) WithResult(r *Result) *Context {
 	c.Result = r

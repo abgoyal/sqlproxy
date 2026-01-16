@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"sql-proxy/internal/config"
+	"sql-proxy/internal/workflow"
 )
 
 // TestSpec_BasicStructure verifies OpenAPI spec has required root elements
@@ -19,7 +20,7 @@ func TestSpec_BasicStructure(t *testing.T) {
 		Databases: []config.DatabaseConfig{
 			{Name: "test", Type: "sqlite", Path: ":memory:"},
 		},
-		Queries: []config.QueryConfig{},
+		Workflows: []workflow.WorkflowConfig{},
 	}
 
 	spec := Spec(cfg)
@@ -65,7 +66,7 @@ func TestSpec_BuiltInPaths(t *testing.T) {
 			DefaultTimeoutSec: 30,
 			MaxTimeoutSec:     300,
 		},
-		Queries: []config.QueryConfig{},
+		Workflows: []workflow.WorkflowConfig{},
 	}
 
 	spec := Spec(cfg)
@@ -111,27 +112,39 @@ func TestSpec_BuiltInPaths(t *testing.T) {
 	}
 }
 
-// TestSpec_QueryEndpoints tests query config generates correct path operations
-func TestSpec_QueryEndpoints(t *testing.T) {
+// TestSpec_WorkflowEndpoints tests workflow config generates correct path operations
+func TestSpec_WorkflowEndpoints(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.ServerConfig{
 			DefaultTimeoutSec: 30,
 			MaxTimeoutSec:     300,
 		},
-		Queries: []config.QueryConfig{
+		Workflows: []workflow.WorkflowConfig{
 			{
-				Name:        "list_users",
-				Path:        "/api/users",
-				Method:      "GET",
-				Description: "List all users",
-				SQL:         "SELECT * FROM users",
+				Name: "list_users",
+				Triggers: []workflow.TriggerConfig{
+					{
+						Type:   "http",
+						Path:   "/api/users",
+						Method: "GET",
+					},
+				},
+				Steps: []workflow.StepConfig{
+					{Type: "query", Database: "test", SQL: "SELECT * FROM users"},
+				},
 			},
 			{
-				Name:        "create_user",
-				Path:        "/api/users",
-				Method:      "POST",
-				Description: "Create a user",
-				SQL:         "INSERT INTO users (name) VALUES (@name)",
+				Name: "create_user",
+				Triggers: []workflow.TriggerConfig{
+					{
+						Type:   "http",
+						Path:   "/api/users/create",
+						Method: "POST",
+					},
+				},
+				Steps: []workflow.StepConfig{
+					{Type: "query", Database: "test", SQL: "INSERT INTO users (name) VALUES (@name)"},
+				},
 			},
 		},
 	}
@@ -139,36 +152,56 @@ func TestSpec_QueryEndpoints(t *testing.T) {
 	spec := Spec(cfg)
 	paths := spec["paths"].(map[string]any)
 
-	// Check /api/users endpoint
-	users := paths["/api/users"].(map[string]any)
+	// Check /api/users endpoint (GET)
+	users, ok := paths["/api/users"].(map[string]any)
+	if !ok {
+		t.Fatal("expected /api/users path")
+	}
+	if users["get"] == nil {
+		t.Error("expected GET method for /api/users")
+	}
 
-	// Note: only the last query for a path is kept (overwritten)
-	// POST should be present
-	if users["post"] == nil {
-		t.Error("expected POST method for /api/users")
+	// Check /api/users/create endpoint (POST)
+	create, ok := paths["/api/users/create"].(map[string]any)
+	if !ok {
+		t.Fatal("expected /api/users/create path")
+	}
+	if create["post"] == nil {
+		t.Error("expected POST method for /api/users/create")
 	}
 }
 
-// TestSpec_SkipsScheduleOnlyQueries verifies schedule-only queries are excluded from paths
-func TestSpec_SkipsScheduleOnlyQueries(t *testing.T) {
+// TestSpec_SkipsCronOnlyWorkflows verifies cron-only workflows are excluded from paths
+func TestSpec_SkipsCronOnlyWorkflows(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.ServerConfig{
 			DefaultTimeoutSec: 30,
 			MaxTimeoutSec:     300,
 		},
-		Queries: []config.QueryConfig{
+		Workflows: []workflow.WorkflowConfig{
 			{
-				Name:        "http_query",
-				Path:        "/api/test",
-				Method:      "GET",
-				SQL:         "SELECT 1",
+				Name: "http_workflow",
+				Triggers: []workflow.TriggerConfig{
+					{
+						Type:   "http",
+						Path:   "/api/test",
+						Method: "GET",
+					},
+				},
+				Steps: []workflow.StepConfig{
+					{Type: "query", Database: "test", SQL: "SELECT 1"},
+				},
 			},
 			{
-				Name: "schedule_only",
-				SQL:  "SELECT COUNT(*) FROM users",
-				// No Path - schedule only
-				Schedule: &config.ScheduleConfig{
-					Cron: "0 * * * *",
+				Name: "scheduled_only",
+				Triggers: []workflow.TriggerConfig{
+					{
+						Type:     "cron",
+						Schedule: "0 * * * *",
+					},
+				},
+				Steps: []workflow.StepConfig{
+					{Type: "query", Database: "test", SQL: "SELECT COUNT(*) FROM users"},
 				},
 			},
 		},
@@ -182,27 +215,29 @@ func TestSpec_SkipsScheduleOnlyQueries(t *testing.T) {
 		t.Error("expected /api/test path")
 	}
 
-	// Count paths (excluding built-in)
-	queryPaths := 0
+	// Count workflow paths (excluding built-in)
+	workflowPaths := 0
 	for path := range paths {
 		if path == "/api/test" {
-			queryPaths++
+			workflowPaths++
 		}
 	}
-	if queryPaths != 1 {
-		t.Errorf("expected 1 query path, got %d", queryPaths)
+	if workflowPaths != 1 {
+		t.Errorf("expected 1 workflow path, got %d", workflowPaths)
 	}
 }
 
-// TestBuildQueryPath_GET tests GET path generation with parameters and tags
-func TestBuildQueryPath_GET(t *testing.T) {
-	q := config.QueryConfig{
-		Name:        "test_query",
-		Path:        "/api/test",
-		Method:      "GET",
-		Description: "Test description",
-		TimeoutSec:  60,
-		Parameters: []config.ParamConfig{
+// TestBuildWorkflowPath_GET tests GET path generation with parameters and tags
+func TestBuildWorkflowPath_GET(t *testing.T) {
+	wf := workflow.WorkflowConfig{
+		Name:       "test_workflow",
+		TimeoutSec: 60,
+	}
+	trigger := workflow.TriggerConfig{
+		Type:   "http",
+		Path:   "/api/test",
+		Method: "GET",
+		Parameters: []workflow.ParamConfig{
 			{Name: "id", Type: "int", Required: true},
 		},
 	}
@@ -212,24 +247,24 @@ func TestBuildQueryPath_GET(t *testing.T) {
 		MaxTimeoutSec:     300,
 	}
 
-	path := buildQueryPath(q, serverCfg)
+	path := buildWorkflowPath(wf, trigger, serverCfg)
 
 	get, ok := path["get"].(map[string]any)
 	if !ok {
 		t.Fatal("expected get method")
 	}
 
-	if get["summary"] != "test_query" {
-		t.Errorf("expected summary test_query, got %v", get["summary"])
+	if get["summary"] != "test_workflow" {
+		t.Errorf("expected summary test_workflow, got %v", get["summary"])
 	}
 
-	if get["operationId"] != "test_query" {
-		t.Errorf("expected operationId test_query, got %v", get["operationId"])
+	if get["operationId"] != "test_workflow" {
+		t.Errorf("expected operationId test_workflow, got %v", get["operationId"])
 	}
 
 	tags := get["tags"].([]string)
-	if len(tags) != 1 || tags[0] != "Queries" {
-		t.Errorf("expected tags [Queries], got %v", tags)
+	if len(tags) != 1 || tags[0] != "Workflows" {
+		t.Errorf("expected tags [Workflows], got %v", tags)
 	}
 
 	// Check parameters include _timeout, _nocache, and id
@@ -254,13 +289,15 @@ func TestBuildQueryPath_GET(t *testing.T) {
 	}
 }
 
-// TestBuildQueryPath_POST tests POST method creates post operation, not get
-func TestBuildQueryPath_POST(t *testing.T) {
-	q := config.QueryConfig{
-		Name:   "insert_query",
+// TestBuildWorkflowPath_POST tests POST method creates post operation, not get
+func TestBuildWorkflowPath_POST(t *testing.T) {
+	wf := workflow.WorkflowConfig{
+		Name: "insert_workflow",
+	}
+	trigger := workflow.TriggerConfig{
+		Type:   "http",
 		Path:   "/api/insert",
 		Method: "POST",
-		SQL:    "INSERT INTO test VALUES (1)",
 	}
 
 	serverCfg := config.ServerConfig{
@@ -268,7 +305,7 @@ func TestBuildQueryPath_POST(t *testing.T) {
 		MaxTimeoutSec:     300,
 	}
 
-	path := buildQueryPath(q, serverCfg)
+	path := buildWorkflowPath(wf, trigger, serverCfg)
 
 	if path["post"] == nil {
 		t.Error("expected post method")
@@ -278,13 +315,15 @@ func TestBuildQueryPath_POST(t *testing.T) {
 	}
 }
 
-// TestBuildQueryPath_Responses verifies 200, 400, 500, 504 response codes present
-func TestBuildQueryPath_Responses(t *testing.T) {
-	q := config.QueryConfig{
-		Name:   "test",
+// TestBuildWorkflowPath_Responses verifies 200, 400, 500, 504 response codes present
+func TestBuildWorkflowPath_Responses(t *testing.T) {
+	wf := workflow.WorkflowConfig{
+		Name: "test",
+	}
+	trigger := workflow.TriggerConfig{
+		Type:   "http",
 		Path:   "/api/test",
 		Method: "GET",
-		SQL:    "SELECT 1",
 	}
 
 	serverCfg := config.ServerConfig{
@@ -292,7 +331,7 @@ func TestBuildQueryPath_Responses(t *testing.T) {
 		MaxTimeoutSec:     300,
 	}
 
-	path := buildQueryPath(q, serverCfg)
+	path := buildWorkflowPath(wf, trigger, serverCfg)
 	get := path["get"].(map[string]any)
 	responses := get["responses"].(map[string]any)
 
@@ -308,15 +347,15 @@ func TestBuildQueryPath_Responses(t *testing.T) {
 // TestBuildParamDescription tests parameter description includes type and default
 func TestBuildParamDescription(t *testing.T) {
 	tests := []struct {
-		param   config.ParamConfig
+		param   workflow.ParamConfig
 		wantSub string
 	}{
 		{
-			param:   config.ParamConfig{Name: "id", Type: "int"},
+			param:   workflow.ParamConfig{Name: "id", Type: "int"},
 			wantSub: "Type: int",
 		},
 		{
-			param:   config.ParamConfig{Name: "name", Type: "string", Default: "test"},
+			param:   workflow.ParamConfig{Name: "name", Type: "string", Default: "test"},
 			wantSub: "Default: test",
 		},
 	}
@@ -353,12 +392,12 @@ func TestParamTypeToSchema(t *testing.T) {
 	}{
 		{"int", "", "integer", "", nil},
 		{"integer", "", "integer", "", nil},
-		{"int", "42", "integer", "", 42},      // int defaults are parsed to int
+		{"int", "42", "integer", "", 42}, // int defaults are parsed to int
 		{"float", "", "number", "double", nil},
 		{"float", "3.14", "number", "double", 3.14}, // float defaults are parsed
 		{"double", "", "number", "double", nil},
 		{"bool", "", "boolean", "", nil},
-		{"bool", "true", "boolean", "", true},  // bool defaults are parsed
+		{"bool", "true", "boolean", "", true}, // bool defaults are parsed
 		{"boolean", "", "boolean", "", nil},
 		{"datetime", "", "string", "date-time", nil},
 		{"datetime", "2024-01-01", "string", "date-time", "2024-01-01"}, // datetime defaults stay string
@@ -408,7 +447,7 @@ func TestBuildComponents(t *testing.T) {
 
 	// Check required schemas
 	requiredSchemas := []string{
-		"QueryResponse",
+		"WorkflowResponse",
 		"ErrorResponse",
 		"HealthResponse",
 		"MetricsResponse",
@@ -428,16 +467,22 @@ func TestSpec_ValidJSON(t *testing.T) {
 			DefaultTimeoutSec: 30,
 			MaxTimeoutSec:     300,
 		},
-		Queries: []config.QueryConfig{
+		Workflows: []workflow.WorkflowConfig{
 			{
-				Name:        "test",
-				Path:        "/api/test",
-				Method:      "GET",
-				Description: "Test query",
-				SQL:         "SELECT @id",
-				Parameters: []config.ParamConfig{
-					{Name: "id", Type: "int", Required: true},
-					{Name: "name", Type: "string", Default: "default"},
+				Name: "test",
+				Triggers: []workflow.TriggerConfig{
+					{
+						Type:   "http",
+						Path:   "/api/test",
+						Method: "GET",
+						Parameters: []workflow.ParamConfig{
+							{Name: "id", Type: "int", Required: true},
+							{Name: "name", Type: "string", Default: "default"},
+						},
+					},
+				},
+				Steps: []workflow.StepConfig{
+					{Type: "query", Database: "test", SQL: "SELECT @id"},
 				},
 			},
 		},
@@ -470,12 +515,19 @@ func TestSpec_TimeoutParameter(t *testing.T) {
 			DefaultTimeoutSec: 30,
 			MaxTimeoutSec:     300,
 		},
-		Queries: []config.QueryConfig{
+		Workflows: []workflow.WorkflowConfig{
 			{
-				Name:   "test",
-				Path:   "/api/test",
-				Method: "GET",
-				SQL:    "SELECT 1",
+				Name: "test",
+				Triggers: []workflow.TriggerConfig{
+					{
+						Type:   "http",
+						Path:   "/api/test",
+						Method: "GET",
+					},
+				},
+				Steps: []workflow.StepConfig{
+					{Type: "query", Database: "test", SQL: "SELECT 1"},
+				},
 			},
 		},
 	}
@@ -501,21 +553,27 @@ func TestSpec_TimeoutParameter(t *testing.T) {
 	}
 }
 
-// TestSpec_QueryDescription tests custom description and timeout info in spec
-func TestSpec_QueryDescription(t *testing.T) {
+// TestSpec_WorkflowDescription tests custom timeout info in spec
+func TestSpec_WorkflowDescription(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.ServerConfig{
 			DefaultTimeoutSec: 30,
 			MaxTimeoutSec:     300,
 		},
-		Queries: []config.QueryConfig{
+		Workflows: []workflow.WorkflowConfig{
 			{
-				Name:        "test",
-				Path:        "/api/test",
-				Method:      "GET",
-				Description: "Custom description",
-				SQL:         "SELECT 1",
-				TimeoutSec:  60,
+				Name:       "test",
+				TimeoutSec: 60,
+				Triggers: []workflow.TriggerConfig{
+					{
+						Type:   "http",
+						Path:   "/api/test",
+						Method: "GET",
+					},
+				},
+				Steps: []workflow.StepConfig{
+					{Type: "query", Database: "test", SQL: "SELECT 1"},
+				},
 			},
 		},
 	}
@@ -526,7 +584,7 @@ func TestSpec_QueryDescription(t *testing.T) {
 	get := apiTest["get"].(map[string]any)
 
 	desc := get["description"].(string)
-	// Should contain custom description and timeout info
+	// Should contain timeout info
 	if desc == "" {
 		t.Error("expected non-empty description")
 	}
@@ -627,15 +685,17 @@ func TestParamTypeToSchema_JSONType(t *testing.T) {
 	}
 }
 
-// TestBuildQueryPath_DefaultTimeout tests server default timeout used when query has none
-func TestBuildQueryPath_DefaultTimeout(t *testing.T) {
-	// Query without custom timeout uses server default
-	q := config.QueryConfig{
-		Name:   "test",
+// TestBuildWorkflowPath_DefaultTimeout tests server default timeout used when workflow has none
+func TestBuildWorkflowPath_DefaultTimeout(t *testing.T) {
+	// Workflow without custom timeout uses server default
+	wf := workflow.WorkflowConfig{
+		Name: "test",
+		// TimeoutSec not set (0)
+	}
+	trigger := workflow.TriggerConfig{
+		Type:   "http",
 		Path:   "/api/test",
 		Method: "GET",
-		SQL:    "SELECT 1",
-		// TimeoutSec not set (0)
 	}
 
 	serverCfg := config.ServerConfig{
@@ -643,7 +703,7 @@ func TestBuildQueryPath_DefaultTimeout(t *testing.T) {
 		MaxTimeoutSec:     300,
 	}
 
-	path := buildQueryPath(q, serverCfg)
+	path := buildWorkflowPath(wf, trigger, serverCfg)
 	get := path["get"].(map[string]any)
 	desc := get["description"].(string)
 

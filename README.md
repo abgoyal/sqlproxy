@@ -8,7 +8,8 @@ A lightweight, production-grade Go service that exposes predefined SQL queries a
 - **Cross-Platform Service** - Windows Service, Linux systemd, macOS launchd
 - **YAML Configuration** - Easy query management, no code changes
 - **Read-only Safety** - Zero interference with production database
-- **Scheduled Queries** - Run queries on cron schedule with retry
+- **Workflows** - Multi-step query pipelines with conditions, iteration, and external API calls
+- **Scheduled Workflows** - Run workflows on cron schedules with retry
 - **Rate Limiting** - Per-endpoint and per-client rate limiting with token bucket
 - **Structured Logging** - JSON logs with automatic rotation
 - **Metrics Endpoints** - `/_/metrics` (Prometheus) and `/_/metrics.json` (human-readable)
@@ -25,7 +26,8 @@ This service is designed for long-running, fire-and-forget operation:
 |---------|-------------|
 | **Log Rotation** | Automatic rotation by size, age retention, compression |
 | **Metrics Endpoints** | `/_/metrics` (Prometheus) and `/_/metrics.json` (JSON) |
-| **Scheduled Queries** | Cron-based execution with retry and backoff |
+| **Workflows** | Multi-step pipelines with conditions, iteration, external API calls |
+| **Scheduled Workflows** | Cron-based execution with retry and backoff |
 | **DB Health Checks** | Every 30s, auto-reconnect after 3 failures |
 | **Panic Recovery** | Catches panics, logs them, returns 500 |
 | **Connection Recycling** | Pool connections expire after 5 minutes |
@@ -136,21 +138,21 @@ Config file: config.yaml
 
 Server: 127.0.0.1:8081
 Database: sqlproxy_reader@myserver.rds.amazonaws.com/mydb
-Queries: 6 endpoints configured
+Workflows: 6 endpoints configured
 
 Endpoints:
   GET /api/machines - list_machines (0 params)
   GET /api/machines/details - get_machine (1 params)
   GET /api/checkins - checkin_logs (3 params)
 
-✓ Configuration valid
+Configuration valid
 ```
 
 The validator checks:
 - Server settings (port range, timeout values)
 - Database connection settings
 - Logging configuration
-- Query definitions (paths, methods, SQL syntax)
+- Workflow definitions (triggers, steps, SQL syntax)
 - Parameter definitions (types, duplicates, reserved names)
 - SQL/parameter consistency (unused params, missing definitions)
 - Warnings for write operations in SQL (INSERT, UPDATE, DELETE)
@@ -283,10 +285,14 @@ server:
   port: 8081
   default_timeout_sec: 30
   max_timeout_sec: 300
+  # cache:                     # Optional: Enable response caching
+  #   enabled: true
+  #   max_size_mb: 256
+  #   default_ttl_sec: 300
 
 databases:
   - name: "primary"
-    type: "sqlserver"             # sqlserver (default), sqlite
+    type: "sqlserver"             # sqlserver or sqlite (required)
     host: "your-server.rds.amazonaws.com"
     port: 1433
     user: "sqlproxy_reader"
@@ -310,16 +316,30 @@ metrics:
 #   port: 6060        # Separate port (0 = same as main server)
 #   host: "localhost" # Only valid with separate port; defaults to localhost
 
-queries:
+# Optional: Rate limit pools
+# rate_limits:
+#   - name: "default"
+#     requests_per_second: 100
+#     burst: 200
+#     key: "{{.ClientIP}}"
+
+workflows:
   - name: "list_machines"
-    database: "primary"
-    path: "/api/machines"
-    method: "GET"
-    description: "List all biometric machines"
-    sql: |
-      SELECT MachineId, MachineName, LastPingTime
-      FROM Machines
-      ORDER BY MachineName
+    triggers:
+      - type: http
+        path: "/api/machines"
+        method: GET
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: |
+          SELECT MachineId, MachineName, LastPingTime
+          FROM Machines
+          ORDER BY MachineName
+      - type: response
+        template: |
+          {"success": true, "data": {{json .steps.fetch.data}}, "count": {{.steps.fetch.count}}}
 ```
 
 ### Multiple Database Connections
@@ -344,18 +364,39 @@ databases:
     database: "ReportingDB"
     readonly: false              # Allows writes
 
-queries:
+workflows:
   - name: "get_machines"
-    database: "primary"
-    path: "/api/machines"
-    method: "GET"
-    sql: "SELECT * FROM Machines"
+    triggers:
+      - type: http
+        path: "/api/machines"
+        method: GET
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT * FROM Machines"
+      - type: response
+        template: '{"success": true, "data": {{json .steps.fetch.data}}}'
 
   - name: "insert_report"
-    database: "reporting"
-    path: "/api/reports"
-    method: "POST"
-    sql: "INSERT INTO Reports (Date, Data) VALUES (@date, @data)"
+    triggers:
+      - type: http
+        path: "/api/reports"
+        method: POST
+        parameters:
+          - name: "date"
+            type: "datetime"
+            required: true
+          - name: "data"
+            type: "string"
+            required: true
+    steps:
+      - name: insert
+        type: query
+        database: "reporting"
+        sql: "INSERT INTO Reports (Date, Data) VALUES (@date, @data)"
+      - type: response
+        template: '{"success": true}'
 ```
 
 ### SQLite Support
@@ -374,12 +415,19 @@ databases:
     journal_mode: "wal"          # wal (default), delete, truncate, memory, off
     busy_timeout_ms: 5000        # Wait time for locked database (default: 5000)
 
-queries:
+workflows:
   - name: "list_items"
-    database: "test_db"
-    path: "/api/items"
-    method: "GET"
-    sql: "SELECT * FROM items ORDER BY name"
+    triggers:
+      - type: http
+        path: "/api/items"
+        method: GET
+    steps:
+      - name: fetch
+        type: query
+        database: "test_db"
+        sql: "SELECT * FROM items ORDER BY name"
+      - type: response
+        template: '{"success": true, "data": {{json .steps.fetch.data}}}'
 ```
 
 #### SQLite Configuration Options
@@ -475,7 +523,7 @@ The driver automatically configures SQLite for optimal concurrent performance:
 
 ### Session Configuration
 
-Session settings control database behavior at query execution time. Settings can be defined at connection level (defaults) and overridden per-query.
+Session settings control database behavior at query execution time. Settings can be defined at connection level (defaults) and overridden per-step.
 
 **Database-Specific Behavior:**
 
@@ -506,18 +554,29 @@ databases:
     deadlock_priority: "normal"      # Don't always be the victim
 ```
 
-**Override at query level:**
+**Override at step level:**
 
 ```yaml
-queries:
+workflows:
   - name: "critical_read"
-    database: "primary"
-    path: "/api/balance"
-    method: "GET"
-    # Override for this specific query
-    isolation: "repeatable_read"     # Need stable reads within query
-    lock_timeout_ms: 30000           # Important query, wait longer
-    sql: "SELECT Balance FROM Accounts WHERE Id = @id"
+    triggers:
+      - type: http
+        path: "/api/balance"
+        method: GET
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        # Override for this specific step
+        isolation: "repeatable_read"     # Need stable reads within query
+        lock_timeout_ms: 30000           # Important query, wait longer
+        sql: "SELECT Balance FROM Accounts WHERE Id = @id"
+      - type: response
+        template: '{"success": true, "balance": {{index .steps.fetch.data 0 "Balance"}}}'
 ```
 
 **Available values:**
@@ -528,23 +587,23 @@ queries:
 | `lock_timeout_ms` | Any non-negative integer (milliseconds) |
 | `deadlock_priority` | `low`, `normal`, `high` |
 
-**Resolution order:** Query settings → Connection settings → Implicit defaults (based on `readonly`)
+**Resolution order:** Step settings -> Connection settings -> Implicit defaults (based on `readonly`)
 
 ### Validation
 
 Config validation enforces:
 - All required fields present (no defaults)
-- Queries with INSERT/UPDATE/DELETE on read-only connections → **error**
-- Unknown database references → **error**
-- Invalid isolation level or deadlock priority → **error**
-- Unused database connections → **warning**
+- Steps with INSERT/UPDATE/DELETE on read-only connections -> **error**
+- Unknown database references -> **error**
+- Invalid isolation level or deadlock priority -> **error**
+- Unused database connections -> **warning**
 
 ### Timeout Configuration
 
 Timeouts are configurable at three levels (in order of precedence):
 
 1. **Request parameter** (`_timeout`) - Caller specifies per-request
-2. **Query config** (`timeout_sec`) - Per-query default in YAML
+2. **Step config** (`timeout_sec`) - Per-step timeout in YAML
 3. **Server config** (`default_timeout_sec`) - Global default
 
 ```bash
@@ -563,20 +622,28 @@ Pagination is handled at the query level using database-native syntax. This is m
 For queries that just need a max row count:
 
 ```yaml
-- name: "recent_checkins"
-  path: "/api/checkins/recent"
-  method: "GET"
-  description: "Get most recent check-ins"
-  sql: |
-    SELECT TOP (@limit)
-      EmployeeId, PunchTime, MachineId
-    FROM AttendanceLog
-    ORDER BY PunchTime DESC
-  parameters:
-    - name: "limit"
-      type: "int"
-      required: false
-      default: "100"
+workflows:
+  - name: "recent_checkins"
+    triggers:
+      - type: http
+        path: "/api/checkins/recent"
+        method: GET
+        parameters:
+          - name: "limit"
+            type: "int"
+            required: false
+            default: "100"
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: |
+          SELECT TOP (@limit)
+            EmployeeId, PunchTime, MachineId
+          FROM AttendanceLog
+          ORDER BY PunchTime DESC
+      - type: response
+        template: '{"success": true, "data": {{json .steps.fetch.data}}, "count": {{.steps.fetch.count}}}'
 ```
 
 ```bash
@@ -589,29 +656,37 @@ curl "http://localhost:8081/api/checkins/recent?limit=50"
 For paginated results with page navigation:
 
 ```yaml
-- name: "checkins_paginated"
-  path: "/api/checkins/page"
-  method: "GET"
-  description: "Get check-ins with pagination"
-  sql: |
-    SELECT
-      EmployeeId, PunchTime, MachineId
-    FROM AttendanceLog
-    WHERE PunchTime >= @fromDate
-    ORDER BY PunchTime DESC
-    OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
-  parameters:
-    - name: "fromDate"
-      type: "datetime"
-      required: true
-    - name: "offset"
-      type: "int"
-      required: false
-      default: "0"
-    - name: "limit"
-      type: "int"
-      required: false
-      default: "100"
+workflows:
+  - name: "checkins_paginated"
+    triggers:
+      - type: http
+        path: "/api/checkins/page"
+        method: GET
+        parameters:
+          - name: "fromDate"
+            type: "datetime"
+            required: true
+          - name: "offset"
+            type: "int"
+            required: false
+            default: "0"
+          - name: "limit"
+            type: "int"
+            required: false
+            default: "100"
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: |
+          SELECT
+            EmployeeId, PunchTime, MachineId
+          FROM AttendanceLog
+          WHERE PunchTime >= @fromDate
+          ORDER BY PunchTime DESC
+          OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
+      - type: response
+        template: '{"success": true, "data": {{json .steps.fetch.data}}, "count": {{.steps.fetch.count}}}'
 ```
 
 ```bash
@@ -627,27 +702,35 @@ curl "http://localhost:8081/api/checkins/page?fromDate=2024-01-01&offset=200&lim
 
 #### Getting Total Count
 
-For UI pagination, you often need the total count. Create a separate endpoint:
+For UI pagination, you often need the total count. Create a separate workflow:
 
 ```yaml
-- name: "checkins_count"
-  path: "/api/checkins/count"
-  method: "GET"
-  description: "Get total count of check-ins"
-  sql: |
-    SELECT COUNT(*) AS total_count
-    FROM AttendanceLog
-    WHERE PunchTime >= @fromDate
-  parameters:
-    - name: "fromDate"
-      type: "datetime"
-      required: true
+workflows:
+  - name: "checkins_count"
+    triggers:
+      - type: http
+        path: "/api/checkins/count"
+        method: GET
+        parameters:
+          - name: "fromDate"
+            type: "datetime"
+            required: true
+    steps:
+      - name: count
+        type: query
+        database: "primary"
+        sql: |
+          SELECT COUNT(*) AS total_count
+          FROM AttendanceLog
+          WHERE PunchTime >= @fromDate
+      - type: response
+        template: '{"success": true, "total_count": {{index .steps.count.data 0 "total_count"}}}'
 ```
 
 ```bash
 # Get total count
 curl "http://localhost:8081/api/checkins/count?fromDate=2024-01-01"
-# Returns: {"success":true,"data":[{"total_count":15234}],"count":1}
+# Returns: {"success":true,"total_count":15234}
 ```
 
 #### Keyset Pagination (Most Efficient for Large Tables)
@@ -655,25 +738,33 @@ curl "http://localhost:8081/api/checkins/count?fromDate=2024-01-01"
 For very large tables, keyset pagination is more efficient than OFFSET:
 
 ```yaml
-- name: "checkins_keyset"
-  path: "/api/checkins/after"
-  method: "GET"
-  description: "Get check-ins after a specific ID (keyset pagination)"
-  sql: |
-    SELECT TOP (@limit)
-      LogId, EmployeeId, PunchTime, MachineId
-    FROM AttendanceLog
-    WHERE LogId > @afterId
-    ORDER BY LogId ASC
-  parameters:
-    - name: "afterId"
-      type: "int"
-      required: false
-      default: "0"
-    - name: "limit"
-      type: "int"
-      required: false
-      default: "100"
+workflows:
+  - name: "checkins_keyset"
+    triggers:
+      - type: http
+        path: "/api/checkins/after"
+        method: GET
+        parameters:
+          - name: "afterId"
+            type: "int"
+            required: false
+            default: "0"
+          - name: "limit"
+            type: "int"
+            required: false
+            default: "100"
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: |
+          SELECT TOP (@limit)
+            LogId, EmployeeId, PunchTime, MachineId
+          FROM AttendanceLog
+          WHERE LogId > @afterId
+          ORDER BY LogId ASC
+      - type: response
+        template: '{"success": true, "data": {{json .steps.fetch.data}}, "count": {{.steps.fetch.count}}}'
 ```
 
 ```bash
@@ -692,23 +783,45 @@ When an optional parameter is not provided and has no default, it's passed to SQ
 
 ```yaml
 # BAD - Won't match any rows when status is NULL
-- name: "bad_example"
-  sql: |
-    SELECT * FROM Users WHERE status = @status
-  parameters:
-    - name: "status"
-      type: "string"
-      required: false
+workflows:
+  - name: "bad_example"
+    triggers:
+      - type: http
+        path: "/api/users/bad"
+        method: GET
+        parameters:
+          - name: "status"
+            type: "string"
+            required: false
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: |
+          SELECT * FROM Users WHERE status = @status
+      - type: response
+        template: '{"data": {{json .steps.fetch.data}}}'
 
 # GOOD - Returns all rows when status is not provided
-- name: "good_example"
-  sql: |
-    SELECT * FROM Users
-    WHERE (@status IS NULL OR status = @status)
-  parameters:
-    - name: "status"
-      type: "string"
-      required: false
+workflows:
+  - name: "good_example"
+    triggers:
+      - type: http
+        path: "/api/users/good"
+        method: GET
+        parameters:
+          - name: "status"
+            type: "string"
+            required: false
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: |
+          SELECT * FROM Users
+          WHERE (@status IS NULL OR status = @status)
+      - type: response
+        template: '{"data": {{json .steps.fetch.data}}}'
 ```
 
 This pattern lets optional parameters act as filters only when provided.
@@ -721,61 +834,425 @@ All query results are loaded into memory before JSON serialization. For large re
 - Set reasonable default limits (e.g., 100-1000 rows)
 - Monitor memory usage for queries returning large text/blob columns
 
-## Scheduled Queries
+## Workflows
 
-Queries can run automatically on a cron schedule, independent of HTTP requests. This is useful for periodic data collection, health monitoring, or generating reports.
+Workflows provide a powerful way to define complex multi-step query pipelines with conditional execution, iteration, and external API calls. A workflow consists of:
 
-### Basic Schedule
+- **Triggers** - How the workflow is initiated (HTTP request or cron schedule)
+- **Steps** - Sequential execution of query, httpcall, response, or block steps
+- **Conditions** - Named expressions for conditional step execution
 
-Add a `schedule` block to any query:
+Workflows support:
+- HTTP and cron triggers
+- Query steps for database operations
+- HTTPCall steps for external API calls
+- Response steps with templated output
+- Iteration over query results with blocks
+- Conditional branching based on results
+- Caching and rate limiting per trigger
+
+### HTTP Methods
+
+HTTP triggers support all standard methods: **GET**, **POST**, **PUT**, **DELETE**, **PATCH**, **HEAD**, and **OPTIONS**.
+
+You can define multiple workflows with the same path but different methods (RESTful pattern).
+
+### Path Parameters
+
+URL path parameters allow you to capture values from the URL path itself (e.g., `/api/items/{id}` instead of `/api/items?id=123`). Path parameters use Go 1.22+ routing syntax with curly braces.
 
 ```yaml
-queries:
-  - name: "machine_status_check"
-    path: "/api/status"           # Optional - omit for schedule-only queries
-    method: "GET"
-    description: "Check machine status"
-    sql: |
-      SELECT COUNT(*) AS online FROM Machines WHERE IsOnline = 1
-    schedule:
-      cron: "*/5 * * * *"         # Every 5 minutes
-      log_results: false          # Just log row count (default)
+workflows:
+  - name: "get_item"
+    triggers:
+      - type: http
+        path: "/api/items/{id}"
+        method: GET
+        parameters:
+          - name: "id"           # Must match the path parameter name
+            type: "int"
+            required: true       # Path parameters must be required
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT * FROM items WHERE id = @id"
+      - type: response
+        template: '{"item": {{json (index .steps.fetch.data 0)}}}'
+
+  - name: "get_item_reviews"
+    triggers:
+      - type: http
+        path: "/api/items/{item_id}/reviews/{review_id}"
+        method: GET
+        parameters:
+          - name: "item_id"
+            type: "int"
+            required: true
+          - name: "review_id"
+            type: "int"
+            required: true
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT * FROM reviews WHERE item_id = @item_id AND id = @review_id"
+      - type: response
+        template: '{"review": {{json (index .steps.fetch.data 0)}}}'
 ```
 
-### Schedule-Only Queries
+**Path parameter rules:**
+- Path parameters are declared using `{paramName}` syntax in the path
+- Each path parameter must have a matching entry in `parameters`
+- Path parameters must be `required: true` (can't have optional path segments)
+- Path parameters take precedence over query parameters with the same name
+- Parameter names must start with a letter or underscore, followed by alphanumeric characters
 
-Omit `path` to create a query that only runs on schedule (no HTTP endpoint):
+**Example usage:**
+```bash
+# Path parameter captured from URL
+curl http://localhost:8081/api/items/42
+# Equivalent to: /api/items?id=42
+
+# Multiple path parameters
+curl http://localhost:8081/api/items/42/reviews/7
+```
+
+### RESTful Pattern Example
+
+Combine path parameters with multiple methods for clean REST APIs:
 
 ```yaml
-  - name: "daily_attendance_report"
-    description: "Count yesterday's attendance"
-    sql: |
-      SELECT COUNT(*) AS total, COUNT(DISTINCT EmployeeId) AS unique_employees
-      FROM AttendanceLog
-      WHERE CAST(PunchTime AS DATE) = CAST(@reportDate AS DATE)
-    parameters:
-      - name: "reportDate"
-        type: "datetime"
-        required: true
-    schedule:
-      cron: "0 8 * * *"           # 8 AM daily
-      params:
-        reportDate: "yesterday"   # Dynamic date value
-      log_results: true           # Log first 10 rows
+workflows:
+  # List items: GET /api/items
+  - name: "list_items"
+    triggers:
+      - type: http
+        path: "/api/items"
+        method: GET
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT * FROM items"
+      - type: response
+        template: '{"data": {{json .steps.fetch.data}}}'
+
+  # Create item: POST /api/items
+  - name: "create_item"
+    triggers:
+      - type: http
+        path: "/api/items"
+        method: POST
+        parameters:
+          - name: "name"
+            type: "string"
+            required: true
+    steps:
+      - name: insert
+        type: query
+        database: "primary"
+        sql: "INSERT INTO items (name) VALUES (@name)"
+      - type: response
+        status_code: 201
+        template: '{"success": true}'
+
+  # Get single item: GET /api/items/{id}
+  - name: "get_item"
+    triggers:
+      - type: http
+        path: "/api/items/{id}"
+        method: GET
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT * FROM items WHERE id = @id"
+      - type: response
+        template: '{"item": {{json (index .steps.fetch.data 0)}}}'
+
+  # Update item: PUT /api/items/{id}
+  - name: "update_item"
+    triggers:
+      - type: http
+        path: "/api/items/{id}"
+        method: PUT
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+          - name: "name"
+            type: "string"
+            required: true
+    steps:
+      - name: update
+        type: query
+        database: "primary"
+        sql: "UPDATE items SET name = @name WHERE id = @id"
+      - type: response
+        template: '{"success": true}'
+
+  # Delete item: DELETE /api/items/{id}
+  - name: "delete_item"
+    triggers:
+      - type: http
+        path: "/api/items/{id}"
+        method: DELETE
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    steps:
+      - name: delete
+        type: query
+        database: "primary"
+        sql: "DELETE FROM items WHERE id = @id"
+      - type: response
+        template: '{"deleted": true}'
 ```
 
-### Dynamic Date Values
+### Basic HTTP Workflow
 
-The following special values are resolved at execution time:
+The simplest workflow exposes a single query as an HTTP endpoint:
 
-| Value | Resolves To |
-|-------|-------------|
-| `now` | Current timestamp |
-| `today` | Start of today (00:00:00) |
-| `yesterday` | Start of yesterday |
-| `tomorrow` | Start of tomorrow |
+```yaml
+workflows:
+  - name: "get_machines"
+    triggers:
+      - type: http
+        path: "/api/machines"
+        method: GET
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT * FROM Machines ORDER BY MachineName"
+      - type: response
+        template: |
+          {"success": true, "data": {{json .steps.fetch.data}}, "count": {{.steps.fetch.count}}}
+```
 
-### Cron Expression Format
+### Workflow with Parameters
+
+Parameters are defined on triggers and accessed via `.trigger.params`:
+
+```yaml
+workflows:
+  - name: "get_machine_by_id"
+    triggers:
+      - type: http
+        path: "/api/machines/details"
+        method: GET
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT * FROM Machines WHERE MachineId = @id"
+      - type: response
+        template: |
+          {"success": true, "machine": {{json (index .steps.fetch.data 0)}}}
+```
+
+### Conditional Responses
+
+Use named conditions and conditional response steps:
+
+```yaml
+workflows:
+  - name: "get_user"
+    conditions:
+      found: "steps.fetch.count > 0"
+      not_found: "steps.fetch.count == 0"
+    triggers:
+      - type: http
+        path: "/api/user"
+        method: GET
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT * FROM Users WHERE Id = @id"
+      - type: response
+        condition: "found"
+        template: |
+          {"success": true, "user": {{json (index .steps.fetch.data 0)}}}
+      - type: response
+        condition: "not_found"
+        status_code: 404
+        template: |
+          {"success": false, "error": "User not found"}
+```
+
+### Multi-Step Workflow
+
+Chain multiple queries and combine results:
+
+```yaml
+workflows:
+  - name: "dashboard_stats"
+    triggers:
+      - type: http
+        path: "/api/dashboard"
+        method: GET
+    steps:
+      - name: machine_stats
+        type: query
+        database: "primary"
+        sql: "SELECT COUNT(*) AS total, SUM(CASE WHEN IsOnline = 1 THEN 1 ELSE 0 END) AS online FROM Machines"
+
+      - name: checkin_stats
+        type: query
+        database: "primary"
+        sql: "SELECT COUNT(*) AS total, COUNT(DISTINCT EmployeeId) AS unique_employees FROM AttendanceLog WHERE PunchTime >= DATE('now', '-1 day')"
+
+      - type: response
+        template: |
+          {
+            "success": true,
+            "machines": {{json (index .steps.machine_stats.data 0)}},
+            "checkins": {{json (index .steps.checkin_stats.data 0)}}
+          }
+```
+
+### External API Calls (httpcall)
+
+Call external APIs between queries:
+
+```yaml
+workflows:
+  - name: "sync_to_external"
+    triggers:
+      - type: cron
+        schedule: "0 * * * *"  # Every hour
+    steps:
+      - name: fetch_data
+        type: query
+        database: "primary"
+        sql: "SELECT * FROM Machines WHERE UpdatedAt > datetime('now', '-1 hour')"
+
+      - name: notify_external
+        type: httpcall
+        condition: "steps.fetch_data.count > 0"
+        url: "https://api.example.com/webhooks/machines"
+        http_method: POST
+        headers:
+          Authorization: "Bearer ${API_TOKEN}"
+          Content-Type: "application/json"
+        body: |
+          {"machines": {{json .steps.fetch_data.data}}, "count": {{.steps.fetch_data.count}}}
+        parse: "json"
+        timeout_sec: 30
+        retry:
+          enabled: true
+          max_attempts: 3
+          initial_backoff_sec: 1
+          max_backoff_sec: 30
+```
+
+### Iteration with Blocks
+
+Process each item from a query result:
+
+```yaml
+workflows:
+  - name: "process_orders"
+    triggers:
+      - type: cron
+        schedule: "*/5 * * * *"
+    steps:
+      - name: fetch_orders
+        type: query
+        database: "primary"
+        sql: "SELECT * FROM Orders WHERE Status = 'pending' LIMIT 100"
+
+      - name: process_batch
+        condition: "steps.fetch_orders.count > 0"
+        iterate:
+          over: "steps.fetch_orders.data"
+          as: "order"
+          on_error: continue  # Continue processing remaining items on failure
+        steps:
+          - name: call_payment
+            type: httpcall
+            url: "https://payments.example.com/charge"
+            http_method: POST
+            body: |
+              {"order_id": "{{.order.OrderId}}", "amount": {{.order.Amount}}}
+```
+
+After iteration, access aggregate results:
+- `.steps.process_batch.success_count` - Number of successful iterations
+- `.steps.process_batch.failure_count` - Number of failed iterations
+- `.steps.process_batch.skipped_count` - Number of skipped iterations
+- `.steps.process_batch.iterations` - Array of results from each iteration
+
+**HTTP example with response:**
+
+```yaml
+workflows:
+  - name: "batch_process"
+    triggers:
+      - type: http
+        path: "/api/batch"
+        method: POST
+        parameters:
+          - name: "ids"
+            type: "int[]"
+            required: true
+    steps:
+      - name: process_each
+        iterate:
+          over: "trigger.params.ids"
+          as: "id"
+        steps:
+          - name: lookup
+            type: query
+            database: "primary"
+            sql: "SELECT {{.id}} AS id, 'processed' AS status"
+
+      - type: response
+        template: |
+          {
+            "processed": {{.steps.process_each.success_count}},
+            "failed": {{.steps.process_each.failure_count}},
+            "results": {{json .steps.process_each.iterations}}
+          }
+```
+
+The `as:` value (`id` in this case) becomes the variable name used in templates (`.id`).
+
+### Cron-Triggered Workflows (Scheduled Execution)
+
+Run workflows on a schedule:
+
+```yaml
+workflows:
+  - name: "daily_report"
+    triggers:
+      - type: cron
+        schedule: "0 8 * * *"  # 8 AM daily
+        params:
+          report_date: "yesterday"  # Dynamic date value
+    steps:
+      - name: generate
+        type: query
+        database: "primary"
+        sql: "SELECT COUNT(*) AS total FROM AttendanceLog WHERE DATE(PunchTime) = DATE(@report_date)"
+```
+
+**Cron Expression Format:**
 
 Standard 5-field cron format: `minute hour day-of-month month day-of-week`
 
@@ -787,26 +1264,292 @@ Standard 5-field cron format: `minute hour day-of-month month day-of-week`
 | `0 8 * * 1` | Mondays at 8 AM |
 | `0 0 1 * *` | First day of month at midnight |
 
-### Retry Behavior
+**Dynamic Date Values:**
 
-Scheduled queries automatically retry on failure:
+The following special values are resolved at execution time:
+
+| Value | Resolves To |
+|-------|-------------|
+| `now` | Current timestamp |
+| `today` | Start of today (00:00:00) |
+| `yesterday` | Start of yesterday |
+| `tomorrow` | Start of tomorrow |
+
+**Retry Behavior:**
+
+Scheduled workflows automatically retry on failure:
 - 3 attempts total
 - Exponential backoff: 1s, 5s, 25s between retries
 - Logs error after all retries exhausted
 
-### Logging
+### Multiple Triggers
 
-Scheduled query execution is logged:
+A single workflow can have both HTTP and cron triggers:
 
-```json
-{"time":"...","level":"INFO","msg":"scheduled_query_started","query_name":"daily_report","cron":"0 8 * * *"}
-{"time":"...","level":"INFO","msg":"scheduled_query_completed","query_name":"daily_report","row_count":1,"duration_ms":45}
+```yaml
+workflows:
+  - name: "status_check"
+    triggers:
+      - type: http
+        path: "/api/status"
+        method: GET
+      - type: cron
+        schedule: "*/5 * * * *"
+    steps:
+      - name: check
+        type: query
+        database: "primary"
+        sql: "SELECT COUNT(*) AS online FROM Machines WHERE IsOnline = 1"
+      - type: response  # Only used for HTTP trigger
+        template: |
+          {"online_machines": {{index .steps.check.data 0 "online"}}}
 ```
 
-With `log_results: true`, the first 10 rows are included:
+### Workflow Caching
 
-```json
-{"time":"...","level":"INFO","msg":"scheduled_query_completed","query_name":"daily_report","row_count":1,"duration_ms":45,"sample_rows":"[{\"total\":1523,\"unique_employees\":342}]"}
+SQL Proxy supports two levels of caching:
+
+**Trigger-Level Caching** - Cache the entire workflow response. On cache hit, the workflow steps are not executed at all - the cached response is returned immediately.
+
+```yaml
+workflows:
+  - name: "cached_dashboard"
+    triggers:
+      - type: http
+        path: "/api/dashboard"
+        method: GET
+        cache:
+          enabled: true
+          key: "dashboard:{{.Param.period | default \"day\"}}"
+          ttl_sec: 60
+          evict_cron: "0 0 * * *"  # Optional: evict at midnight
+        parameters:
+          - name: "period"
+            type: "string"
+            default: "day"
+    steps:
+      # ... query steps
+```
+
+Response includes `X-Cache: HIT` or `X-Cache: MISS` header.
+
+**Step-Level Caching** - Cache individual step results (query or httpcall). The workflow still executes, but cached steps return their cached result instead of executing. Useful when multiple endpoints share common queries, or for expensive operations.
+
+```yaml
+workflows:
+  - name: "user_dashboard"
+    triggers:
+      - type: http
+        path: "/api/user/dashboard"
+        method: GET
+        parameters:
+          - name: "user_id"
+            type: "int"
+            required: true
+    steps:
+      # User data cached for 5 minutes
+      - name: user
+        type: query
+        database: "primary"
+        sql: "SELECT * FROM users WHERE id = @user_id"
+        cache:
+          key: "user:{{.Param.user_id}}"
+          ttl_sec: 300
+
+      # Stats cached for 1 minute (changes more often)
+      - name: stats
+        type: query
+        database: "primary"
+        sql: "SELECT COUNT(*) as count FROM orders WHERE user_id = @user_id"
+        cache:
+          key: "user_stats:{{.Param.user_id}}"
+          ttl_sec: 60
+
+      - type: response
+        template: |
+          {
+            "user": {{json (index .steps.user.data 0)}},
+            "user_cached": {{.steps.user.cache_hit}},
+            "stats": {{json (index .steps.stats.data 0)}},
+            "stats_cached": {{.steps.stats.cache_hit}}
+          }
+```
+
+You can combine both levels - trigger cache provides fast response for repeated requests, while step cache speeds up workflow execution when the trigger cache misses.
+
+### Workflow Rate Limiting
+
+Apply rate limits to HTTP triggers:
+
+```yaml
+workflows:
+  - name: "rate_limited_api"
+    triggers:
+      - type: http
+        path: "/api/limited"
+        method: GET
+        rate_limit:
+          - pool: "default"  # Reference named pool
+          - requests_per_second: 10  # Or inline config
+            burst: 20
+            key: "{{.ClientIP}}"
+    steps:
+      # ... steps
+```
+
+### Step Types Reference
+
+| Type | Purpose |
+|------|---------|
+| `query` | Execute SQL query against a database |
+| `httpcall` | Call external HTTP API |
+| `response` | Send HTTP response (HTTP triggers only) |
+
+Steps with nested `steps:` are called **blocks**. Blocks provide a scoped namespace for their nested steps and support iteration via `iterate:`.
+
+### Step Configuration
+
+**Query Step:**
+```yaml
+- name: "step_name"
+  type: query
+  database: "primary"           # Required: database connection name
+  sql: "SELECT * FROM ..."      # Required: SQL query
+  isolation: "read_committed"   # Optional: transaction isolation
+  lock_timeout_ms: 5000         # Optional: lock timeout
+  deadlock_priority: "low"      # Optional: deadlock priority
+  json_columns: ["data"]        # Optional: parse JSON columns
+  cache:                        # Optional: step-level caching
+    key: "item:{{.Param.id}}"   # Cache key (supports templates)
+    ttl_sec: 300                # Time to live in seconds
+  on_error: fail                # Optional: fail (default) or continue
+  disabled: false               # Optional: skip this step if true
+```
+
+**HTTPCall Step:**
+```yaml
+- name: "step_name"
+  type: httpcall
+  url: "https://api.example.com/..."  # Required (supports templates)
+  http_method: POST                    # Required: GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS
+  headers:                             # Optional: HTTP headers
+    Authorization: "Bearer token"
+  body: '{"key": "value"}'             # Optional: request body (supports templates)
+  parse: "json"                        # Optional: json, text, or none
+  timeout_sec: 30                      # Optional: request timeout
+  retry:                               # Optional: retry configuration
+    enabled: true
+    max_attempts: 3
+    initial_backoff_sec: 1
+    max_backoff_sec: 30
+  cache:                               # Optional: step-level caching
+    key: "api:{{.Param.id}}"           # Cache key (supports templates)
+    ttl_sec: 300                       # Time to live in seconds
+```
+
+**Response Step:**
+```yaml
+- type: response
+  condition: "condition_name"  # Optional: only send if condition is true
+  status_code: 200             # Optional: HTTP status code (default: 200)
+  headers:                     # Optional: response headers
+    X-Custom: "value"
+  template: |                  # Required: response body template
+    {"success": true, "data": {{json .steps.fetch.data}}}
+```
+
+**Block Step (iteration):**
+```yaml
+- name: process_items
+  condition: "condition_name"    # Optional: only execute if condition is true
+  iterate:                       # Optional: iterate over a collection
+    over: "steps.fetch.data"     # Expression to iterate over
+    as: "item"                   # Variable name for current item
+    on_error: continue           # abort, continue, or skip
+  steps:                         # Nested steps (creates a block)
+    - name: process
+      type: query
+      database: "primary"
+      sql: "UPDATE items SET status = 'done' WHERE id = {{.item.id}}"
+```
+
+Block results include:
+- `.steps.<name>.iterations` - Array of iteration results
+- `.steps.<name>.success_count` - Number of successful iterations
+- `.steps.<name>.failure_count` - Number of failed iterations
+- `.steps.<name>.skipped_count` - Number of skipped iterations
+
+### Template Context
+
+Templates have access to:
+
+| Variable | Description |
+|----------|-------------|
+| `.trigger.type` | Trigger type ("http" or "cron") |
+| `.trigger.params` | Parameter values from request/schedule |
+| `.trigger.headers` | HTTP headers (HTTP trigger only) |
+| `.trigger.method` | HTTP method (HTTP trigger only) |
+| `.trigger.path` | Request path (HTTP trigger only) |
+| `.steps.<name>.data` | Query results (array of rows) |
+| `.steps.<name>.count` | Row count |
+| `.steps.<name>.error` | Error message if step failed |
+| `.steps.<name>.status_code` | HTTP status (httpcall only) |
+| `.item` | Current item in block iteration |
+| `.workflow.request_id` | Request ID |
+| `.workflow.name` | Workflow name |
+
+### Template Functions
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `json` | JSON encode value | `{{json .steps.fetch.data}}` |
+| `index` | Array/map access | `{{index .steps.fetch.data 0 "name"}}` |
+| `default` | Default value if empty | `{{.param | default "all"}}` |
+| `len` | Length of array/string | `{{len .steps.fetch.data}}` |
+
+### Condition Expressions
+
+Conditions use the [expr](https://github.com/expr-lang/expr) expression language:
+
+```yaml
+conditions:
+  has_data: "steps.fetch.count > 0"
+  no_data: "steps.fetch.count == 0"
+  is_admin: "trigger.params.role == 'admin'"
+  large_result: "steps.fetch.count >= 100"
+```
+
+Available operators: `==`, `!=`, `<`, `>`, `<=`, `>=`, `&&`, `||`, `!`, `in`, `matches`
+
+### Error Handling
+
+Control step failure behavior with `on_error`:
+
+```yaml
+steps:
+  - name: optional_step
+    type: query
+    database: "primary"
+    sql: "SELECT * FROM optional_table"
+    on_error: continue  # Continue to next step even if this fails
+
+  - name: required_step
+    type: query
+    database: "primary"
+    sql: "SELECT * FROM required_table"
+    on_error: fail  # Stop workflow on failure (default)
+```
+
+For blocks, control iteration error behavior:
+
+```yaml
+- name: process_items
+  iterate:
+    over: "steps.fetch.data"
+    as: "item"
+    on_error: continue  # Process remaining items even if one fails
+  steps:
+    # ... nested steps
 ```
 
 ## Rate Limiting
@@ -835,28 +1578,44 @@ rate_limits:
     key: "{{getOr .Header \"X-Tenant-ID\" \"default\"}}"
 ```
 
-### Per-Query Rate Limits
+### Per-Workflow Rate Limits
 
-Apply rate limits to specific queries by referencing pools or using inline configuration:
+Apply rate limits to specific workflows by referencing pools or using inline configuration:
 
 ```yaml
-queries:
+workflows:
   - name: "expensive_report"
-    path: "/api/report"
-    method: "GET"
-    sql: "SELECT * FROM large_table"
-    rate_limit:
-      - pool: "global"                   # Reference named pool
-      - pool: "per_user"                 # Multiple pools can be applied
+    triggers:
+      - type: http
+        path: "/api/report"
+        method: GET
+        rate_limit:
+          - pool: "global"                   # Reference named pool
+          - pool: "per_user"                 # Multiple pools can be applied
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT * FROM large_table"
+      - type: response
+        template: '{"success": true, "data": {{json .steps.fetch.data}}}'
 
   - name: "public_api"
-    path: "/api/public"
-    method: "GET"
-    sql: "SELECT * FROM items"
-    rate_limit:
-      - requests_per_second: 5           # Inline rate limit
-        burst: 10
-        key: "{{.ClientIP}}"
+    triggers:
+      - type: http
+        path: "/api/public"
+        method: GET
+        rate_limit:
+          - requests_per_second: 5           # Inline rate limit
+            burst: 10
+            key: "{{.ClientIP}}"
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT * FROM items"
+      - type: response
+        template: '{"success": true, "data": {{json .steps.fetch.data}}}'
 ```
 
 ### Rate Limit Key Templates
@@ -890,7 +1649,7 @@ When a request is rate limited:
 
 ### Multiple Rate Limits
 
-When multiple rate limits apply to a query, **all must pass** for the request to proceed:
+When multiple rate limits apply to a workflow, **all must pass** for the request to proceed:
 
 ```yaml
 rate_limit:
@@ -899,6 +1658,181 @@ rate_limit:
 ```
 
 This allows layered rate limiting (e.g., global cap + per-client fairness).
+
+## Parameter Types
+
+The following parameter types are supported:
+
+| Type | Description | Example Value |
+|------|-------------|---------------|
+| `string` | Text value (default) | `"hello"` |
+| `int`, `integer` | Integer number | `42` |
+| `float`, `double` | Floating point number | `3.14` |
+| `bool`, `boolean` | Boolean value | `true`, `false`, `1`, `0` |
+| `datetime`, `date` | Date/time value | `"2024-01-15"`, `"2024-01-15T10:30:00Z"` |
+| `json` | Any JSON value (serialized to string) | `{"key": "value"}` |
+| `int[]` | Array of integers | `[1, 2, 3]` |
+| `string[]` | Array of strings | `["a", "b", "c"]` |
+| `float[]` | Array of numbers | `[1.5, 2.5]` |
+| `bool[]` | Array of booleans | `[true, false]` |
+
+### JSON Type Parameter
+
+Use `json` type when you need to accept nested objects or arbitrary JSON. The value is serialized to a JSON string for use with SQL JSON functions:
+
+```yaml
+workflows:
+  - name: "save_config"
+    triggers:
+      - type: http
+        path: "/api/config"
+        method: POST
+        parameters:
+          - name: "name"
+            type: "string"
+            required: true
+          - name: "data"
+            type: "json"
+            required: true
+    steps:
+      - name: insert
+        type: query
+        database: "primary"
+        sql: |
+          INSERT INTO configs (name, data) VALUES (@name, @data)
+      - type: response
+        template: '{"success": true}'
+```
+
+```bash
+# Send nested JSON object
+curl -X POST http://localhost:8081/api/config \
+  -H "Content-Type: application/json" \
+  -d '{"name": "settings", "data": {"theme": "dark", "notifications": {"email": true}}}'
+```
+
+In SQL, use JSON functions to extract values:
+
+```sql
+-- SQL Server: JSON_VALUE
+SELECT name, JSON_VALUE(data, '$.theme') AS theme FROM configs
+
+-- SQLite: json_extract
+SELECT name, json_extract(data, '$.theme') AS theme FROM configs
+```
+
+### Array Type Parameters
+
+Use array types (`int[]`, `string[]`, etc.) for IN clause queries. Arrays are serialized to JSON strings and used with `json_each` (SQLite) or `OPENJSON` (SQL Server):
+
+```yaml
+workflows:
+  - name: "get_users_by_ids"
+    triggers:
+      - type: http
+        path: "/api/users/batch"
+        method: POST
+        parameters:
+          - name: "ids"
+            type: "int[]"
+            required: true
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: |
+          SELECT * FROM users
+          WHERE id IN (SELECT value FROM json_each(@ids))
+      - type: response
+        template: '{"success": true, "data": {{json .steps.fetch.data}}}'
+
+  - name: "filter_by_status"
+    triggers:
+      - type: http
+        path: "/api/users/filter"
+        method: POST
+        parameters:
+          - name: "statuses"
+            type: "string[]"
+            required: true
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: |
+          SELECT * FROM users
+          WHERE status IN (SELECT value FROM json_each(@statuses))
+      - type: response
+        template: '{"success": true, "data": {{json .steps.fetch.data}}}'
+```
+
+```bash
+# Get users with IDs 1, 2, and 3
+curl -X POST http://localhost:8081/api/users/batch \
+  -H "Content-Type: application/json" \
+  -d '{"ids": [1, 2, 3]}'
+
+# Filter by multiple statuses
+curl -X POST http://localhost:8081/api/users/filter \
+  -H "Content-Type: application/json" \
+  -d '{"statuses": ["active", "pending"]}'
+```
+
+For SQL Server, use `OPENJSON`:
+
+```sql
+SELECT * FROM users
+WHERE id IN (SELECT CAST(value AS INT) FROM OPENJSON(@ids))
+```
+
+**Array type validation:**
+- Array elements must match the declared base type
+- Mixed types are rejected (e.g., `[1, "two"]` for `int[]`)
+
+### JSON Column Output
+
+By default, JSON stored in database columns is returned as escaped strings. Use `json_columns` to parse them as objects in the response:
+
+```yaml
+workflows:
+  - name: "get_config"
+    triggers:
+      - type: http
+        path: "/api/config"
+        method: GET
+        parameters:
+          - name: "name"
+            type: "string"
+            required: true
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT id, name, data FROM configs WHERE name = @name"
+        json_columns: ["data"]   # Parse 'data' column as JSON
+      - type: response
+        template: '{"success": true, "data": {{json .steps.fetch.data}}}'
+```
+
+**Without `json_columns`** (default):
+```json
+{
+  "data": [{"id": 1, "name": "settings", "data": "{\"theme\":\"dark\"}"}]
+}
+```
+
+**With `json_columns: ["data"]`**:
+```json
+{
+  "data": [{"id": 1, "name": "settings", "data": {"theme": "dark"}}]
+}
+```
+
+**Notes:**
+- Only string columns are parsed; other types are left unchanged
+- Empty strings are left as empty strings
+- Invalid JSON in a configured column returns a 500 error
+- Non-existent columns are silently ignored
 
 ## Logging
 
@@ -911,7 +1845,7 @@ Uses Go's `log/slog` with JSON output. Rotation via lumberjack.
 ### Log Format (slog JSON, one line per entry)
 
 ```json
-{"time":"2024-01-15T10:30:45.123Z","level":"INFO","msg":"request_completed","request_id":"a1b2c3d4","endpoint":"/api/machines","query_name":"list_machines","query_duration_ms":45,"row_count":150,"total_duration_ms":48}
+{"time":"2024-01-15T10:30:45.123Z","level":"INFO","msg":"request_completed","request_id":"a1b2c3d4","endpoint":"/api/machines","workflow_name":"list_machines","query_duration_ms":45,"row_count":150,"total_duration_ms":48}
 ```
 
 ### Log Levels
@@ -1022,19 +1956,19 @@ Response:
 | `gc_last_pause_ns` | Duration of most recent GC pause |
 
 **What to watch for:**
-- `mem_alloc_bytes` growing unbounded → memory leak
-- `goroutines` growing unbounded → goroutine leak
-- `gc_last_pause_ns` > 10ms → GC pressure, may need tuning
+- `mem_alloc_bytes` growing unbounded -> memory leak
+- `goroutines` growing unbounded -> goroutine leak
+- `gc_last_pause_ns` > 10ms -> GC pressure, may need tuning
 
 ## API Endpoints
 
 ### Service Endpoints
 
-All internal service endpoints use the `/_/` prefix (reserved, user queries cannot use this prefix).
+All internal service endpoints use the `/_/` prefix (reserved, user workflows cannot use this prefix).
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/` | GET | List all query endpoints with parameters |
+| `/` | GET | List all workflow endpoints with parameters |
 | `/_/health` | GET | Aggregate health check (always 200, parse `status` field) |
 | `/_/health/{dbname}` | GET | Per-database health check (200 or 404 if not found) |
 | `/_/metrics` | GET | Prometheus/OpenMetrics format for monitoring |
@@ -1138,9 +2072,9 @@ You can use this with:
 - **Postman** - Import > Link > `http://localhost:8081/_/openapi.json`
 - **Code generators** - Generate client SDKs for any language
 
-The spec includes all configured query endpoints with their parameters, types, and response schemas.
+The spec includes all configured workflow endpoints with their parameters, types, and response schemas.
 
-### Query Endpoints
+### Workflow Endpoints
 
 Defined in `config.yaml`. Each returns:
 
@@ -1179,150 +2113,6 @@ curl -X POST http://localhost:8081/api/reports \
 - Query parameters override JSON body values
 - Maximum request body size: 1MB
 - Nested objects/arrays are rejected for scalar types (string, int, etc.)
-
-### Parameter Types
-
-The following parameter types are supported:
-
-| Type | Description | Example Value |
-|------|-------------|---------------|
-| `string` | Text value (default) | `"hello"` |
-| `int`, `integer` | Integer number | `42` |
-| `float`, `double` | Floating point number | `3.14` |
-| `bool`, `boolean` | Boolean value | `true`, `false`, `1`, `0` |
-| `datetime`, `date` | Date/time value | `"2024-01-15"`, `"2024-01-15T10:30:00Z"` |
-| `json` | Any JSON value (serialized to string) | `{"key": "value"}` |
-| `int[]` | Array of integers | `[1, 2, 3]` |
-| `string[]` | Array of strings | `["a", "b", "c"]` |
-| `float[]` | Array of numbers | `[1.5, 2.5]` |
-| `bool[]` | Array of booleans | `[true, false]` |
-
-### JSON Type Parameter
-
-Use `json` type when you need to accept nested objects or arbitrary JSON. The value is serialized to a JSON string for use with SQL JSON functions:
-
-```yaml
-queries:
-  - name: "save_config"
-    path: "/api/config"
-    method: "POST"
-    sql: |
-      INSERT INTO configs (name, data) VALUES (@name, @data)
-    parameters:
-      - name: "name"
-        type: "string"
-        required: true
-      - name: "data"
-        type: "json"
-        required: true
-```
-
-```bash
-# Send nested JSON object
-curl -X POST http://localhost:8081/api/config \
-  -H "Content-Type: application/json" \
-  -d '{"name": "settings", "data": {"theme": "dark", "notifications": {"email": true}}}'
-```
-
-In SQL, use JSON functions to extract values:
-
-```sql
--- SQL Server: JSON_VALUE
-SELECT name, JSON_VALUE(data, '$.theme') AS theme FROM configs
-
--- SQLite: json_extract
-SELECT name, json_extract(data, '$.theme') AS theme FROM configs
-```
-
-### Array Type Parameters
-
-Use array types (`int[]`, `string[]`, etc.) for IN clause queries. Arrays are serialized to JSON strings and used with `json_each` (SQLite) or `OPENJSON` (SQL Server):
-
-```yaml
-queries:
-  - name: "get_users_by_ids"
-    path: "/api/users/batch"
-    method: "POST"
-    sql: |
-      SELECT * FROM users
-      WHERE id IN (SELECT value FROM json_each(@ids))
-    parameters:
-      - name: "ids"
-        type: "int[]"
-        required: true
-
-  - name: "filter_by_status"
-    path: "/api/users/filter"
-    method: "POST"
-    sql: |
-      SELECT * FROM users
-      WHERE status IN (SELECT value FROM json_each(@statuses))
-    parameters:
-      - name: "statuses"
-        type: "string[]"
-        required: true
-```
-
-```bash
-# Get users with IDs 1, 2, and 3
-curl -X POST http://localhost:8081/api/users/batch \
-  -H "Content-Type: application/json" \
-  -d '{"ids": [1, 2, 3]}'
-
-# Filter by multiple statuses
-curl -X POST http://localhost:8081/api/users/filter \
-  -H "Content-Type: application/json" \
-  -d '{"statuses": ["active", "pending"]}'
-```
-
-For SQL Server, use `OPENJSON`:
-
-```sql
-SELECT * FROM users
-WHERE id IN (SELECT CAST(value AS INT) FROM OPENJSON(@ids))
-```
-
-**Array type validation:**
-- Array elements must match the declared base type
-- Mixed types are rejected (e.g., `[1, "two"]` for `int[]`)
-
-### JSON Column Output
-
-By default, JSON stored in database columns is returned as escaped strings. Use `json_columns` to parse them as objects in the response:
-
-```yaml
-queries:
-  - name: "get_config"
-    path: "/api/config"
-    method: "GET"
-    database: "primary"
-    sql: "SELECT id, name, data FROM configs WHERE name = @name"
-    json_columns: ["data"]   # Parse 'data' column as JSON
-    parameters:
-      - name: "name"
-        type: "string"
-        required: true
-```
-
-**Without `json_columns`** (default):
-```json
-{
-  "data": [{"id": 1, "name": "settings", "data": "{\"theme\":\"dark\"}"}]
-}
-```
-
-**With `json_columns: ["data"]`**:
-```json
-{
-  "data": [{"id": 1, "name": "settings", "data": {"theme": "dark"}}]
-}
-```
-
-**Notes:**
-- Only string columns are parsed; other types are left unchanged
-- Empty strings are left as empty strings
-- Invalid JSON in a configured column returns a 500 error
-- Non-existent columns are silently ignored
 
 ## Request Tracing
 
@@ -1585,9 +2375,9 @@ make test-e2e          # End-to-end tests (starts actual binary)
 
 # Run by package
 make test-db
-make test-handler
-make test-config
 make test-server
+make test-config
+make test-workflow
 
 # Run with coverage
 make test-cover
@@ -1626,4 +2416,5 @@ Planned features for future releases:
 - [ ] **PostgreSQL Support** - Add PostgreSQL as a database backend option.
 - [ ] **TLS Support** - Native HTTPS termination without requiring a reverse proxy (Caddy/nginx). Will support configurable certificate paths and automatic Let's Encrypt integration.
 - [x] **Rate Limiting** - Per-endpoint and per-client rate limiting to protect database resources from excessive requests.
+- [x] **Workflows** - Multi-step query pipelines with conditional execution, iteration, and external API calls.
 - [ ] **Authentication** - API key and/or JWT-based authentication for endpoint access control.

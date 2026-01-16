@@ -128,24 +128,24 @@ type Collector struct {
 	endpoints map[string]*endpointData
 
 	// Prometheus metrics
-	promRegistry     *prometheus.Registry
-	promInfo         *prometheus.GaugeVec
-	promUptime       prometheus.Gauge
-	promRequests     *prometheus.CounterVec
-	promDuration     *prometheus.HistogramVec
+	promRegistry      *prometheus.Registry
+	promInfo          *prometheus.GaugeVec
+	promUptime        prometheus.Gauge
+	promRequests      *prometheus.CounterVec
+	promDuration      *prometheus.HistogramVec
 	promQueryDuration *prometheus.HistogramVec
-	promRows         *prometheus.CounterVec
-	promErrors       *prometheus.CounterVec
-	promDBHealthy    *prometheus.GaugeVec
-	promDBConnsOpen  *prometheus.GaugeVec
-	promDBConnsIdle  *prometheus.GaugeVec
-	promCacheHits    *prometheus.CounterVec
-	promCacheMisses  *prometheus.CounterVec
-	promCacheSize    *prometheus.GaugeVec
-	promCacheKeys    *prometheus.GaugeVec
-	promRLAllowed    *prometheus.CounterVec
-	promRLDenied     *prometheus.CounterVec
-	promRLBuckets    *prometheus.GaugeVec
+	promRows          *prometheus.CounterVec
+	promErrors        *prometheus.CounterVec
+	promDBHealthy     *prometheus.GaugeVec
+	promDBConnsOpen   *prometheus.GaugeVec
+	promDBConnsIdle   *prometheus.GaugeVec
+	promCacheHits     *prometheus.CounterVec
+	promCacheMisses   *prometheus.CounterVec
+	promCacheSize     *prometheus.GaugeVec
+	promCacheKeys     *prometheus.GaugeVec
+	promRLAllowed     *prometheus.CounterVec
+	promRLDenied      *prometheus.CounterVec
+	promRLBuckets     *prometheus.GaugeVec
 }
 
 var defaultCollector *Collector

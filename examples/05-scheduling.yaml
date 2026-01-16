@@ -1,0 +1,272 @@
+# Scheduled Workflows (Cron Triggers)
+# Demonstrates: cron expressions, dynamic dates, scheduled tasks
+
+server:
+  host: "127.0.0.1"
+  port: 8080
+  default_timeout_sec: 30
+  max_timeout_sec: 300
+
+databases:
+  - name: "main"
+    type: "sqlite"
+    path: ":memory:"
+
+logging:
+  level: "info"
+  file_path: ""
+  max_size_mb: 100
+  max_backups: 5
+  max_age_days: 30
+
+metrics:
+  enabled: true
+
+workflows:
+  # ============================================================================
+  # BASIC CRON WORKFLOWS
+  # ============================================================================
+
+  # Every minute
+  - name: "every_minute"
+    triggers:
+      - type: cron
+        schedule: "* * * * *"
+    steps:
+      - name: run
+        type: query
+        database: "main"
+        sql: "SELECT datetime('now') AS executed_at, 'every minute' AS type"
+
+  # Every 5 minutes
+  - name: "every_5_minutes"
+    triggers:
+      - type: cron
+        schedule: "*/5 * * * *"
+    steps:
+      - name: run
+        type: query
+        database: "main"
+        sql: "SELECT datetime('now') AS executed_at, 'every 5 minutes' AS type"
+
+  # Every hour (at minute 0)
+  - name: "hourly"
+    triggers:
+      - type: cron
+        schedule: "0 * * * *"
+    steps:
+      - name: run
+        type: query
+        database: "main"
+        sql: "SELECT datetime('now') AS executed_at, 'hourly' AS type"
+
+  # Daily at midnight
+  - name: "daily_midnight"
+    triggers:
+      - type: cron
+        schedule: "0 0 * * *"
+    steps:
+      - name: run
+        type: query
+        database: "main"
+        sql: "SELECT datetime('now') AS executed_at, 'daily midnight' AS type"
+
+  # Daily at 8 AM
+  - name: "daily_morning"
+    triggers:
+      - type: cron
+        schedule: "0 8 * * *"
+    steps:
+      - name: run
+        type: query
+        database: "main"
+        sql: "SELECT datetime('now') AS executed_at, 'daily 8am' AS type"
+
+  # Weekly on Monday at 9 AM
+  - name: "weekly_monday"
+    triggers:
+      - type: cron
+        schedule: "0 9 * * 1"
+    steps:
+      - name: run
+        type: query
+        database: "main"
+        sql: "SELECT datetime('now') AS executed_at, 'weekly monday' AS type"
+
+  # Monthly on the 1st at midnight
+  - name: "monthly_first"
+    triggers:
+      - type: cron
+        schedule: "0 0 1 * *"
+    steps:
+      - name: run
+        type: query
+        database: "main"
+        sql: "SELECT datetime('now') AS executed_at, 'monthly first' AS type"
+
+  # ============================================================================
+  # COMPLEX CRON EXPRESSIONS
+  # ============================================================================
+
+  # Weekdays only (Mon-Fri) at 9 AM
+  - name: "weekdays_morning"
+    triggers:
+      - type: cron
+        schedule: "0 9 * * 1-5"
+    steps:
+      - name: run
+        type: query
+        database: "main"
+        sql: "SELECT datetime('now') AS executed_at, 'weekdays 9am' AS type"
+
+  # Business hours (9 AM - 5 PM, every 30 minutes)
+  - name: "business_hours"
+    triggers:
+      - type: cron
+        schedule: "*/30 9-17 * * 1-5"
+    steps:
+      - name: run
+        type: query
+        database: "main"
+        sql: "SELECT datetime('now') AS executed_at, 'business hours' AS type"
+
+  # Every 15 minutes during peak hours (10 AM - 2 PM)
+  - name: "peak_hours"
+    triggers:
+      - type: cron
+        schedule: "*/15 10-14 * * *"
+    steps:
+      - name: run
+        type: query
+        database: "main"
+        sql: "SELECT datetime('now') AS executed_at, 'peak hours' AS type"
+
+  # Specific days of month (1st, 15th)
+  - name: "biweekly"
+    triggers:
+      - type: cron
+        schedule: "0 0 1,15 * *"
+    steps:
+      - name: run
+        type: query
+        database: "main"
+        sql: "SELECT datetime('now') AS executed_at, 'biweekly' AS type"
+
+  # ============================================================================
+  # CRON WITH DYNAMIC DATE PARAMETERS
+  # ============================================================================
+
+  # Using "today" parameter
+  - name: "daily_report_today"
+    triggers:
+      - type: cron
+        schedule: "0 23 * * *"  # End of day
+        params:
+          report_date: "today"
+    steps:
+      - name: generate
+        type: query
+        database: "main"
+        sql: "SELECT @report_date AS report_date, 'daily report' AS type"
+
+  # Using "yesterday" parameter
+  - name: "yesterday_summary"
+    triggers:
+      - type: cron
+        schedule: "0 6 * * *"  # 6 AM
+        params:
+          date: "yesterday"
+    steps:
+      - name: generate
+        type: query
+        database: "main"
+        sql: "SELECT @date AS summary_date, 'yesterday summary' AS type"
+
+  # Using "tomorrow" parameter
+  - name: "tomorrow_prep"
+    triggers:
+      - type: cron
+        schedule: "0 22 * * *"  # 10 PM
+        params:
+          prep_date: "tomorrow"
+    steps:
+      - name: prepare
+        type: query
+        database: "main"
+        sql: "SELECT @prep_date AS prep_date, 'tomorrow prep' AS type"
+
+  # Using "now" parameter
+  - name: "timestamp_log"
+    triggers:
+      - type: cron
+        schedule: "*/10 * * * *"
+        params:
+          timestamp: "now"
+    steps:
+      - name: log
+        type: query
+        database: "main"
+        sql: "SELECT @timestamp AS log_time, 'timestamp log' AS type"
+
+  # Multiple dynamic parameters
+  - name: "date_range_report"
+    triggers:
+      - type: cron
+        schedule: "0 7 * * *"
+        params:
+          from_date: "yesterday"
+          to_date: "today"
+          generated: "now"
+    steps:
+      - name: generate
+        type: query
+        database: "main"
+        sql: "SELECT @from_date AS from_date, @to_date AS to_date, @generated AS generated_at"
+
+  # ============================================================================
+  # DUAL TRIGGER WORKFLOWS (HTTP + CRON)
+  # ============================================================================
+  # Same workflow can be triggered both by HTTP request and cron schedule
+
+  - name: "sync_data"
+    triggers:
+      # Can be triggered manually via HTTP
+      - type: http
+        path: "/api/sync"
+        method: POST
+      # Also runs automatically every hour
+      - type: cron
+        schedule: "0 * * * *"
+    steps:
+      - name: sync
+        type: query
+        database: "main"
+        sql: "SELECT datetime('now') AS synced_at, 'data synced' AS status"
+      - type: response  # Only used for HTTP trigger
+        template: |
+          {"synced_at": "{{index .steps.sync.data 0 \"synced_at\"}}", "status": "{{index .steps.sync.data 0 \"status\"}}"}
+
+  - name: "cleanup"
+    triggers:
+      # Manual trigger
+      - type: http
+        path: "/api/cleanup"
+        method: POST
+        parameters:
+          - name: "older_than_days"
+            type: "int"
+            required: false
+            default: "30"
+      # Automatic daily cleanup
+      - type: cron
+        schedule: "0 3 * * *"  # 3 AM
+        params:
+          older_than_days: "30"
+    steps:
+      - name: cleanup
+        type: query
+        database: "main"
+        sql: "SELECT @older_than_days AS days, 'cleanup complete' AS status"
+      - type: response
+        template: |
+          {"days": {{index .steps.cleanup.data 0 "days"}}, "status": "{{index .steps.cleanup.data 0 \"status\"}}"}

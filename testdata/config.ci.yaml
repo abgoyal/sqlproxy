@@ -82,675 +82,1354 @@ rate_limits:
     burst: 100
     key: "{{.ClientIP}}:{{.user_id}}"
 
-queries:
-  # Basic GET endpoint
-  - name: "health_check"
-    database: "primary"
-    path: "/api/health"
-    method: "GET"
-    description: "Simple health check"
-    sql: "SELECT 1 AS ok, datetime('now') AS timestamp"
+# Workflows - comprehensive test coverage
+workflows:
+  # Basic HTTP workflow with single query step
+  - name: "basic_http_workflow"
+    triggers:
+      - type: http
+        path: "/api/v2/basic"
+        method: GET
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT 'basic workflow' AS result"
+      - type: response
+        template: |
+          {"success": true, "data": {{json .steps.fetch.data}}}
 
-  # Query with string parameter
-  - name: "echo_string"
-    database: "primary"
-    path: "/api/echo/string"
-    method: "GET"
-    description: "Echo string parameter"
-    sql: "SELECT @message AS message"
-    parameters:
-      - name: "message"
-        type: "string"
-        required: false
-        default: "hello"
+  # HTTP workflow with parameters
+  - name: "workflow_with_params"
+    triggers:
+      - type: http
+        path: "/api/v2/echo"
+        method: GET
+        parameters:
+          - name: "message"
+            type: "string"
+            required: false
+            default: "hello"
+          - name: "count"
+            type: "int"
+            required: false
+            default: "1"
+    steps:
+      - name: echo
+        type: query
+        database: "primary"
+        sql: "SELECT @message AS message, @count AS count"
+      - type: response
+        template: |
+          {"message": "{{index .steps.echo.data 0 \"message\"}}", "count": {{index .steps.echo.data 0 "count"}}}
 
-  # Query with int parameter
-  - name: "echo_int"
-    database: "primary"
-    path: "/api/echo/int"
-    method: "GET"
-    description: "Echo integer parameter"
-    sql: "SELECT @value AS value, @value * 2 AS doubled"
-    parameters:
-      - name: "value"
-        type: "int"
-        required: true
+  # HTTP workflow with conditional responses
+  - name: "workflow_conditional"
+    conditions:
+      has_data: "steps.fetch.count > 0"
+      no_data: "steps.fetch.count == 0"
+    triggers:
+      - type: http
+        path: "/api/v2/conditional"
+        method: GET
+        parameters:
+          - name: "find_data"
+            type: "bool"
+            required: false
+            default: "true"
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT CASE WHEN @find_data THEN 'found' ELSE NULL END AS result WHERE @find_data"
+      - type: response
+        condition: "has_data"
+        template: |
+          {"success": true, "data": {{json .steps.fetch.data}}}
+      - type: response
+        condition: "no_data"
+        status_code: 404
+        template: |
+          {"success": false, "error": "No data found"}
 
-  # Query with integer (alias) parameter
-  - name: "echo_integer"
-    database: "primary"
-    path: "/api/echo/integer"
-    method: "GET"
-    description: "Echo integer (alias) parameter"
-    sql: "SELECT @num AS number"
-    parameters:
-      - name: "num"
-        type: "integer"
-        required: true
+  # HTTP workflow with cache
+  - name: "workflow_cached"
+    triggers:
+      - type: http
+        path: "/api/v2/cached"
+        method: GET
+        cache:
+          enabled: true
+          key: "workflow:cached"
+          ttl_sec: 60
+        parameters:
+          - name: "status"
+            type: "string"
+            required: false
+            default: "active"
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT @status AS status, datetime('now') AS timestamp"
+      - type: response
+        template: |
+          {"status": "{{index .steps.fetch.data 0 \"status\"}}", "cached_at": "{{index .steps.fetch.data 0 \"timestamp\"}}"}
 
-  # Query with float parameter
-  - name: "echo_float"
-    database: "primary"
-    path: "/api/echo/float"
-    method: "GET"
-    description: "Echo float parameter"
-    sql: "SELECT @amount AS amount, round(@amount, 2) AS rounded"
-    parameters:
-      - name: "amount"
-        type: "float"
-        required: true
+  # HTTP workflow with rate limiting
+  - name: "workflow_rate_limited"
+    triggers:
+      - type: http
+        path: "/api/v2/limited"
+        method: GET
+        rate_limit:
+          - pool: "default"
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT 'rate limited' AS result"
+      - type: response
+        template: |
+          {"result": "{{index .steps.fetch.data 0 \"result\"}}"}
 
-  # Query with double (alias) parameter
-  - name: "echo_double"
-    database: "primary"
-    path: "/api/echo/double"
-    method: "GET"
-    description: "Echo double parameter"
-    sql: "SELECT @value AS value"
-    parameters:
-      - name: "value"
-        type: "double"
-        required: true
+  # HTTP workflow with inline rate limiting
+  - name: "workflow_rate_limited_inline"
+    triggers:
+      - type: http
+        path: "/api/v2/limited/inline"
+        method: GET
+        rate_limit:
+          - requests_per_second: 10
+            burst: 20
+            key: "{{.ClientIP}}"
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT 'inline limited' AS result"
+      - type: response
+        template: |
+          {"result": "{{index .steps.fetch.data 0 \"result\"}}"}
 
-  # Query with bool parameter
-  - name: "echo_bool"
-    database: "primary"
-    path: "/api/echo/bool"
-    method: "GET"
-    description: "Echo boolean parameter"
-    sql: "SELECT @flag AS flag, CASE WHEN @flag THEN 'yes' ELSE 'no' END AS result"
-    parameters:
-      - name: "flag"
-        type: "bool"
-        required: false
-        default: "false"
+  # POST workflow
+  - name: "workflow_post"
+    triggers:
+      - type: http
+        path: "/api/v2/submit"
+        method: POST
+        parameters:
+          - name: "data"
+            type: "json"
+            required: true
+    steps:
+      - name: process
+        type: query
+        database: "writable"
+        sql: "SELECT @data AS submitted"
+      - type: response
+        template: |
+          {"success": true, "received": {{json .steps.process.data}}}
 
-  # Query with boolean (alias) parameter
-  - name: "echo_boolean"
-    database: "primary"
-    path: "/api/echo/boolean"
-    method: "GET"
-    description: "Echo boolean (alias) parameter"
-    sql: "SELECT @active AS active"
-    parameters:
-      - name: "active"
-        type: "boolean"
-        required: true
+  # PUT workflow
+  - name: "workflow_put"
+    triggers:
+      - type: http
+        path: "/api/v2/items"
+        method: PUT
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+          - name: "name"
+            type: "string"
+            required: true
+    steps:
+      - name: update
+        type: query
+        database: "writable"
+        sql: "SELECT @id AS id, @name AS updated_name"
+      - type: response
+        template: |
+          {"success": true, "updated": {{json (index .steps.update.data 0)}}}
 
-  # Query with datetime parameter
-  - name: "echo_datetime"
-    database: "primary"
-    path: "/api/echo/datetime"
-    method: "GET"
-    description: "Echo datetime parameter"
-    sql: "SELECT @timestamp AS timestamp, datetime(@timestamp) AS parsed"
-    parameters:
-      - name: "timestamp"
-        type: "datetime"
-        required: false
-        default: "2024-01-01T00:00:00Z"
+  # DELETE workflow
+  - name: "workflow_delete"
+    triggers:
+      - type: http
+        path: "/api/v2/items"
+        method: DELETE
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    steps:
+      - name: delete
+        type: query
+        database: "writable"
+        sql: "SELECT @id AS deleted_id"
+      - type: response
+        template: |
+          {"success": true, "deleted_id": {{index .steps.delete.data 0 "deleted_id"}}}
 
-  # Query with date parameter
-  - name: "echo_date"
-    database: "primary"
-    path: "/api/echo/date"
-    method: "GET"
-    description: "Echo date parameter"
-    sql: "SELECT @day AS day, date(@day) AS parsed"
-    parameters:
-      - name: "day"
-        type: "date"
-        required: true
+  # PATCH workflow
+  - name: "workflow_patch"
+    triggers:
+      - type: http
+        path: "/api/v2/items"
+        method: PATCH
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+          - name: "field"
+            type: "string"
+            required: true
+          - name: "value"
+            type: "string"
+            required: true
+    steps:
+      - name: patch
+        type: query
+        database: "writable"
+        sql: "SELECT @id AS id, @field AS field, @value AS value"
+      - type: response
+        template: |
+          {"success": true, "patched": {{json (index .steps.patch.data 0)}}}
 
-  # Query with multiple parameters
-  - name: "multi_params"
-    database: "primary"
-    path: "/api/params/multi"
-    method: "GET"
-    description: "Multiple parameter types"
-    sql: |
-      SELECT
-        @name AS name,
-        @age AS age,
-        @score AS score,
-        @active AS active,
-        @created AS created
-    parameters:
-      - name: "name"
-        type: "string"
-        required: true
-      - name: "age"
-        type: "int"
-        required: false
-        default: "0"
-      - name: "score"
-        type: "float"
-        required: false
-        default: "0.0"
-      - name: "active"
-        type: "bool"
-        required: false
-        default: "true"
-      - name: "created"
-        type: "datetime"
-        required: false
-        default: "2024-01-01"
+  # HEAD workflow (no body response)
+  - name: "workflow_head"
+    triggers:
+      - type: http
+        path: "/api/v2/items/exists"
+        method: HEAD
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    steps:
+      - name: check
+        type: query
+        database: "primary"
+        sql: "SELECT 1 AS exists WHERE @id > 0"
+      - type: response
+        template: ""
 
-  # POST endpoint with JSON parameter
-  - name: "post_json"
-    database: "writable"
-    path: "/api/data/json"
-    method: "POST"
-    description: "Accept JSON parameter"
-    sql: "SELECT @data AS data"
-    parameters:
-      - name: "data"
-        type: "json"
-        required: true
+  # OPTIONS workflow
+  - name: "workflow_options"
+    triggers:
+      - type: http
+        path: "/api/v2/items"
+        method: OPTIONS
+    steps:
+      - type: response
+        headers:
+          Allow: "GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS"
+        template: |
+          {"methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]}
 
-  # POST endpoint with array parameters
-  - name: "post_int_array"
-    database: "primary"
-    path: "/api/data/int-array"
-    method: "POST"
-    description: "Accept integer array"
-    sql: "SELECT @ids AS ids"
-    parameters:
-      - name: "ids"
-        type: "int[]"
-        required: true
+  # Same path, different method (RESTful pattern) - GET for /api/v2/items
+  - name: "workflow_get_items"
+    triggers:
+      - type: http
+        path: "/api/v2/items"
+        method: GET
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT 1 AS id, 'item1' AS name UNION ALL SELECT 2, 'item2'"
+      - type: response
+        template: |
+          {"items": {{json .steps.fetch.data}}}
 
-  - name: "post_string_array"
-    database: "primary"
-    path: "/api/data/string-array"
-    method: "POST"
-    description: "Accept string array"
-    sql: "SELECT @names AS names"
-    parameters:
-      - name: "names"
-        type: "string[]"
-        required: true
+  # Cron-triggered workflow
+  - name: "workflow_scheduled"
+    triggers:
+      - type: cron
+        schedule: "*/5 * * * *"
+    steps:
+      - name: run
+        type: query
+        database: "primary"
+        sql: "SELECT datetime('now') AS run_time, 'scheduled workflow' AS type"
 
-  - name: "post_float_array"
-    database: "primary"
-    path: "/api/data/float-array"
-    method: "POST"
-    description: "Accept float array"
-    sql: "SELECT @values AS values"
-    parameters:
-      - name: "values"
-        type: "float[]"
-        required: true
+  # Cron workflow with parameters
+  - name: "workflow_scheduled_params"
+    triggers:
+      - type: cron
+        schedule: "0 8 * * *"
+        params:
+          report_date: "yesterday"
+    steps:
+      - name: report
+        type: query
+        database: "primary"
+        sql: "SELECT @report_date AS report_date"
 
-  - name: "post_bool_array"
-    database: "primary"
-    path: "/api/data/bool-array"
-    method: "POST"
-    description: "Accept boolean array"
-    sql: "SELECT @flags AS flags"
-    parameters:
-      - name: "flags"
-        type: "bool[]"
-        required: true
+  # Workflow with multiple triggers (HTTP + cron)
+  - name: "workflow_dual_trigger"
+    triggers:
+      - type: http
+        path: "/api/v2/dual"
+        method: GET
+      - type: cron
+        schedule: "0 * * * *"
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT datetime('now') AS timestamp, 'dual trigger' AS mode"
+      - type: response
+        template: |
+          {"timestamp": "{{index .steps.fetch.data 0 \"timestamp\"}}", "mode": "{{index .steps.fetch.data 0 \"mode\"}}"}
 
-  # Query with custom timeout
-  - name: "slow_query"
-    database: "primary"
-    path: "/api/slow"
-    method: "GET"
-    description: "Query with custom timeout"
-    timeout_sec: 60
-    sql: "SELECT 'slow' AS result"
+  # Workflow with multiple query steps
+  - name: "workflow_multi_query"
+    triggers:
+      - type: http
+        path: "/api/v2/multi"
+        method: GET
+    steps:
+      - name: query1
+        type: query
+        database: "primary"
+        sql: "SELECT 'first' AS step"
+      - name: query2
+        type: query
+        database: "secondary"
+        sql: "SELECT 'second' AS step"
+      - type: response
+        template: |
+          {"step1": {{json .steps.query1.data}}, "step2": {{json .steps.query2.data}}}
 
-  # Query with cache - simple key
-  - name: "cached_simple"
-    database: "primary"
-    path: "/api/cached/simple"
-    method: "GET"
-    description: "Cached query with simple key"
-    sql: "SELECT datetime('now') AS timestamp"
-    cache:
-      enabled: true
-      key: "simple"
-      ttl_sec: 60
+  # Workflow with httpcall step
+  - name: "workflow_httpcall"
+    triggers:
+      - type: http
+        path: "/api/v2/proxy"
+        method: GET
+        parameters:
+          - name: "endpoint"
+            type: "string"
+            required: false
+            default: "https://example.com/api"
+    steps:
+      - name: external
+        type: httpcall
+        url: "{{.trigger.params.endpoint}}"
+        http_method: GET
+        headers:
+          Accept: "application/json"
+        parse: "json"
+      - type: response
+        template: |
+          {"external_status": {{.steps.external.status_code}}, "data": {{json .steps.external.data}}}
 
-  # Query with cache - parameter key
-  - name: "cached_param"
-    database: "primary"
-    path: "/api/cached/param"
-    method: "GET"
-    description: "Cached query with parameter key"
-    sql: "SELECT @status AS status, datetime('now') AS timestamp"
-    parameters:
-      - name: "status"
-        type: "string"
-        required: false
-        default: "active"
-    cache:
-      enabled: true
-      key: "status:{{.status}}"
-      ttl_sec: 120
-      max_size_mb: 32
+  # Workflow with httpcall and retry
+  - name: "workflow_httpcall_retry"
+    triggers:
+      - type: http
+        path: "/api/v2/proxy/retry"
+        method: POST
+        parameters:
+          - name: "data"
+            type: "json"
+            required: true
+    steps:
+      - name: post_external
+        type: httpcall
+        url: "https://example.com/api/submit"
+        http_method: POST
+        headers:
+          Content-Type: "application/json"
+        body: "{{json .trigger.params.data}}"
+        parse: "json"
+        timeout_sec: 30
+        retry:
+          enabled: true
+          max_attempts: 3
+          initial_backoff_sec: 1
+          max_backoff_sec: 10
+      - type: response
+        template: |
+          {"success": true, "external_response": {{json .steps.post_external.data}}}
 
-  # Query with cache - multi-param key
-  - name: "cached_multi"
-    database: "primary"
-    path: "/api/cached/multi"
-    method: "GET"
-    description: "Cached query with multiple params in key"
-    sql: "SELECT @from AS from_date, @to AS to_date"
-    parameters:
-      - name: "from"
-        type: "date"
-        required: true
-      - name: "to"
-        type: "date"
-        required: true
-    cache:
-      enabled: true
-      key: "range:{{.from}}:{{.to}}"
-      ttl_sec: 300
+  # Workflow with block (iteration)
+  - name: "workflow_block"
+    triggers:
+      - type: http
+        path: "/api/v2/batch"
+        method: GET
+    steps:
+      - name: fetch_items
+        type: query
+        database: "primary"
+        sql: "SELECT 1 AS id, 'item1' AS name UNION ALL SELECT 2, 'item2' UNION ALL SELECT 3, 'item3'"
+      - name: process_items
+        iterate:
+          over: "steps.fetch_items.data"
+          as: "item"
+          on_error: continue
+        steps:
+          - name: process
+            type: query
+            database: "primary"
+            sql: "SELECT '{{.item.name}}' AS processed_name"
+      - type: response
+        template: |
+          {"total": {{.steps.fetch_items.count}}, "processed": {{.steps.process_items.success_count}}}
 
-  # Query with cache - evict cron
-  - name: "cached_evict"
-    database: "primary"
-    path: "/api/cached/evict"
-    method: "GET"
-    description: "Cached query with scheduled eviction"
-    sql: "SELECT 'data' AS result"
-    cache:
-      enabled: true
-      key: "evicting"
-      ttl_sec: 3600
-      evict_cron: "0 0 * * *"
+  # Workflow with disabled step
+  - name: "workflow_disabled_step"
+    triggers:
+      - type: http
+        path: "/api/v2/disabled"
+        method: GET
+    steps:
+      - name: active
+        type: query
+        database: "primary"
+        sql: "SELECT 'active' AS result"
+      - name: disabled
+        type: query
+        database: "primary"
+        sql: "SELECT 'this should not run' AS result"
+        disabled: true
+      - type: response
+        template: |
+          {"result": "{{index .steps.active.data 0 \"result\"}}"}
 
-  # Query with cache - default template function
-  - name: "cached_default"
-    database: "primary"
-    path: "/api/cached/default"
-    method: "GET"
-    description: "Cached query with default function in key"
-    sql: "SELECT @category AS category"
-    parameters:
-      - name: "category"
-        type: "string"
-        required: false
-    cache:
-      enabled: true
-      key: "items:{{.category | default \"all\"}}"
-      ttl_sec: 300
+  # Workflow with on_error: continue
+  - name: "workflow_error_continue"
+    triggers:
+      - type: http
+        path: "/api/v2/resilient"
+        method: GET
+    steps:
+      - name: may_fail
+        type: query
+        database: "primary"
+        sql: "SELECT 'ok' AS result"
+        on_error: continue
+      - name: always_runs
+        type: query
+        database: "primary"
+        sql: "SELECT 'always' AS result"
+      - type: response
+        template: |
+          {"result": "{{index .steps.always_runs.data 0 \"result\"}}"}
 
-  # Query using secondary database
-  - name: "secondary_query"
-    database: "secondary"
-    path: "/api/secondary"
-    method: "GET"
-    description: "Query on secondary database"
-    sql: "SELECT 'secondary' AS db"
+  # Workflow with timeout
+  - name: "workflow_timeout"
+    timeout_sec: 30
+    triggers:
+      - type: http
+        path: "/api/v2/timeout"
+        method: GET
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT 'quick' AS result"
+      - type: response
+        template: |
+          {"result": "{{index .steps.fetch.data 0 \"result\"}}"}
 
-  # Query using minimal database
-  - name: "minimal_query"
-    database: "minimal"
-    path: "/api/minimal"
-    method: "GET"
-    description: "Query on minimal config database"
-    sql: "SELECT 'minimal' AS db"
+  # Workflow with JSON columns
+  - name: "workflow_json_columns"
+    triggers:
+      - type: http
+        path: "/api/v2/json"
+        method: GET
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT '{\"key\": \"value\"}' AS data"
+        json_columns: ["data"]
+      - type: response
+        template: |
+          {"parsed": {{json .steps.fetch.data}}}
 
-  # Query with rate limit - pool reference
-  - name: "rate_limited_pool"
-    database: "primary"
-    path: "/api/limited/pool"
-    method: "GET"
-    description: "Rate limited with pool reference"
-    sql: "SELECT 'limited' AS result"
-    rate_limit:
-      - pool: "default"
+  # Workflow with session overrides
+  - name: "workflow_session"
+    triggers:
+      - type: http
+        path: "/api/v2/session"
+        method: GET
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT 'session test' AS result"
+        isolation: "read_committed"
+      - type: response
+        template: |
+          {"result": "{{index .steps.fetch.data 0 \"result\"}}"}
 
-  # Query with rate limit - strict pool
-  - name: "rate_limited_strict"
-    database: "primary"
-    path: "/api/limited/strict"
-    method: "GET"
-    description: "Rate limited with strict pool"
-    sql: "SELECT 'strict' AS result"
-    rate_limit:
-      - pool: "strict"
+  # ============================================
+  # Parameter Type Tests (equivalent to queries)
+  # ============================================
 
-  # Query with rate limit - inline
-  - name: "rate_limited_inline"
-    database: "primary"
-    path: "/api/limited/inline"
-    method: "GET"
-    description: "Rate limited with inline config"
-    sql: "SELECT 'inline' AS result"
-    rate_limit:
-      - requests_per_second: 5
-        burst: 10
-        key: "{{.ClientIP}}"
+  # Integer alias parameter
+  - name: "workflow_param_integer"
+    triggers:
+      - type: http
+        path: "/api/v2/params/integer"
+        method: GET
+        parameters:
+          - name: "num"
+            type: "integer"
+            required: true
+    steps:
+      - name: echo
+        type: query
+        database: "primary"
+        sql: "SELECT @num AS number"
+      - type: response
+        template: |
+          {"number": {{index .steps.echo.data 0 "number"}}}
 
-  # Query with rate limit - inline with param key
-  - name: "rate_limited_param"
-    database: "primary"
-    path: "/api/limited/param"
-    method: "GET"
-    description: "Rate limited by parameter"
-    sql: "SELECT @user_id AS user_id"
-    parameters:
-      - name: "user_id"
-        type: "string"
-        required: true
-    rate_limit:
-      - pool: "by_param"
+  # Float parameter
+  - name: "workflow_param_float"
+    triggers:
+      - type: http
+        path: "/api/v2/params/float"
+        method: GET
+        parameters:
+          - name: "amount"
+            type: "float"
+            required: true
+    steps:
+      - name: echo
+        type: query
+        database: "primary"
+        sql: "SELECT @amount AS amount, round(@amount, 2) AS rounded"
+      - type: response
+        template: |
+          {"amount": {{index .steps.echo.data 0 "amount"}}, "rounded": {{index .steps.echo.data 0 "rounded"}}}
 
-  # Query with multiple rate limits
-  - name: "rate_limited_multi"
-    database: "primary"
-    path: "/api/limited/multi"
-    method: "GET"
-    description: "Multiple rate limits"
-    sql: "SELECT 'multi' AS result"
-    rate_limit:
-      - pool: "default"
-      - requests_per_second: 20
-        burst: 40
+  # Double alias parameter
+  - name: "workflow_param_double"
+    triggers:
+      - type: http
+        path: "/api/v2/params/double"
+        method: GET
+        parameters:
+          - name: "value"
+            type: "double"
+            required: true
+    steps:
+      - name: echo
+        type: query
+        database: "primary"
+        sql: "SELECT @value AS value"
+      - type: response
+        template: |
+          {"value": {{index .steps.echo.data 0 "value"}}}
 
-  # Query with JSON columns
-  - name: "json_output"
-    database: "primary"
-    path: "/api/json/output"
-    method: "GET"
-    description: "Query with JSON column output"
-    sql: "SELECT '{\"key\": \"value\"}' AS data, '{\"nested\": {\"a\": 1}}' AS metadata"
-    json_columns: ["data", "metadata"]
+  # Boolean alias parameter
+  - name: "workflow_param_boolean"
+    triggers:
+      - type: http
+        path: "/api/v2/params/boolean"
+        method: GET
+        parameters:
+          - name: "active"
+            type: "boolean"
+            required: true
+    steps:
+      - name: echo
+        type: query
+        database: "primary"
+        sql: "SELECT @active AS active"
+      - type: response
+        template: |
+          {"active": {{index .steps.echo.data 0 "active"}}}
 
-  # Scheduled query - basic
-  - name: "scheduled_basic"
-    database: "primary"
-    description: "Basic scheduled query"
-    sql: "SELECT datetime('now') AS run_time, 'scheduled' AS type"
-    schedule:
-      cron: "*/5 * * * *"
-      log_results: true
+  # Datetime parameter
+  - name: "workflow_param_datetime"
+    triggers:
+      - type: http
+        path: "/api/v2/params/datetime"
+        method: GET
+        parameters:
+          - name: "timestamp"
+            type: "datetime"
+            required: false
+            default: "2024-01-01T00:00:00Z"
+    steps:
+      - name: echo
+        type: query
+        database: "primary"
+        sql: "SELECT @timestamp AS timestamp, datetime(@timestamp) AS parsed"
+      - type: response
+        template: |
+          {"timestamp": "{{index .steps.echo.data 0 \"timestamp\"}}"}
 
-  # Scheduled query with params
-  - name: "scheduled_params"
-    database: "primary"
-    description: "Scheduled query with parameters"
-    sql: "SELECT @report_date AS report_date, @limit AS item_limit"
-    parameters:
-      - name: "report_date"
-        type: "datetime"
-        required: true
-      - name: "limit"
-        type: "int"
-        required: false
-        default: "100"
-    schedule:
-      cron: "0 8 * * *"
-      params:
-        report_date: "yesterday"
-      log_results: true
+  # Date parameter
+  - name: "workflow_param_date"
+    triggers:
+      - type: http
+        path: "/api/v2/params/date"
+        method: GET
+        parameters:
+          - name: "day"
+            type: "date"
+            required: true
+    steps:
+      - name: echo
+        type: query
+        database: "primary"
+        sql: "SELECT @day AS day, date(@day) AS parsed"
+      - type: response
+        template: |
+          {"day": "{{index .steps.echo.data 0 \"day\"}}"}
 
-  # Scheduled query with dynamic dates
-  - name: "scheduled_today"
-    database: "primary"
-    description: "Scheduled query with today"
-    sql: "SELECT @date AS date_value"
-    parameters:
-      - name: "date"
-        type: "datetime"
-        required: true
-    schedule:
-      cron: "0 0 * * *"
-      params:
-        date: "today"
+  # Integer array parameter
+  - name: "workflow_param_int_array"
+    triggers:
+      - type: http
+        path: "/api/v2/params/int-array"
+        method: POST
+        parameters:
+          - name: "ids"
+            type: "int[]"
+            required: true
+    steps:
+      - name: echo
+        type: query
+        database: "primary"
+        sql: "SELECT @ids AS ids"
+      - type: response
+        template: |
+          {"ids": "{{index .steps.echo.data 0 \"ids\"}}"}
 
-  - name: "scheduled_now"
-    database: "primary"
-    description: "Scheduled query with now"
-    sql: "SELECT @timestamp AS timestamp"
-    parameters:
-      - name: "timestamp"
-        type: "datetime"
-        required: true
-    schedule:
-      cron: "0 * * * *"
-      params:
-        timestamp: "now"
+  # String array parameter
+  - name: "workflow_param_string_array"
+    triggers:
+      - type: http
+        path: "/api/v2/params/string-array"
+        method: POST
+        parameters:
+          - name: "names"
+            type: "string[]"
+            required: true
+    steps:
+      - name: echo
+        type: query
+        database: "primary"
+        sql: "SELECT @names AS names"
+      - type: response
+        template: |
+          {"names": "{{index .steps.echo.data 0 \"names\"}}"}
 
-  - name: "scheduled_tomorrow"
-    database: "primary"
-    description: "Scheduled query with tomorrow"
-    sql: "SELECT @date AS date_value"
-    parameters:
-      - name: "date"
-        type: "datetime"
-        required: true
-    schedule:
-      cron: "0 6 * * *"
-      params:
-        date: "tomorrow"
+  # Float array parameter
+  - name: "workflow_param_float_array"
+    triggers:
+      - type: http
+        path: "/api/v2/params/float-array"
+        method: POST
+        parameters:
+          - name: "values"
+            type: "float[]"
+            required: true
+    steps:
+      - name: echo
+        type: query
+        database: "primary"
+        sql: "SELECT @values AS values"
+      - type: response
+        template: |
+          {"values": "{{index .steps.echo.data 0 \"values\"}}"}
 
-  # Scheduled query with webhook - basic
-  - name: "scheduled_webhook_basic"
-    database: "primary"
-    description: "Scheduled query with basic webhook"
-    sql: "SELECT 'data' AS result, 42 AS count"
-    schedule:
-      cron: "*/15 * * * *"
-      webhook:
+  # Bool array parameter
+  - name: "workflow_param_bool_array"
+    triggers:
+      - type: http
+        path: "/api/v2/params/bool-array"
+        method: POST
+        parameters:
+          - name: "flags"
+            type: "bool[]"
+            required: true
+    steps:
+      - name: echo
+        type: query
+        database: "primary"
+        sql: "SELECT @flags AS flags"
+      - type: response
+        template: |
+          {"flags": "{{index .steps.echo.data 0 \"flags\"}}"}
+
+  # Multiple parameter types combined
+  - name: "workflow_param_multi"
+    triggers:
+      - type: http
+        path: "/api/v2/params/multi"
+        method: GET
+        parameters:
+          - name: "name"
+            type: "string"
+            required: true
+          - name: "age"
+            type: "int"
+            required: false
+            default: "0"
+          - name: "score"
+            type: "float"
+            required: false
+            default: "0.0"
+          - name: "active"
+            type: "bool"
+            required: false
+            default: "true"
+          - name: "created"
+            type: "datetime"
+            required: false
+            default: "2024-01-01"
+    steps:
+      - name: echo
+        type: query
+        database: "primary"
+        sql: |
+          SELECT
+            @name AS name,
+            @age AS age,
+            @score AS score,
+            @active AS active,
+            @created AS created
+      - type: response
+        template: |
+          {"name": "{{index .steps.echo.data 0 \"name\"}}", "age": {{index .steps.echo.data 0 "age"}}}
+
+  # ============================================
+  # Step-Level Cache Tests (NEW: caching individual step results)
+  # ============================================
+
+  # Basic step cache
+  - name: "workflow_step_cache_basic"
+    triggers:
+      - type: http
+        path: "/api/v2/step-cache/basic"
+        method: GET
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT @id AS id, datetime('now') AS fetched_at"
+        cache:
+          key: "step:item:{{.Param.id}}"
+          ttl_sec: 300
+      - type: response
+        template: |
+          {"data": {{json (index .steps.fetch.data 0)}}, "cache_hit": {{.steps.fetch.cache_hit}}}
+
+  # Step cache with multiple cached steps
+  - name: "workflow_step_cache_multi"
+    triggers:
+      - type: http
+        path: "/api/v2/step-cache/multi"
+        method: GET
+        parameters:
+          - name: "user_id"
+            type: "int"
+            required: true
+    steps:
+      # First cached step
+      - name: user
+        type: query
+        database: "primary"
+        sql: "SELECT @user_id AS id, 'User ' || @user_id AS name"
+        cache:
+          key: "step:user:{{.Param.user_id}}"
+          ttl_sec: 300
+      # Second cached step with different TTL
+      - name: settings
+        type: query
+        database: "primary"
+        sql: "SELECT 'default' AS theme, 10 AS page_size"
+        cache:
+          key: "step:settings:{{.Param.user_id}}"
+          ttl_sec: 600
+      - type: response
+        template: |
+          {
+            "user": {{json (index .steps.user.data 0)}},
+            "user_cached": {{.steps.user.cache_hit}},
+            "settings": {{json (index .steps.settings.data 0)}},
+            "settings_cached": {{.steps.settings.cache_hit}}
+          }
+
+  # Step cache referencing previous step result in key
+  - name: "workflow_step_cache_chained"
+    triggers:
+      - type: http
+        path: "/api/v2/step-cache/chained"
+        method: GET
+        parameters:
+          - name: "user_id"
+            type: "int"
+            required: true
+    steps:
+      - name: user
+        type: query
+        database: "primary"
+        sql: "SELECT @user_id AS id, 100 + @user_id AS org_id"
+        cache:
+          key: "step:user:{{.Param.user_id}}"
+          ttl_sec: 300
+      # Cache key uses result from previous step
+      - name: org
+        type: query
+        database: "primary"
+        sql: "SELECT {{index .steps.user.data 0 \"org_id\"}} AS org_id, 'Org' AS name"
+        cache:
+          key: "step:org:{{index .steps.user.data 0 \"org_id\"}}"
+          ttl_sec: 600
+      - type: response
+        template: |
+          {"user": {{json (index .steps.user.data 0)}}, "org": {{json (index .steps.org.data 0)}}}
+
+  # Combined trigger-level and step-level caching
+  - name: "workflow_dual_cache"
+    triggers:
+      - type: http
+        path: "/api/v2/cache/dual"
+        method: GET
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+        cache:
+          enabled: true
+          key: "trigger:product:{{.Param.id}}"
+          ttl_sec: 60
+    steps:
+      - name: product
+        type: query
+        database: "primary"
+        sql: "SELECT @id AS id, 'Product ' || @id AS name"
+        cache:
+          key: "step:product:{{.Param.id}}"
+          ttl_sec: 600
+      - name: price
+        type: query
+        database: "primary"
+        sql: "SELECT @id AS product_id, 99.99 AS price"
+        cache:
+          key: "step:price:{{.Param.id}}"
+          ttl_sec: 120
+      - type: response
+        template: |
+          {"product": {{json (index .steps.product.data 0)}}, "price": {{index .steps.price.data 0 "price"}}}
+
+  # Step cache with httpcall
+  - name: "workflow_step_cache_httpcall"
+    triggers:
+      - type: http
+        path: "/api/v2/step-cache/external"
+        method: GET
+        parameters:
+          - name: "resource"
+            type: "string"
+            required: true
+    steps:
+      - name: fetch_external
+        type: httpcall
+        url: "https://example.com/api/{{.trigger.params.resource}}"
+        http_method: GET
+        parse: "json"
+        cache:
+          key: "step:external:{{.Param.resource}}"
+          ttl_sec: 300
+      - type: response
+        template: |
+          {"data": {{json .steps.fetch_external.data}}, "cache_hit": {{.steps.fetch_external.cache_hit}}}
+
+  # ============================================
+  # Trigger-Level Cache Tests (response caching)
+  # ============================================
+
+  # Cache with parameter key
+  - name: "workflow_cached_param"
+    triggers:
+      - type: http
+        path: "/api/v2/cached/param"
+        method: GET
+        parameters:
+          - name: "status"
+            type: "string"
+            required: false
+            default: "active"
+        cache:
+          enabled: true
+          key: "wf:status:{{.status}}"
+          ttl_sec: 120
+          max_size_mb: 32
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT @status AS status, datetime('now') AS timestamp"
+      - type: response
+        template: |
+          {"status": "{{index .steps.fetch.data 0 \"status\"}}", "timestamp": "{{index .steps.fetch.data 0 \"timestamp\"}}"}
+
+  # Cache with multi-param key
+  - name: "workflow_cached_multi"
+    triggers:
+      - type: http
+        path: "/api/v2/cached/multi"
+        method: GET
+        parameters:
+          - name: "from"
+            type: "date"
+            required: true
+          - name: "to"
+            type: "date"
+            required: true
+        cache:
+          enabled: true
+          key: "wf:range:{{.from}}:{{.to}}"
+          ttl_sec: 300
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT @from AS from_date, @to AS to_date"
+      - type: response
+        template: |
+          {"from": "{{index .steps.fetch.data 0 \"from_date\"}}", "to": "{{index .steps.fetch.data 0 \"to_date\"}}"}
+
+  # Cache with evict_cron
+  - name: "workflow_cached_evict"
+    triggers:
+      - type: http
+        path: "/api/v2/cached/evict"
+        method: GET
+        cache:
+          enabled: true
+          key: "wf:evicting"
+          ttl_sec: 3600
+          evict_cron: "0 0 * * *"
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT 'data' AS result"
+      - type: response
+        template: |
+          {"result": "{{index .steps.fetch.data 0 \"result\"}}"}
+
+  # Cache with default template function
+  - name: "workflow_cached_default"
+    triggers:
+      - type: http
+        path: "/api/v2/cached/default"
+        method: GET
+        parameters:
+          - name: "category"
+            type: "string"
+            required: false
+        cache:
+          enabled: true
+          key: "wf:items:{{.category | default \"all\"}}"
+          ttl_sec: 300
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT @category AS category"
+      - type: response
+        template: |
+          {"category": "{{index .steps.fetch.data 0 \"category\"}}"}
+
+  # ============================================
+  # Rate Limiting Tests (equivalent to queries)
+  # ============================================
+
+  # Rate limit with param-based key (using pool)
+  - name: "workflow_rate_limited_param"
+    triggers:
+      - type: http
+        path: "/api/v2/limited/param"
+        method: GET
+        parameters:
+          - name: "user_id"
+            type: "string"
+            required: true
+        rate_limit:
+          - pool: "by_param"
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT @user_id AS user_id"
+      - type: response
+        template: |
+          {"user_id": "{{index .steps.fetch.data 0 \"user_id\"}}"}
+
+  # Multiple rate limits
+  - name: "workflow_rate_limited_multi"
+    triggers:
+      - type: http
+        path: "/api/v2/limited/multi"
+        method: GET
+        rate_limit:
+          - pool: "default"
+          - requests_per_second: 20
+            burst: 40
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT 'multi limited' AS result"
+      - type: response
+        template: |
+          {"result": "{{index .steps.fetch.data 0 \"result\"}}"}
+
+  # Strict rate limit pool
+  - name: "workflow_rate_limited_strict"
+    triggers:
+      - type: http
+        path: "/api/v2/limited/strict"
+        method: GET
+        rate_limit:
+          - pool: "strict"
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT 'strict' AS result"
+      - type: response
+        template: |
+          {"result": "{{index .steps.fetch.data 0 \"result\"}}"}
+
+  # ============================================
+  # Scheduled Workflows with Dynamic Dates
+  # ============================================
+
+  # Cron with today param
+  - name: "workflow_cron_today"
+    triggers:
+      - type: cron
+        schedule: "0 0 * * *"
+        params:
+          date: "today"
+    steps:
+      - name: run
+        type: query
+        database: "primary"
+        sql: "SELECT @date AS date_value"
+
+  # Cron with yesterday param
+  - name: "workflow_cron_yesterday"
+    triggers:
+      - type: cron
+        schedule: "0 8 * * *"
+        params:
+          report_date: "yesterday"
+    steps:
+      - name: run
+        type: query
+        database: "primary"
+        sql: "SELECT @report_date AS report_date"
+
+  # Cron with now param
+  - name: "workflow_cron_now"
+    triggers:
+      - type: cron
+        schedule: "0 * * * *"
+        params:
+          timestamp: "now"
+    steps:
+      - name: run
+        type: query
+        database: "primary"
+        sql: "SELECT @timestamp AS timestamp"
+
+  # Cron with tomorrow param
+  - name: "workflow_cron_tomorrow"
+    triggers:
+      - type: cron
+        schedule: "0 6 * * *"
+        params:
+          date: "tomorrow"
+    steps:
+      - name: run
+        type: query
+        database: "primary"
+        sql: "SELECT @date AS date_value"
+
+  # ============================================
+  # Cron with httpcall (webhook equivalent)
+  # ============================================
+
+  # Cron workflow with basic httpcall (replaces scheduled query webhook)
+  - name: "workflow_cron_webhook"
+    triggers:
+      - type: cron
+        schedule: "*/15 * * * *"
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT 'data' AS result, 42 AS count"
+      - name: notify
+        type: httpcall
         url: "https://example.com/webhook"
-        method: "POST"
+        http_method: POST
         headers:
           Content-Type: "application/json"
           X-Custom-Header: "test"
+        body: |
+          {"query_result": {{json .steps.fetch.data}}}
+        parse: "json"
 
-  # Scheduled query with webhook - custom body template
-  - name: "scheduled_webhook_template"
-    database: "primary"
-    description: "Scheduled query with templated webhook"
-    sql: "SELECT 'item1' AS name, 100 AS value UNION ALL SELECT 'item2', 200"
-    schedule:
-      cron: "0 */6 * * *"
-      webhook:
-        url: "https://example.com/api/data"
-        method: "POST"
-        headers:
-          Authorization: "Bearer token123"
-        body:
-          header: |
-            {"query": "{{.Query}}", "count": {{.Count}}, "data": [
-          item: |
-            {"name": "{{.name}}", "value": {{.value}}}
-          footer: |
-            ]}
-          separator: ","
-
-  # Scheduled query with webhook - on_empty skip
-  - name: "scheduled_webhook_skip_empty"
-    database: "primary"
-    description: "Webhook skips on empty results"
-    sql: "SELECT * FROM (SELECT 1) WHERE 0"
-    schedule:
-      cron: "0 12 * * *"
-      webhook:
-        url: "https://example.com/notify"
-        body:
-          header: |
-            {"items": [
-          item: |
-            {}
-          footer: |
-            ]}
-          on_empty: "skip"
-
-  # Scheduled query with webhook - custom empty template
-  - name: "scheduled_webhook_empty_template"
-    database: "primary"
-    description: "Webhook with custom empty response"
-    sql: "SELECT * FROM (SELECT 1) WHERE 0"
-    schedule:
-      cron: "0 18 * * *"
-      webhook:
-        url: "https://example.com/status"
-        body:
-          header: |
-            {"results": [
-          item: |
-            {}
-          footer: |
-            ]}
-          on_empty: "send"
-          empty: |
-            {"status": "no_data", "query": "{{.Query}}", "duration_ms": {{.DurationMs}}}
-
-  # Scheduled query with webhook - retry config
-  - name: "scheduled_webhook_retry"
-    database: "primary"
-    description: "Webhook with retry configuration"
-    sql: "SELECT 'important' AS data"
-    schedule:
-      cron: "30 * * * *"
-      webhook:
+  # Cron workflow with httpcall retry (replaces scheduled query webhook retry)
+  - name: "workflow_cron_webhook_retry"
+    triggers:
+      - type: cron
+        schedule: "30 * * * *"
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT 'important' AS data"
+      - name: notify
+        type: httpcall
         url: "https://example.com/critical"
-        method: "PUT"
+        http_method: PUT
+        body: |
+          {{json .steps.fetch.data}}
         retry:
           enabled: true
           max_attempts: 5
           initial_backoff_sec: 2
           max_backoff_sec: 60
 
-  # Scheduled query with webhook - retry disabled
-  - name: "scheduled_webhook_no_retry"
-    database: "primary"
-    description: "Webhook without retry"
-    sql: "SELECT 'fire_and_forget' AS data"
-    schedule:
-      cron: "45 * * * *"
-      webhook:
-        url: "https://example.com/fire"
-        retry:
-          enabled: false
+  # Cron workflow with conditional httpcall (skip on empty)
+  - name: "workflow_cron_conditional_webhook"
+    conditions:
+      has_data: "steps.fetch.count > 0"
+    triggers:
+      - type: cron
+        schedule: "0 12 * * *"
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: "SELECT * FROM (SELECT 1) WHERE 0"
+      - name: notify
+        type: httpcall
+        condition: "has_data"
+        url: "https://example.com/notify"
+        http_method: POST
+        body: |
+          {"items": {{json .steps.fetch.data}}}
 
-  # Query that is both HTTP and scheduled
-  - name: "dual_query"
-    database: "primary"
-    path: "/api/dual"
-    method: "GET"
-    description: "HTTP endpoint with scheduled execution"
-    sql: "SELECT datetime('now') AS timestamp, 'dual' AS mode"
-    schedule:
-      cron: "*/10 * * * *"
-      log_results: true
+  # ============================================
+  # Various Cron Expression Formats (validation)
+  # ============================================
 
-  # Query with all session overrides (for SQLite they're no-ops but validate)
-  - name: "session_overrides"
-    database: "primary"
-    path: "/api/session"
-    method: "GET"
-    description: "Query with session overrides"
-    isolation: "read_committed"
-    sql: "SELECT 'session' AS result"
+  - name: "workflow_cron_every_minute"
+    triggers:
+      - type: cron
+        schedule: "* * * * *"
+    steps:
+      - name: run
+        type: query
+        database: "primary"
+        sql: "SELECT 1"
 
-  # Write operation on writable database
-  - name: "write_operation"
-    database: "writable"
-    path: "/api/write"
-    method: "POST"
-    description: "Write operation"
-    sql: "INSERT INTO test_table (value) VALUES (@value)"
-    parameters:
-      - name: "value"
-        type: "string"
-        required: true
+  - name: "workflow_cron_hourly"
+    triggers:
+      - type: cron
+        schedule: "0 * * * *"
+    steps:
+      - name: run
+        type: query
+        database: "primary"
+        sql: "SELECT 1"
 
-  # Complex query combining features
-  - name: "complex_query"
-    database: "primary"
-    path: "/api/complex"
-    method: "GET"
-    description: "Complex query with multiple features"
+  - name: "workflow_cron_daily"
+    triggers:
+      - type: cron
+        schedule: "0 0 * * *"
+    steps:
+      - name: run
+        type: query
+        database: "primary"
+        sql: "SELECT 1"
+
+  - name: "workflow_cron_weekly"
+    triggers:
+      - type: cron
+        schedule: "0 0 * * 1"
+    steps:
+      - name: run
+        type: query
+        database: "primary"
+        sql: "SELECT 1"
+
+  - name: "workflow_cron_monthly"
+    triggers:
+      - type: cron
+        schedule: "0 0 1 * *"
+    steps:
+      - name: run
+        type: query
+        database: "primary"
+        sql: "SELECT 1"
+
+  - name: "workflow_cron_specific"
+    triggers:
+      - type: cron
+        schedule: "30 9 * * 1-5"
+    steps:
+      - name: run
+        type: query
+        database: "primary"
+        sql: "SELECT 1"
+
+  - name: "workflow_cron_range"
+    triggers:
+      - type: cron
+        schedule: "*/5 9-17 * * *"
+    steps:
+      - name: run
+        type: query
+        database: "primary"
+        sql: "SELECT 1"
+
+  # ============================================
+  # Template Functions
+  # ============================================
+
+  # Workflow exercising all template functions
+  - name: "workflow_template_funcs"
+    triggers:
+      - type: http
+        path: "/api/v2/template-funcs"
+        method: GET
+        parameters:
+          - name: "name"
+            type: "string"
+            required: false
+            default: "  hello world  "
+          - name: "status"
+            type: "string"
+            required: false
+            default: ""
+          - name: "count"
+            type: "int"
+            required: false
+            default: "10"
+    steps:
+      - name: fetch
+        type: query
+        database: "primary"
+        sql: |
+          SELECT
+            'item1' AS name,
+            100 AS price
+          UNION ALL SELECT 'item2', 200
+      - type: response
+        template: |
+          {
+            "string_funcs": {
+              "upper": "{{upper .trigger.params.name}}",
+              "lower": "{{lower .trigger.params.name}}",
+              "trim": "{{trim .trigger.params.name}}"
+            },
+            "default_funcs": {
+              "with_default": "{{.trigger.params.status | default \"active\"}}",
+              "coalesce": "{{coalesce .trigger.params.status \"fallback\"}}"
+            },
+            "math_funcs": {
+              "add": {{add .trigger.params.count 5}},
+              "sub": {{sub .trigger.params.count 3}},
+              "mul": {{mul .trigger.params.count 2}},
+              "div": {{div .trigger.params.count 2}},
+              "mod": {{mod .trigger.params.count 3}}
+            },
+            "json_funcs": {
+              "data": {{json .steps.fetch.data}},
+              "count": {{.steps.fetch.count}}
+            }
+          }
+
+  # ============================================
+  # Other Features
+  # ============================================
+
+  # Query using minimal database
+  - name: "workflow_minimal_db"
+    triggers:
+      - type: http
+        path: "/api/v2/minimal"
+        method: GET
+    steps:
+      - name: fetch
+        type: query
+        database: "minimal"
+        sql: "SELECT 'minimal' AS db"
+      - type: response
+        template: |
+          {"db": "{{index .steps.fetch.data 0 \"db\"}}"}
+
+  # Complex workflow with multiple combined features
+  - name: "workflow_complex"
     timeout_sec: 45
-    sql: |
-      SELECT
-        @search AS search_term,
-        @page AS page_num,
-        @limit AS page_size,
-        @active AS is_active,
-        datetime('now') AS queried_at
-    parameters:
-      - name: "search"
-        type: "string"
-        required: false
-        default: ""
-      - name: "page"
-        type: "int"
-        required: false
-        default: "1"
-      - name: "limit"
-        type: "int"
-        required: false
-        default: "20"
-      - name: "active"
-        type: "bool"
-        required: false
-        default: "true"
-    cache:
-      enabled: true
-      key: "search:{{.search | default \"all\"}}:{{.page}}:{{.limit}}:{{.active}}"
-      ttl_sec: 60
-    rate_limit:
-      - pool: "default"
-      - requests_per_second: 30
-        burst: 60
-        key: "{{.ClientIP}}:search"
-
-  # Various cron expression formats
-  - name: "cron_every_minute"
-    database: "primary"
-    description: "Every minute"
-    sql: "SELECT 1"
-    schedule:
-      cron: "* * * * *"
-
-  - name: "cron_hourly"
-    database: "primary"
-    description: "Hourly at minute 0"
-    sql: "SELECT 1"
-    schedule:
-      cron: "0 * * * *"
-
-  - name: "cron_daily"
-    database: "primary"
-    description: "Daily at midnight"
-    sql: "SELECT 1"
-    schedule:
-      cron: "0 0 * * *"
-
-  - name: "cron_weekly"
-    database: "primary"
-    description: "Weekly on Monday"
-    sql: "SELECT 1"
-    schedule:
-      cron: "0 0 * * 1"
-
-  - name: "cron_monthly"
-    database: "primary"
-    description: "Monthly on the 1st"
-    sql: "SELECT 1"
-    schedule:
-      cron: "0 0 1 * *"
-
-  - name: "cron_specific"
-    database: "primary"
-    description: "Specific time: 9:30 AM weekdays"
-    sql: "SELECT 1"
-    schedule:
-      cron: "30 9 * * 1-5"
-
-  - name: "cron_range"
-    database: "primary"
-    description: "Every 5 minutes during business hours"
-    sql: "SELECT 1"
-    schedule:
-      cron: "*/5 9-17 * * *"
+    conditions:
+      has_results: "steps.search.count > 0"
+    triggers:
+      - type: http
+        path: "/api/v2/complex"
+        method: GET
+        parameters:
+          - name: "search"
+            type: "string"
+            required: false
+            default: ""
+          - name: "page"
+            type: "int"
+            required: false
+            default: "1"
+          - name: "limit"
+            type: "int"
+            required: false
+            default: "20"
+          - name: "active"
+            type: "bool"
+            required: false
+            default: "true"
+        cache:
+          enabled: true
+          key: "wf:search:{{.search | default \"all\"}}:{{.page}}:{{.limit}}:{{.active}}"
+          ttl_sec: 60
+        rate_limit:
+          - pool: "default"
+          - requests_per_second: 30
+            burst: 60
+            key: "{{.ClientIP}}:search"
+    steps:
+      - name: search
+        type: query
+        database: "primary"
+        sql: |
+          SELECT
+            @search AS search_term,
+            @page AS page_num,
+            @limit AS page_size,
+            @active AS is_active,
+            datetime('now') AS queried_at
+      - type: response
+        template: |
+          {"search": "{{index .steps.search.data 0 \"search_term\"}}", "page": {{index .steps.search.data 0 "page_num"}}, "cached_at": "{{index .steps.search.data 0 \"queried_at\"}}"}

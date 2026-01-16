@@ -90,8 +90,8 @@ func BenchmarkSQLiteDriver_SelectAll(b *testing.B) {
 		if err != nil {
 			b.Fatalf("query failed: %v", err)
 		}
-		if len(results) != 1000 {
-			b.Fatalf("expected 1000 rows, got %d", len(results))
+		if len(results.Rows) != 1000 {
+			b.Fatalf("expected 1000 rows, got %d", len(results.Rows))
 		}
 	}
 }
@@ -384,8 +384,8 @@ func benchmarkLargeResult(b *testing.B, rowCount int) {
 		if err != nil {
 			b.Fatalf("query failed: %v", err)
 		}
-		if len(results) != rowCount {
-			b.Fatalf("expected %d rows, got %d", rowCount, len(results))
+		if len(results.Rows) != rowCount {
+			b.Fatalf("expected %d rows, got %d", rowCount, len(results.Rows))
 		}
 	}
 }

@@ -1,0 +1,247 @@
+# Parameter Types and Validation
+# Demonstrates: all parameter types, required/optional, defaults, arrays
+
+server:
+  host: "127.0.0.1"
+  port: 8080
+  default_timeout_sec: 30
+  max_timeout_sec: 300
+
+databases:
+  - name: "main"
+    type: "sqlite"
+    path: ":memory:"
+
+logging:
+  level: "info"
+  file_path: ""
+  max_size_mb: 100
+  max_backups: 5
+  max_age_days: 30
+
+metrics:
+  enabled: true
+
+workflows:
+  # String parameter with default and template functions
+  - name: "greet"
+    triggers:
+      - type: http
+        path: "/api/greet"
+        method: GET
+        parameters:
+          - name: "name"
+            type: "string"
+            required: false
+            default: "World"
+          - name: "style"
+            type: "string"
+            required: false
+            default: ""
+    steps:
+      - name: echo
+        type: query
+        database: "main"
+        sql: "SELECT 'Hello, ' || @name AS greeting"
+      - type: response
+        # Demonstrates: upper, lower, trim, default, coalesce template functions
+        template: |
+          {
+            "greeting": "{{index .steps.echo.data 0 \"greeting\"}}",
+            "name_upper": "{{upper .trigger.params.name}}",
+            "name_lower": "{{lower .trigger.params.name}}",
+            "name_trimmed": "{{trim .trigger.params.name}}",
+            "style": "{{.trigger.params.style | default \"normal\"}}",
+            "display_style": "{{coalesce .trigger.params.style \"default\"}}"
+          }
+
+  # Required integer parameter
+  - name: "get_item"
+    triggers:
+      - type: http
+        path: "/api/items/get"
+        method: GET
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    steps:
+      - name: fetch
+        type: query
+        database: "main"
+        sql: "SELECT @id AS id, 'Item ' || @id AS name"
+      - type: response
+        template: |
+          {"id": {{index .steps.fetch.data 0 "id"}}, "name": "{{index .steps.fetch.data 0 \"name\"}}"}
+
+  # Float/double parameter with math template functions
+  - name: "calculate"
+    triggers:
+      - type: http
+        path: "/api/calc"
+        method: GET
+        parameters:
+          - name: "amount"
+            type: "int"
+            required: true
+          - name: "quantity"
+            type: "int"
+            required: false
+            default: "1"
+    steps:
+      - name: calc
+        type: query
+        database: "main"
+        sql: "SELECT @amount AS amount, @quantity AS quantity"
+      - type: response
+        # Demonstrates: add, sub, mul, div, mod math template functions
+        template: |
+          {
+            "amount": {{.trigger.params.amount}},
+            "quantity": {{.trigger.params.quantity}},
+            "math": {
+              "total": {{mul .trigger.params.amount .trigger.params.quantity}},
+              "with_tax": {{add (mul .trigger.params.amount .trigger.params.quantity) 10}},
+              "half": {{div .trigger.params.amount 2}},
+              "remainder": {{mod .trigger.params.amount 3}}
+            }
+          }
+
+  # Boolean parameter
+  - name: "filter"
+    triggers:
+      - type: http
+        path: "/api/filter"
+        method: GET
+        parameters:
+          - name: "active"
+            type: "bool"
+            required: false
+            default: "true"
+          - name: "verified"
+            type: "boolean"  # Alias for bool
+            required: false
+            default: "false"
+    steps:
+      - name: fetch
+        type: query
+        database: "main"
+        sql: "SELECT @active AS active, @verified AS verified"
+      - type: response
+        template: |
+          {"filters": {"active": {{index .steps.fetch.data 0 "active"}}, "verified": {{index .steps.fetch.data 0 "verified"}}}}
+
+  # Date and datetime parameters
+  - name: "date_range"
+    triggers:
+      - type: http
+        path: "/api/range"
+        method: GET
+        parameters:
+          - name: "from"
+            type: "date"
+            required: true
+          - name: "to"
+            type: "date"
+            required: true
+          - name: "timestamp"
+            type: "datetime"
+            required: false
+            default: "2024-01-01T00:00:00Z"
+    steps:
+      - name: fetch
+        type: query
+        database: "main"
+        sql: "SELECT @from AS from_date, @to AS to_date, @timestamp AS ts"
+      - type: response
+        template: |
+          {"from": "{{index .steps.fetch.data 0 \"from_date\"}}", "to": "{{index .steps.fetch.data 0 \"to_date\"}}", "timestamp": "{{index .steps.fetch.data 0 \"ts\"}}"}
+
+  # JSON parameter (for complex objects)
+  - name: "create_item"
+    triggers:
+      - type: http
+        path: "/api/items/create"
+        method: POST
+        parameters:
+          - name: "item"
+            type: "json"
+            required: true
+    steps:
+      - name: process
+        type: query
+        database: "main"
+        sql: "SELECT @item AS received"
+      - type: response
+        template: |
+          {"success": true, "received": {{json (index .steps.process.data 0 "received")}}}
+
+  # Array parameters (must be sent as JSON body in POST)
+  - name: "batch_process"
+    triggers:
+      - type: http
+        path: "/api/batch"
+        method: POST
+        parameters:
+          - name: "ids"
+            type: "int[]"
+            required: true
+          - name: "tags"
+            type: "string[]"
+            required: false
+            default: "[]"
+    steps:
+      - name: process
+        type: query
+        database: "main"
+        sql: "SELECT @ids AS ids, @tags AS tags"
+      - type: response
+        template: |
+          {"ids": "{{index .steps.process.data 0 \"ids\"}}", "tags": "{{index .steps.process.data 0 \"tags\"}}"}
+
+  # Multiple parameter types combined
+  - name: "search"
+    triggers:
+      - type: http
+        path: "/api/search"
+        method: GET
+        parameters:
+          - name: "query"
+            type: "string"
+            required: true
+          - name: "page"
+            type: "int"
+            required: false
+            default: "1"
+          - name: "limit"
+            type: "int"
+            required: false
+            default: "20"
+          - name: "active"
+            type: "bool"
+            required: false
+            default: "true"
+          - name: "min_score"
+            type: "float"
+            required: false
+            default: "0.0"
+    steps:
+      - name: search
+        type: query
+        database: "main"
+        sql: |
+          SELECT
+            @query AS query,
+            @page AS page,
+            @limit AS limit,
+            @active AS active,
+            @min_score AS min_score
+      - type: response
+        template: |
+          {
+            "query": "{{index .steps.search.data 0 \"query\"}}",
+            "page": {{index .steps.search.data 0 "page"}},
+            "limit": {{index .steps.search.data 0 "limit"}},
+            "active": {{index .steps.search.data 0 "active"}},
+            "min_score": {{index .steps.search.data 0 "min_score"}}
+          }

@@ -1,0 +1,314 @@
+# RESTful CRUD API Example
+# Demonstrates: all HTTP methods, path parameters, same path with different methods, REST patterns
+
+server:
+  host: "127.0.0.1"
+  port: 8080
+  default_timeout_sec: 30
+  max_timeout_sec: 300
+
+databases:
+  - name: "main"
+    type: "sqlite"
+    path: ":memory:"
+    readonly: false  # Need write access for CRUD operations
+
+logging:
+  level: "info"
+  file_path: ""
+  max_size_mb: 100
+  max_backups: 5
+  max_age_days: 30
+
+metrics:
+  enabled: true
+
+workflows:
+  # ============================================================================
+  # RESTFUL CRUD PATTERN - /api/items and /api/items/{id}
+  # ============================================================================
+  # Uses path parameters ({id}) for single-resource operations and
+  # collection path (/api/items) for list/create operations.
+
+  # GET /api/items - List all items
+  - name: "list_items"
+    triggers:
+      - type: http
+        path: "/api/items"
+        method: GET
+        parameters:
+          - name: "status"
+            type: "string"
+            required: false
+            default: ""
+          - name: "limit"
+            type: "int"
+            required: false
+            default: "50"
+    steps:
+      - name: fetch
+        type: query
+        database: "main"
+        sql: |
+          SELECT id, name, status, created_at
+          FROM items
+          WHERE (@status = '' OR status = @status)
+          LIMIT @limit
+      - type: response
+        template: |
+          {"items": {{json .steps.fetch.data}}, "count": {{.steps.fetch.count}}}
+
+  # POST /api/items - Create new item
+  - name: "create_item"
+    triggers:
+      - type: http
+        path: "/api/items"
+        method: POST
+        parameters:
+          - name: "name"
+            type: "string"
+            required: true
+          - name: "status"
+            type: "string"
+            required: false
+            default: "pending"
+    steps:
+      - name: insert
+        type: query
+        database: "main"
+        sql: |
+          INSERT INTO items (name, status, created_at)
+          VALUES (@name, @status, datetime('now'))
+      - name: get_id
+        type: query
+        database: "main"
+        sql: "SELECT last_insert_rowid() AS id"
+      - type: response
+        status_code: 201
+        template: |
+          {"success": true, "id": {{index .steps.get_id.data 0 "id"}}, "name": "{{.trigger.params.name}}"}
+
+  # OPTIONS /api/items - Show available methods (CORS preflight)
+  - name: "items_options"
+    triggers:
+      - type: http
+        path: "/api/items"
+        method: OPTIONS
+    steps:
+      - type: response
+        headers:
+          Allow: "GET, POST, HEAD, OPTIONS"
+          Access-Control-Allow-Methods: "GET, POST, HEAD, OPTIONS"
+        template: |
+          {"methods": ["GET", "POST", "HEAD", "OPTIONS"]}
+
+  # HEAD /api/items - Check if items exist (no body)
+  - name: "items_head"
+    triggers:
+      - type: http
+        path: "/api/items"
+        method: HEAD
+        parameters:
+          - name: "status"
+            type: "string"
+            required: false
+            default: ""
+    steps:
+      - name: count
+        type: query
+        database: "main"
+        sql: |
+          SELECT COUNT(*) AS cnt FROM items
+          WHERE (@status = '' OR status = @status)
+      - type: response
+        headers:
+          X-Item-Count: "{{index .steps.count.data 0 \"cnt\"}}"
+        template: ""
+
+  # ============================================================================
+  # SINGLE RESOURCE PATTERN - /api/items/{id}
+  # ============================================================================
+  # Path parameters capture the ID from the URL path (e.g., /api/items/42)
+
+  # GET /api/items/{id} - Get single item by ID
+  - name: "get_item"
+    triggers:
+      - type: http
+        path: "/api/items/{id}"
+        method: GET
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true  # Path parameters must be required
+    conditions:
+      found: "steps.fetch.count > 0"
+    steps:
+      - name: fetch
+        type: query
+        database: "main"
+        sql: "SELECT * FROM items WHERE id = @id"
+      - type: response
+        condition: "found"
+        template: |
+          {"item": {{json (index .steps.fetch.data 0)}}}
+      - type: response
+        condition: "!found"
+        status_code: 404
+        template: |
+          {"error": "Item not found", "id": {{.trigger.params.id}}}
+
+  # PUT /api/items/{id} - Replace item (full update)
+  - name: "replace_item"
+    triggers:
+      - type: http
+        path: "/api/items/{id}"
+        method: PUT
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+          - name: "name"
+            type: "string"
+            required: true
+          - name: "status"
+            type: "string"
+            required: true
+    steps:
+      - name: update
+        type: query
+        database: "main"
+        sql: |
+          UPDATE items
+          SET name = @name, status = @status
+          WHERE id = @id
+      - type: response
+        template: |
+          {"success": true, "id": {{.trigger.params.id}}, "updated": {"name": "{{.trigger.params.name}}", "status": "{{.trigger.params.status}}"}}
+
+  # PATCH /api/items/{id} - Partial update
+  - name: "update_item"
+    triggers:
+      - type: http
+        path: "/api/items/{id}"
+        method: PATCH
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+          - name: "name"
+            type: "string"
+            required: false
+          - name: "status"
+            type: "string"
+            required: false
+    steps:
+      - name: update
+        type: query
+        database: "main"
+        sql: |
+          UPDATE items
+          SET name = COALESCE(NULLIF(@name, ''), name),
+              status = COALESCE(NULLIF(@status, ''), status)
+          WHERE id = @id
+      - type: response
+        template: |
+          {"success": true, "id": {{.trigger.params.id}}}
+
+  # DELETE /api/items/{id} - Delete item
+  - name: "delete_item"
+    triggers:
+      - type: http
+        path: "/api/items/{id}"
+        method: DELETE
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    steps:
+      - name: delete
+        type: query
+        database: "main"
+        sql: "DELETE FROM items WHERE id = @id"
+      - type: response
+        template: |
+          {"success": true, "deleted_id": {{.trigger.params.id}}}
+
+  # HEAD /api/items/{id} - Check if specific item exists
+  - name: "item_exists"
+    triggers:
+      - type: http
+        path: "/api/items/{id}"
+        method: HEAD
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    conditions:
+      found: "steps.check.count > 0"
+    steps:
+      - name: check
+        type: query
+        database: "main"
+        sql: "SELECT 1 FROM items WHERE id = @id"
+      - type: response
+        condition: "found"
+        headers:
+          X-Exists: "true"
+        template: ""
+      - type: response
+        condition: "!found"
+        status_code: 404
+        headers:
+          X-Exists: "false"
+        template: ""
+
+  # OPTIONS /api/items/{id} - Show available methods for single item
+  - name: "item_options"
+    triggers:
+      - type: http
+        path: "/api/items/{id}"
+        method: OPTIONS
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    steps:
+      - type: response
+        headers:
+          Allow: "GET, PUT, PATCH, DELETE, HEAD, OPTIONS"
+          Access-Control-Allow-Methods: "GET, PUT, PATCH, DELETE, HEAD, OPTIONS"
+        template: |
+          {"methods": ["GET", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]}
+
+  # ============================================================================
+  # DATABASE INITIALIZATION (call first to create table)
+  # ============================================================================
+
+  - name: "init_db"
+    triggers:
+      - type: http
+        path: "/api/init"
+        method: POST
+    steps:
+      - name: create_table
+        type: query
+        database: "main"
+        sql: |
+          CREATE TABLE IF NOT EXISTS items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT DEFAULT (datetime('now'))
+          )
+      - name: seed
+        type: query
+        database: "main"
+        sql: |
+          INSERT OR IGNORE INTO items (id, name, status) VALUES
+            (1, 'First Item', 'active'),
+            (2, 'Second Item', 'pending'),
+            (3, 'Third Item', 'completed')
+      - type: response
+        status_code: 201
+        template: |
+          {"success": true, "message": "Database initialized with seed data"}

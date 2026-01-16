@@ -1,0 +1,295 @@
+# Caching Configuration
+# Demonstrates: trigger-level caching, step-level caching, cache key templates
+
+server:
+  host: "127.0.0.1"
+  port: 8080
+  default_timeout_sec: 30
+  max_timeout_sec: 300
+  cache:
+    enabled: true
+    max_size_mb: 256      # Total cache memory limit
+    default_ttl_sec: 300  # Default TTL (5 minutes)
+
+databases:
+  - name: "main"
+    type: "sqlite"
+    path: ":memory:"
+
+logging:
+  level: "info"
+  file_path: ""
+  max_size_mb: 100
+  max_backups: 5
+  max_age_days: 30
+
+metrics:
+  enabled: true
+
+workflows:
+  # ============================================================================
+  # TRIGGER-LEVEL CACHING
+  # ============================================================================
+  # Cache the entire workflow response. On cache hit, the workflow steps
+  # are not executed at all - the cached response is returned immediately.
+  # Response includes X-Cache: HIT or X-Cache: MISS header.
+
+  # Basic trigger cache with static key
+  - name: "cached_dashboard"
+    triggers:
+      - type: http
+        path: "/api/dashboard"
+        method: GET
+        cache:
+          enabled: true
+          key: "dashboard:main"    # Static cache key
+          ttl_sec: 60             # Cache for 1 minute
+    steps:
+      - name: stats
+        type: query
+        database: "main"
+        sql: "SELECT 100 AS total, datetime('now') AS queried_at"
+      - type: response
+        template: |
+          {"total": {{index .steps.stats.data 0 "total"}}, "queried_at": "{{index .steps.stats.data 0 \"queried_at\"}}"}
+
+  # Trigger cache with parameter-based key
+  # Different parameter values = different cache entries
+  - name: "cached_user"
+    triggers:
+      - type: http
+        path: "/api/users/get"
+        method: GET
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+        cache:
+          enabled: true
+          key: "user:{{.Param.id}}"  # Cache per user ID
+          ttl_sec: 300               # 5 minutes
+    steps:
+      - name: fetch
+        type: query
+        database: "main"
+        sql: "SELECT @id AS id, 'User ' || @id AS name, datetime('now') AS fetched_at"
+      - type: response
+        template: |
+          {"id": {{index .steps.fetch.data 0 "id"}}, "name": "{{index .steps.fetch.data 0 \"name\"}}", "fetched_at": "{{index .steps.fetch.data 0 \"fetched_at\"}}"}
+
+  # Trigger cache with multiple parameters in key
+  - name: "cached_search"
+    triggers:
+      - type: http
+        path: "/api/search"
+        method: GET
+        parameters:
+          - name: "query"
+            type: "string"
+            required: true
+          - name: "page"
+            type: "int"
+            required: false
+            default: "1"
+          - name: "status"
+            type: "string"
+            required: false
+        cache:
+          enabled: true
+          key: "search:{{.Param.query}}:{{.Param.page}}:{{.Param.status | default \"all\"}}"
+          ttl_sec: 120
+    steps:
+      - name: search
+        type: query
+        database: "main"
+        sql: "SELECT @query AS query, @page AS page, datetime('now') AS searched_at"
+      - type: response
+        template: |
+          {"query": "{{index .steps.search.data 0 \"query\"}}", "page": {{index .steps.search.data 0 "page"}}, "searched_at": "{{index .steps.search.data 0 \"searched_at\"}}"}
+
+  # Trigger cache with eviction schedule
+  - name: "cached_report"
+    triggers:
+      - type: http
+        path: "/api/reports/daily"
+        method: GET
+        cache:
+          enabled: true
+          key: "report:daily"
+          ttl_sec: 86400           # 24 hours
+          evict_cron: "0 0 * * *"  # Evict at midnight
+    steps:
+      - name: generate
+        type: query
+        database: "main"
+        sql: "SELECT 'Daily Report' AS title, datetime('now') AS generated_at"
+      - type: response
+        template: |
+          {"title": "{{index .steps.generate.data 0 \"title\"}}", "generated_at": "{{index .steps.generate.data 0 \"generated_at\"}}"}
+
+  # ============================================================================
+  # STEP-LEVEL CACHING
+  # ============================================================================
+  # Cache individual step results (query or httpcall). The workflow still
+  # executes, but cached steps return their cached result instead of executing.
+  # Useful when multiple endpoints share common queries, or for expensive operations.
+
+  # Basic step cache
+  - name: "step_cached_workflow"
+    triggers:
+      - type: http
+        path: "/api/items/details"
+        method: GET
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    steps:
+      # This query result is cached per item ID
+      - name: fetch_item
+        type: query
+        database: "main"
+        sql: "SELECT @id AS id, 'Item ' || @id AS name, datetime('now') AS fetched_at"
+        cache:
+          key: "item:{{.Param.id}}"  # Cache key from request params
+          ttl_sec: 600               # 10 minutes
+      - type: response
+        template: |
+          {
+            "item": {{json (index .steps.fetch_item.data 0)}},
+            "cache_hit": {{.steps.fetch_item.cache_hit}}
+          }
+
+  # Step cache referencing previous step results
+  - name: "chained_cache"
+    triggers:
+      - type: http
+        path: "/api/users/full"
+        method: GET
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    steps:
+      # First step: fetch user (cached by user ID)
+      - name: fetch_user
+        type: query
+        database: "main"
+        sql: "SELECT @id AS id, 'User ' || @id AS name, 100 + @id AS org_id"
+        cache:
+          key: "user:{{.Param.id}}"
+          ttl_sec: 300
+
+      # Second step: fetch org (cached by org_id from previous step result)
+      # This demonstrates referencing previous step data in cache key
+      - name: fetch_org
+        type: query
+        database: "main"
+        sql: |
+          SELECT
+            {{index .steps.fetch_user.data 0 "org_id"}} AS org_id,
+            'Org ' || {{index .steps.fetch_user.data 0 "org_id"}} AS org_name
+        cache:
+          key: "org:{{index .steps.fetch_user.data 0 \"org_id\"}}"
+          ttl_sec: 600  # Org data cached longer
+
+      - type: response
+        template: |
+          {
+            "user": {{json (index .steps.fetch_user.data 0)}},
+            "user_cache_hit": {{.steps.fetch_user.cache_hit}},
+            "org": {{json (index .steps.fetch_org.data 0)}},
+            "org_cache_hit": {{.steps.fetch_org.cache_hit}}
+          }
+
+  # Multiple cached steps with different TTLs
+  - name: "dashboard_cached_steps"
+    triggers:
+      - type: http
+        path: "/api/dashboard/full"
+        method: GET
+    steps:
+      # Frequently changing data - short cache
+      - name: active_count
+        type: query
+        database: "main"
+        sql: "SELECT 42 AS count, datetime('now') AS counted_at"
+        cache:
+          key: "dashboard:active"
+          ttl_sec: 30  # 30 seconds
+
+      # Slowly changing data - longer cache
+      - name: total_count
+        type: query
+        database: "main"
+        sql: "SELECT 1000 AS count, datetime('now') AS counted_at"
+        cache:
+          key: "dashboard:total"
+          ttl_sec: 300  # 5 minutes
+
+      # Static reference data - very long cache
+      - name: categories
+        type: query
+        database: "main"
+        sql: "SELECT 'Category A' AS name UNION ALL SELECT 'Category B'"
+        cache:
+          key: "dashboard:categories"
+          ttl_sec: 3600  # 1 hour
+
+      - type: response
+        template: |
+          {
+            "active": {{index .steps.active_count.data 0 "count"}},
+            "total": {{index .steps.total_count.data 0 "count"}},
+            "categories": {{json .steps.categories.data}},
+            "cache_status": {
+              "active_hit": {{.steps.active_count.cache_hit}},
+              "total_hit": {{.steps.total_count.cache_hit}},
+              "categories_hit": {{.steps.categories.cache_hit}}
+            }
+          }
+
+  # ============================================================================
+  # COMBINED TRIGGER + STEP CACHING
+  # ============================================================================
+  # Use both levels for maximum efficiency:
+  # - Trigger cache: skip workflow entirely for repeated requests
+  # - Step cache: speed up workflow when trigger cache misses
+
+  - name: "fully_cached"
+    triggers:
+      - type: http
+        path: "/api/products/get"
+        method: GET
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+        cache:
+          enabled: true
+          key: "response:product:{{.Param.id}}"
+          ttl_sec: 60  # Short TTL - response changes often
+    steps:
+      # Even when trigger cache misses, step cache may hit
+      - name: fetch_product
+        type: query
+        database: "main"
+        sql: "SELECT @id AS id, 'Product ' || @id AS name"
+        cache:
+          key: "product:{{.Param.id}}"
+          ttl_sec: 600  # Longer TTL - product data changes less often
+
+      - name: fetch_price
+        type: query
+        database: "main"
+        sql: "SELECT @id AS product_id, 99.99 AS price"
+        cache:
+          key: "price:{{.Param.id}}"
+          ttl_sec: 120  # Medium TTL
+
+      - type: response
+        template: |
+          {
+            "product": {{json (index .steps.fetch_product.data 0)}},
+            "price": {{index .steps.fetch_price.data 0 "price"}}
+          }

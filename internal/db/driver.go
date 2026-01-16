@@ -14,7 +14,8 @@ type Driver interface {
 	// Query executes a query with named parameters.
 	// SQL uses @param syntax; driver translates to native syntax.
 	// params is a map of parameter name -> value.
-	Query(ctx context.Context, sessCfg config.SessionConfig, query string, params map[string]any) ([]map[string]any, error)
+	// Returns QueryResult with Rows for SELECT, RowsAffected for writes.
+	Query(ctx context.Context, sessCfg config.SessionConfig, query string, params map[string]any) (*QueryResult, error)
 
 	// Ping checks database connectivity
 	Ping(ctx context.Context) error
@@ -42,8 +43,7 @@ type Driver interface {
 // This is the factory function that returns the appropriate driver implementation.
 func NewDriver(cfg config.DatabaseConfig) (Driver, error) {
 	switch cfg.Type {
-	case "sqlserver", "":
-		// Default to sqlserver for backwards compatibility
+	case "sqlserver":
 		return NewSQLServerDriver(cfg)
 	case "sqlite":
 		return NewSQLiteDriver(cfg)

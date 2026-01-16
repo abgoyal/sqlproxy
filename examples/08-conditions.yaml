@@ -1,0 +1,380 @@
+# Conditional Execution
+# Demonstrates: named conditions, step conditions, complex expressions
+
+server:
+  host: "127.0.0.1"
+  port: 8080
+  default_timeout_sec: 30
+  max_timeout_sec: 300
+
+databases:
+  - name: "main"
+    type: "sqlite"
+    path: ":memory:"
+
+logging:
+  level: "info"
+  file_path: ""
+  max_size_mb: 100
+  max_backups: 5
+  max_age_days: 30
+
+metrics:
+  enabled: true
+
+workflows:
+  # ============================================================================
+  # BASIC CONDITIONS
+  # ============================================================================
+
+  # Simple boolean condition
+  - name: "conditional_query"
+    conditions:
+      include_details: "trigger.params.detailed == true"
+    triggers:
+      - type: http
+        path: "/api/data"
+        method: GET
+        parameters:
+          - name: "detailed"
+            type: "bool"
+            required: false
+            default: "false"
+    steps:
+      # Always runs
+      - name: basic
+        type: query
+        database: "main"
+        sql: "SELECT 'basic data' AS info"
+
+      # Only runs if detailed=true
+      - name: details
+        type: query
+        condition: "include_details"
+        database: "main"
+        sql: "SELECT 'detailed data' AS extra_info, datetime('now') AS generated_at"
+
+      - type: response
+        template: |
+          {
+            "basic": {{json (index .steps.basic.data 0)}},
+            "details": {{if .steps.details.data}}{{json (index .steps.details.data 0)}}{{else}}null{{end}}
+          }
+
+  # Numeric comparison condition
+  - name: "threshold_check"
+    conditions:
+      exceeds_limit: "trigger.params.amount > 1000"
+      needs_approval: "trigger.params.amount > 5000"
+    triggers:
+      - type: http
+        path: "/api/transaction"
+        method: POST
+        parameters:
+          - name: "amount"
+            type: "float"
+            required: true
+    steps:
+      - name: process
+        type: query
+        database: "main"
+        sql: "SELECT @amount AS amount, 'processed' AS status"
+
+      # Only for large transactions
+      - name: log_large
+        type: query
+        condition: "exceeds_limit"
+        database: "main"
+        sql: "SELECT @amount AS amount, 'large transaction logged' AS log"
+
+      # Only for very large transactions
+      - name: request_approval
+        type: query
+        condition: "needs_approval"
+        database: "main"
+        sql: "SELECT @amount AS amount, 'approval requested' AS action"
+
+      - type: response
+        template: |
+          {
+            "amount": {{.trigger.params.amount}},
+            "logged": {{if .steps.log_large.data}}true{{else}}false{{end}},
+            "approval_requested": {{if .steps.request_approval.data}}true{{else}}false{{end}}
+          }
+
+  # ============================================================================
+  # STRING CONDITIONS
+  # ============================================================================
+
+  # String equality
+  - name: "string_match"
+    conditions:
+      is_premium: "trigger.params.tier == 'premium'"
+      is_enterprise: "trigger.params.tier == 'enterprise'"
+    triggers:
+      - type: http
+        path: "/api/features"
+        method: GET
+        parameters:
+          - name: "tier"
+            type: "string"
+            required: true
+    steps:
+      # Everyone gets basic features
+      - name: basic_features
+        type: query
+        database: "main"
+        sql: "SELECT 'basic' AS feature_set"
+
+      # Premium tier gets more
+      - name: premium_features
+        type: query
+        condition: "is_premium"
+        database: "main"
+        sql: "SELECT 'premium extras' AS feature_set"
+
+      # Enterprise gets everything
+      - name: enterprise_features
+        type: query
+        condition: "is_enterprise"
+        database: "main"
+        sql: "SELECT 'enterprise extras' AS feature_set"
+
+      - type: response
+        template: |
+          {
+            "tier": "{{.trigger.params.tier}}",
+            "features": {
+              "basic": true,
+              "premium": {{if .steps.premium_features.data}}true{{else}}false{{end}},
+              "enterprise": {{if .steps.enterprise_features.data}}true{{else}}false{{end}}
+            }
+          }
+
+  # ============================================================================
+  # DATA-DRIVEN CONDITIONS
+  # ============================================================================
+
+  # Condition based on query result
+  - name: "data_driven"
+    conditions:
+      has_items: "steps.check.count > 0"
+      has_many: "steps.check.count > 5"
+    triggers:
+      - type: http
+        path: "/api/items/status"
+        method: GET
+        parameters:
+          - name: "user_id"
+            type: "int"
+            required: true
+    steps:
+      # Check what items exist
+      - name: check
+        type: query
+        database: "main"
+        sql: |
+          SELECT 1 AS id WHERE @user_id > 0
+          UNION ALL SELECT 2 WHERE @user_id > 1
+          UNION ALL SELECT 3 WHERE @user_id > 2
+
+      # Only if items exist
+      - name: process_items
+        type: query
+        condition: "has_items"
+        database: "main"
+        sql: "SELECT 'processing items' AS action"
+
+      # Only if many items
+      - name: batch_optimize
+        type: query
+        condition: "has_many"
+        database: "main"
+        sql: "SELECT 'batch optimization applied' AS action"
+
+      - type: response
+        template: |
+          {
+            "item_count": {{.steps.check.count}},
+            "processed": {{if .steps.process_items.data}}true{{else}}false{{end}},
+            "optimized": {{if .steps.batch_optimize.data}}true{{else}}false{{end}}
+          }
+
+  # ============================================================================
+  # COMPLEX CONDITIONS
+  # ============================================================================
+
+  # Multiple criteria (AND logic via multiple conditions)
+  - name: "multi_criteria"
+    conditions:
+      is_admin: "trigger.params.role == 'admin'"
+      is_active: "trigger.params.status == 'active'"
+      can_delete: "trigger.params.role == 'admin'"  # Same as is_admin for demo
+    triggers:
+      - type: http
+        path: "/api/admin/action"
+        method: POST
+        parameters:
+          - name: "role"
+            type: "string"
+            required: true
+          - name: "status"
+            type: "string"
+            required: true
+          - name: "action"
+            type: "string"
+            required: true
+    steps:
+      # Check permissions
+      - name: check_admin
+        type: query
+        condition: "is_admin"
+        database: "main"
+        sql: "SELECT 'admin verified' AS check"
+
+      # Active admin can perform actions
+      - name: perform_action
+        type: query
+        condition: "is_active"
+        database: "main"
+        sql: "SELECT @action AS performed_action"
+
+      - type: response
+        template: |
+          {
+            "is_admin": {{if .steps.check_admin.data}}true{{else}}false{{end}},
+            "action_performed": {{if .steps.perform_action.data}}true{{else}}false{{end}},
+            "result": {{if .steps.perform_action.data}}{{json (index .steps.perform_action.data 0)}}{{else}}null{{end}}
+          }
+
+  # ============================================================================
+  # CONDITIONAL HTTP CALLS
+  # ============================================================================
+
+  # Conditional webhook
+  - name: "conditional_webhook"
+    conditions:
+      should_notify: "trigger.params.notify == true"
+      is_urgent: "trigger.params.priority == 'urgent'"
+    triggers:
+      - type: http
+        path: "/api/event"
+        method: POST
+        parameters:
+          - name: "event_type"
+            type: "string"
+            required: true
+          - name: "notify"
+            type: "bool"
+            required: false
+            default: "false"
+          - name: "priority"
+            type: "string"
+            required: false
+            default: "normal"
+    steps:
+      # Record the event
+      - name: record
+        type: query
+        database: "main"
+        sql: "SELECT @event_type AS event, datetime('now') AS recorded_at"
+
+      # Only notify if requested
+      - name: notify
+        type: httpcall
+        condition: "should_notify"
+        url: "https://httpbin.org/post"
+        http_method: POST
+        headers:
+          Content-Type: "application/json"
+        body: |
+          {"event": "{{.trigger.params.event_type}}", "priority": "{{.trigger.params.priority}}"}
+        parse: "json"
+
+      # Urgent events get extra notification
+      - name: urgent_notify
+        type: httpcall
+        condition: "is_urgent"
+        url: "https://httpbin.org/post"
+        http_method: POST
+        headers:
+          Content-Type: "application/json"
+        body: |
+          {"urgent": true, "event": "{{.trigger.params.event_type}}"}
+        parse: "json"
+
+      - type: response
+        template: |
+          {
+            "recorded": true,
+            "notified": {{if .steps.notify.data}}true{{else}}false{{end}},
+            "urgent_notified": {{if .steps.urgent_notify.data}}true{{else}}false{{end}}
+          }
+
+  # ============================================================================
+  # CONDITIONAL CRON WORKFLOWS
+  # ============================================================================
+
+  # Cron with conditional execution
+  - name: "conditional_cron"
+    conditions:
+      has_pending: "steps.check.count > 0"
+    triggers:
+      - type: cron
+        schedule: "*/10 * * * *"  # Every 10 minutes
+    steps:
+      # Check if there's work to do
+      - name: check
+        type: query
+        database: "main"
+        sql: "SELECT 1 AS id WHERE 1=0"  # Empty for demo
+
+      # Only process if there's pending work
+      - name: process
+        type: query
+        condition: "has_pending"
+        database: "main"
+        sql: "SELECT 'processed' AS status"
+
+      # Log either way
+      - name: log
+        type: query
+        database: "main"
+        sql: |
+          SELECT
+            datetime('now') AS checked_at,
+            CASE WHEN {{.steps.check.count}} > 0 THEN 'had work' ELSE 'idle' END AS status
+
+  # ============================================================================
+  # FALLBACK PATTERNS
+  # ============================================================================
+
+  # Try primary, fallback to secondary
+  - name: "with_fallback"
+    conditions:
+      primary_failed: "steps.primary.success == false"
+    triggers:
+      - type: http
+        path: "/api/resilient"
+        method: GET
+    steps:
+      # Try primary source
+      - name: primary
+        type: query
+        database: "main"
+        sql: "SELECT 'primary data' AS source"
+        on_error: continue
+
+      # Fallback if primary failed
+      - name: fallback
+        type: query
+        condition: "primary_failed"
+        database: "main"
+        sql: "SELECT 'fallback data' AS source"
+
+      - type: response
+        template: |
+          {
+            "source": "{{if .steps.primary.success}}primary{{else}}fallback{{end}}",
+            "data": {{if .steps.primary.success}}{{json (index .steps.primary.data 0)}}{{else}}{{json (index .steps.fallback.data 0)}}{{end}}
+          }

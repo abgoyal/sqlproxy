@@ -210,10 +210,12 @@ func deadlockPriorityToSQL(priority string) string {
 	}
 }
 
-// Query executes a SQL query and returns results as a slice of maps.
+// Query executes a SQL query and returns results.
 // SQL uses @param syntax which is native to SQL Server.
 // params is a map of parameter name -> value.
-func (d *SQLServerDriver) Query(ctx context.Context, sessCfg config.SessionConfig, query string, params map[string]any) ([]map[string]any, error) {
+// For SELECT queries, returns rows in QueryResult.Rows.
+// For INSERT/UPDATE/DELETE, returns affected count in QueryResult.RowsAffected.
+func (d *SQLServerDriver) Query(ctx context.Context, sessCfg config.SessionConfig, query string, params map[string]any) (*QueryResult, error) {
 	// Get a dedicated connection from the pool
 	conn, err := d.conn.Conn(ctx)
 	if err != nil {
@@ -230,6 +232,16 @@ func (d *SQLServerDriver) Query(ctx context.Context, sessCfg config.SessionConfi
 	// Find @params in SQL to maintain order
 	args := d.buildArgs(query, params)
 
+	// Use ExecContext for write operations, QueryContext for reads
+	if IsWriteQuery(query) {
+		result, err := conn.ExecContext(ctx, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("exec failed: %w", err)
+		}
+		rowsAffected, _ := result.RowsAffected()
+		return &QueryResult{RowsAffected: rowsAffected}, nil
+	}
+
 	// Execute the query
 	rows, err := conn.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -237,7 +249,11 @@ func (d *SQLServerDriver) Query(ctx context.Context, sessCfg config.SessionConfi
 	}
 	defer rows.Close()
 
-	return ScanRows(rows)
+	scannedRows, err := ScanRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	return &QueryResult{Rows: scannedRows}, nil
 }
 
 // buildArgs builds sql.Named arguments from the params map.

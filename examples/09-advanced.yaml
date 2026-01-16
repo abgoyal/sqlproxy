@@ -1,0 +1,501 @@
+# Advanced Workflows (Complex Multi-Feature Examples)
+# Demonstrates: combining multiple features in realistic scenarios
+
+server:
+  host: "127.0.0.1"
+  port: 8080
+  default_timeout_sec: 30
+  max_timeout_sec: 300
+  cache:
+    enabled: true
+    max_size_mb: 256
+    default_ttl_sec: 300
+
+databases:
+  - name: "main"
+    type: "sqlite"
+    path: ":memory:"
+
+logging:
+  level: "info"
+  file_path: ""
+  max_size_mb: 100
+  max_backups: 5
+  max_age_days: 30
+
+metrics:
+  enabled: true
+
+rate_limits:
+  - name: "api"
+    requests_per_second: 100
+    burst: 200
+    key: "{{.ClientIP}}"
+
+  - name: "heavy"
+    requests_per_second: 10
+    burst: 20
+    key: "{{.ClientIP}}"
+
+  - name: "per_user"
+    requests_per_second: 50
+    burst: 100
+    key: "user:{{.Param.user_id}}"
+
+workflows:
+  # ============================================================================
+  # REAL-WORLD SCENARIO: USER DASHBOARD
+  # ============================================================================
+  # Combines: caching (trigger + step), rate limiting, conditions, multiple queries
+
+  - name: "user_dashboard"
+    conditions:
+      has_notifications: "steps.notifications.count > 0"
+      is_premium: "steps.user.data[0].tier == 'premium'"
+    triggers:
+      - type: http
+        path: "/api/dashboard"
+        method: GET
+        parameters:
+          - name: "user_id"
+            type: "int"
+            required: true
+        rate_limit:
+          - pool: "api"
+          - pool: "per_user"
+        cache:
+          enabled: true
+          key: "dashboard:{{.Param.user_id}}"
+          ttl_sec: 30  # Short TTL for dashboard
+    steps:
+      # User profile (cached longer - changes rarely)
+      - name: user
+        type: query
+        database: "main"
+        sql: "SELECT @user_id AS id, 'User ' || @user_id AS name, 'premium' AS tier"
+        cache:
+          key: "user:{{.Param.user_id}}"
+          ttl_sec: 300
+
+      # Notifications (not cached - changes frequently)
+      - name: notifications
+        type: query
+        database: "main"
+        sql: |
+          SELECT 1 AS id, 'Welcome!' AS message, datetime('now') AS created_at
+          WHERE @user_id > 0
+
+      # Stats (cached medium term)
+      - name: stats
+        type: query
+        database: "main"
+        sql: "SELECT 42 AS total_items, 5 AS pending_actions"
+        cache:
+          key: "stats:{{.Param.user_id}}"
+          ttl_sec: 60
+
+      # Premium features (only for premium users)
+      - name: premium_data
+        type: query
+        condition: "is_premium"
+        database: "main"
+        sql: "SELECT 'analytics' AS feature, 'enabled' AS status"
+
+      - type: response
+        template: |
+          {
+            "user": {{json (index .steps.user.data 0)}},
+            "notifications": {{json .steps.notifications.data}},
+            "notification_count": {{.steps.notifications.count}},
+            "stats": {{json (index .steps.stats.data 0)}},
+            "premium_features": {{if .steps.premium_data.data}}{{json .steps.premium_data.data}}{{else}}null{{end}},
+            "cache_status": {
+              "user_cached": {{.steps.user.cache_hit}},
+              "stats_cached": {{.steps.stats.cache_hit}}
+            }
+          }
+
+  # ============================================================================
+  # REAL-WORLD SCENARIO: BATCH EXPORT WITH WEBHOOK
+  # ============================================================================
+  # Combines: cron trigger, query, block iteration, httpcall, conditions
+
+  - name: "batch_export"
+    conditions:
+      has_data: "steps.fetch.count > 0"
+    triggers:
+      # Manual trigger
+      - type: http
+        path: "/api/export/run"
+        method: POST
+        parameters:
+          - name: "webhook_url"
+            type: "string"
+            required: false
+      # Scheduled trigger
+      - type: cron
+        schedule: "0 2 * * *"  # 2 AM daily
+        params:
+          webhook_url: "https://httpbin.org/post"
+    steps:
+      # Fetch data to export
+      - name: fetch
+        type: query
+        database: "main"
+        sql: |
+          SELECT 1 AS id, 'Record A' AS data
+          UNION ALL SELECT 2, 'Record B'
+          UNION ALL SELECT 3, 'Record C'
+
+      # Process each record
+      - name: process
+        condition: "has_data"
+        iterate:
+          over: "steps.fetch.data"
+          as: "record"
+        steps:
+          - name: transform
+            type: query
+            database: "main"
+            sql: "SELECT @id AS id, UPPER(@data) AS transformed"
+
+      # Notify webhook with results
+      - name: notify
+        type: httpcall
+        condition: "has_data"
+        url: "{{.trigger.params.webhook_url}}"
+        http_method: POST
+        headers:
+          Content-Type: "application/json"
+        body: |
+          {
+            "export_id": "{{.workflow.request_id}}",
+            "record_count": {{.steps.fetch.count}},
+            "exported_at": "{{.workflow.start_time}}"
+          }
+        parse: "json"
+        retry:
+          enabled: true
+          max_attempts: 3
+          initial_backoff_sec: 1
+          max_backoff_sec: 30
+
+      - type: response
+        template: |
+          {
+            "exported": {{.steps.fetch.count}},
+            "webhook_notified": {{if .steps.notify.data}}true{{else}}false{{end}}
+          }
+
+  # ============================================================================
+  # REAL-WORLD SCENARIO: API AGGREGATOR
+  # ============================================================================
+  # Combines: multiple httpcalls, parallel-like execution, error handling, caching
+
+  - name: "aggregate_apis"
+    triggers:
+      - type: http
+        path: "/api/aggregate"
+        method: GET
+        rate_limit:
+          - pool: "heavy"  # Expensive operation
+        cache:
+          enabled: true
+          key: "aggregate:all"
+          ttl_sec: 120
+    steps:
+      # Fetch from multiple sources (executed sequentially, but results combined)
+      - name: source_a
+        type: httpcall
+        url: "https://httpbin.org/json"
+        http_method: GET
+        parse: "json"
+        timeout_sec: 10
+        cache:
+          key: "api:source_a"
+          ttl_sec: 300
+        on_error: continue
+
+      - name: source_b
+        type: httpcall
+        url: "https://httpbin.org/uuid"
+        http_method: GET
+        parse: "json"
+        timeout_sec: 10
+        cache:
+          key: "api:source_b"
+          ttl_sec: 300
+        on_error: continue
+
+      - name: source_c
+        type: httpcall
+        url: "https://httpbin.org/headers"
+        http_method: GET
+        parse: "json"
+        timeout_sec: 10
+        cache:
+          key: "api:source_c"
+          ttl_sec: 300
+        on_error: continue
+
+      - type: response
+        template: |
+          {
+            "sources": {
+              "a": {"success": {{.steps.source_a.success}}, "cached": {{.steps.source_a.cache_hit}}, "data": {{if .steps.source_a.success}}{{json .steps.source_a.data}}{{else}}null{{end}}},
+              "b": {"success": {{.steps.source_b.success}}, "cached": {{.steps.source_b.cache_hit}}, "data": {{if .steps.source_b.success}}{{json .steps.source_b.data}}{{else}}null{{end}}},
+              "c": {"success": {{.steps.source_c.success}}, "cached": {{.steps.source_c.cache_hit}}, "data": {{if .steps.source_c.success}}{{json .steps.source_c.data}}{{else}}null{{end}}}
+            },
+            "aggregated_at": "{{.workflow.start_time}}"
+          }
+
+  # ============================================================================
+  # REAL-WORLD SCENARIO: MULTI-TENANT API
+  # ============================================================================
+  # Combines: rate limiting per tenant, caching per tenant, validation
+
+  - name: "tenant_api"
+    triggers:
+      - type: http
+        path: "/api/tenant/data"
+        method: GET
+        parameters:
+          - name: "tenant_id"
+            type: "string"
+            required: true
+          - name: "resource"
+            type: "string"
+            required: true
+        rate_limit:
+          # Global rate limit
+          - pool: "api"
+          # Per-tenant limit
+          - requests_per_second: 20
+            burst: 40
+            key: "tenant:{{.Param.tenant_id}}"
+          # Per-resource limit
+          - requests_per_second: 10
+            burst: 20
+            key: "tenant:{{.Param.tenant_id}}:{{.Param.resource}}"
+        cache:
+          enabled: true
+          key: "tenant:{{.Param.tenant_id}}:{{.Param.resource}}"
+          ttl_sec: 60
+    steps:
+      # Verify tenant exists
+      - name: tenant
+        type: query
+        database: "main"
+        sql: "SELECT @tenant_id AS id, 'Tenant ' || @tenant_id AS name"
+        cache:
+          key: "tenant:{{.Param.tenant_id}}:info"
+          ttl_sec: 600  # Cache tenant info longer
+
+      # Get resource data
+      - name: resource
+        type: query
+        database: "main"
+        sql: "SELECT @resource AS type, 'Data for ' || @tenant_id AS content"
+
+      - type: response
+        template: |
+          {
+            "tenant": {{json (index .steps.tenant.data 0)}},
+            "resource": {{json (index .steps.resource.data 0)}},
+            "cache_status": {
+              "tenant_cached": {{.steps.tenant.cache_hit}}
+            }
+          }
+
+  # ============================================================================
+  # REAL-WORLD SCENARIO: HEALTH CHECK AGGREGATOR
+  # ============================================================================
+  # Combines: multiple checks, conditions, structured response
+
+  - name: "health_detailed"
+    conditions:
+      db_healthy: "steps.db_check.success == true"
+      all_healthy: "steps.db_check.success == true"
+    triggers:
+      - type: http
+        path: "/api/health/detailed"
+        method: GET
+        rate_limit:
+          - requests_per_second: 10
+            burst: 20
+            key: "health:{{.ClientIP}}"
+    steps:
+      # Check database
+      - name: db_check
+        type: query
+        database: "main"
+        sql: "SELECT 1 AS ok"
+        on_error: continue
+
+      # Check external dependency (simulated)
+      - name: external_check
+        type: httpcall
+        url: "https://httpbin.org/status/200"
+        http_method: GET
+        parse: "text"
+        timeout_sec: 5
+        on_error: continue
+
+      - type: response
+        template: |
+          {
+            "status": "{{if .steps.db_check.success}}healthy{{else}}unhealthy{{end}}",
+            "checks": {
+              "database": {"status": "{{if .steps.db_check.success}}up{{else}}down{{end}}", "latency_ms": 1},
+              "external": {"status": "{{if .steps.external_check.success}}up{{else}}down{{end}}"}
+            },
+            "timestamp": "{{.workflow.start_time}}"
+          }
+
+  # ============================================================================
+  # REAL-WORLD SCENARIO: AUDIT LOGGING
+  # ============================================================================
+  # Combines: capture request, log to db, notify on certain conditions
+
+  - name: "audited_action"
+    conditions:
+      is_destructive: "trigger.params.action == 'delete'"
+    triggers:
+      - type: http
+        path: "/api/audit/action"
+        method: POST
+        parameters:
+          - name: "user_id"
+            type: "int"
+            required: true
+          - name: "action"
+            type: "string"
+            required: true
+          - name: "resource_id"
+            type: "int"
+            required: true
+        rate_limit:
+          - pool: "api"
+    steps:
+      # Log the audit entry
+      - name: audit_log
+        type: query
+        database: "main"
+        sql: |
+          SELECT
+            @user_id AS user_id,
+            @action AS action,
+            @resource_id AS resource_id,
+            '{{.workflow.request_id}}' AS request_id,
+            datetime('now') AS timestamp
+
+      # Notify on destructive actions
+      - name: alert
+        type: httpcall
+        condition: "is_destructive"
+        url: "https://httpbin.org/post"
+        http_method: POST
+        headers:
+          Content-Type: "application/json"
+        body: |
+          {
+            "alert": "destructive_action",
+            "user_id": {{.trigger.params.user_id}},
+            "action": "{{.trigger.params.action}}",
+            "resource_id": {{.trigger.params.resource_id}},
+            "request_id": "{{.workflow.request_id}}"
+          }
+        parse: "json"
+        retry:
+          enabled: true
+          max_attempts: 3
+          initial_backoff_sec: 1
+          max_backoff_sec: 10
+
+      - type: response
+        template: |
+          {
+            "logged": true,
+            "audit_entry": {{json (index .steps.audit_log.data 0)}},
+            "alert_sent": {{if .steps.alert.data}}true{{else}}false{{end}}
+          }
+
+  # ============================================================================
+  # REAL-WORLD SCENARIO: REPORT GENERATION
+  # ============================================================================
+  # Combines: scheduled generation, caching, conditional sections
+
+  - name: "daily_report"
+    conditions:
+      has_activity: "steps.activity.count > 0"
+      has_errors: "steps.errors.count > 0"
+    triggers:
+      # Manual generation
+      - type: http
+        path: "/api/reports/daily"
+        method: GET
+        parameters:
+          - name: "date"
+            type: "date"
+            required: false
+        cache:
+          enabled: true
+          key: "report:daily:{{.Param.date | default \"today\"}}"
+          ttl_sec: 3600
+      # Scheduled generation
+      - type: cron
+        schedule: "0 6 * * *"  # 6 AM daily
+        params:
+          date: "yesterday"
+    steps:
+      # Summary stats
+      - name: summary
+        type: query
+        database: "main"
+        sql: |
+          SELECT
+            100 AS total_requests,
+            95 AS successful,
+            5 AS failed,
+            datetime('now') AS generated_at
+
+      # Activity breakdown
+      - name: activity
+        type: query
+        database: "main"
+        sql: |
+          SELECT 'endpoint_a' AS endpoint, 50 AS count
+          UNION ALL SELECT 'endpoint_b', 30
+          UNION ALL SELECT 'endpoint_c', 20
+
+      # Errors (if any)
+      - name: errors
+        type: query
+        database: "main"
+        sql: "SELECT 'error_type' AS type, 5 AS count WHERE 1=1"
+
+      # Detailed error analysis (only if errors exist)
+      - name: error_details
+        type: query
+        condition: "has_errors"
+        database: "main"
+        sql: |
+          SELECT
+            'ValidationError' AS type,
+            3 AS count,
+            '/api/validate' AS top_endpoint
+          UNION ALL SELECT 'TimeoutError', 2, '/api/slow'
+
+      - type: response
+        template: |
+          {
+            "report": {
+              "summary": {{json (index .steps.summary.data 0)}},
+              "activity": {{json .steps.activity.data}},
+              "errors": {
+                "count": {{.steps.errors.count}},
+                "details": {{if .steps.error_details.data}}{{json .steps.error_details.data}}{{else}}[]{{end}}
+              }
+            },
+            "generated_at": "{{.workflow.start_time}}"
+          }

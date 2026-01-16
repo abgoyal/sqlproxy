@@ -103,6 +103,9 @@ process_package "internal/webhook" "Webhook"
 process_package "internal/cache" "Cache"
 process_package "internal/tmpl" "Template Engine"
 process_package "internal/ratelimit" "Rate Limiting"
+process_package "internal/types" "Types"
+process_package "internal/workflow" "Workflow"
+process_package "internal/workflow/step" "Workflow Steps"
 process_package "e2e" "End-to-End"
 
 # Add footer

@@ -28,27 +28,26 @@ GOMOD := $(GOCMD) mod
 # Test packages
 PKG_CONFIG := ./internal/config/...
 PKG_DB := ./internal/db/...
-PKG_HANDLER := ./internal/handler/...
-PKG_SCHEDULER := ./internal/scheduler/...
 PKG_VALIDATE := ./internal/validate/...
 PKG_SERVER := ./internal/server/...
 PKG_LOGGING := ./internal/logging/...
 PKG_METRICS := ./internal/metrics/...
 PKG_OPENAPI := ./internal/openapi/...
 PKG_SERVICE := ./internal/service/...
-PKG_WEBHOOK := ./internal/webhook/...
 PKG_CACHE := ./internal/cache/...
 PKG_TMPL := ./internal/tmpl/...
 PKG_RATELIMIT := ./internal/ratelimit/...
+PKG_WORKFLOW := ./internal/workflow/...
+PKG_TYPES := ./internal/types/...
 
 .PHONY: all build clean test validate run install deps tidy version \
         build-linux build-windows build-darwin build-all \
         build-linux-arm64 build-darwin-arm64 \
-        test-config test-db test-handler test-scheduler test-validate \
-        test-server test-logging test-metrics test-openapi test-webhook \
-        test-cache test-tmpl test-ratelimit \
+        test-config test-db test-validate \
+        test-server test-logging test-metrics test-openapi \
+        test-cache test-tmpl test-ratelimit test-workflow test-types \
         test-unit test-integration test-e2e test-bench \
-        test-cover test-cover-html test-cover-report test-docs
+        test-cover test-cover-report test-cover-packages test-clean test-docs ci
 
 # Default target
 all: build
@@ -85,12 +84,6 @@ test-config:
 test-db:
 	$(GOTEST) -v $(PKG_DB)
 
-test-handler:
-	$(GOTEST) -v $(PKG_HANDLER)
-
-test-scheduler:
-	$(GOTEST) -v $(PKG_SCHEDULER)
-
 test-validate:
 	$(GOTEST) -v $(PKG_VALIDATE)
 
@@ -106,9 +99,6 @@ test-metrics:
 test-openapi:
 	$(GOTEST) -v $(PKG_OPENAPI)
 
-test-webhook:
-	$(GOTEST) -v $(PKG_WEBHOOK)
-
 test-cache:
 	$(GOTEST) -v $(PKG_CACHE)
 
@@ -117,6 +107,12 @@ test-tmpl:
 
 test-ratelimit:
 	$(GOTEST) -v $(PKG_RATELIMIT)
+
+test-workflow:
+	$(GOTEST) -v $(PKG_WORKFLOW)
+
+test-types:
+	$(GOTEST) -v $(PKG_TYPES)
 
 # Run unit tests only (exclude benchmarks and e2e)
 test-unit:
@@ -145,8 +141,8 @@ test-bench-report:
 	$(GOTEST) -bench=. -benchmem -count=5 ./internal/tmpl/... > $(COVERAGE_DIR)/benchmark_tmpl.txt 2>&1
 	$(GOTEST) -bench=. -benchmem -count=5 ./internal/ratelimit/... > $(COVERAGE_DIR)/benchmark_ratelimit.txt 2>&1
 	$(GOTEST) -bench=. -benchmem -count=5 ./internal/cache/... > $(COVERAGE_DIR)/benchmark_cache.txt 2>&1
-	$(GOTEST) -bench=. -benchmem -count=5 ./internal/handler/... > $(COVERAGE_DIR)/benchmark_handler.txt 2>&1
 	$(GOTEST) -bench=. -benchmem -count=5 ./internal/metrics/... > $(COVERAGE_DIR)/benchmark_metrics.txt 2>&1
+	$(GOTEST) -bench=. -benchmem -count=5 ./internal/workflow/... > $(COVERAGE_DIR)/benchmark_workflow.txt 2>&1
 	@echo ""
 	@echo "=== Benchmark Summary ==="
 	@echo "Reports saved to $(COVERAGE_DIR)/benchmark_*.txt"
@@ -188,26 +184,38 @@ test-bench-compare-new:
 # Coverage targets
 # ============================================================================
 
-# Run tests with coverage summary
+# Run all tests with coverage (unit + e2e) and show summary
+# Unit tests output text format (-coverprofile), e2e outputs binary format (GOCOVERDIR).
+# These are fundamentally different Go coverage mechanisms with no built-in merger,
+# so we convert e2e to text and merge using a script.
 test-cover:
-	@$(GOTEST) -cover ./internal/... 2>&1 | grep -v "internal/testutil"
+	@rm -rf $(COVERAGE_DIR)/e2e
+	@mkdir -p $(COVERAGE_DIR)/e2e
+	@echo "=== Running unit tests with coverage ==="
+	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/unit.out ./internal/...
+	@grep -v "internal/testutil" $(COVERAGE_DIR)/unit.out > $(COVERAGE_DIR)/unit.tmp && mv $(COVERAGE_DIR)/unit.tmp $(COVERAGE_DIR)/unit.out
+	@echo ""
+	@echo "=== Running e2e tests with coverage ==="
+	@E2E_COVERAGE_DIR=$(COVERAGE_DIR)/e2e $(GOTEST) -count=1 ./e2e/...
+	@echo ""
+	@echo "=== Merging coverage data ==="
+	@if [ -d "$(COVERAGE_DIR)/e2e" ] && [ "$$(ls -A $(COVERAGE_DIR)/e2e 2>/dev/null)" ]; then \
+		$(GOCMD) tool covdata textfmt -i=$(COVERAGE_DIR)/e2e -o=$(COVERAGE_DIR)/e2e.out; \
+		./scripts/merge-coverage.sh $(COVERAGE_DIR)/unit.out $(COVERAGE_DIR)/e2e.out > $(COVERAGE_DIR)/coverage.out; \
+	else \
+		cp $(COVERAGE_DIR)/unit.out $(COVERAGE_DIR)/coverage.out; \
+		echo "Warning: No e2e coverage data found, using unit coverage only"; \
+	fi
+	@echo ""
+	@$(GOCMD) tool cover -func=$(COVERAGE_DIR)/coverage.out | tail -1
+	@echo "Full report: $(COVERAGE_DIR)/coverage.out"
 
-# Generate coverage report (text) - excludes testutil
+# Generate detailed coverage report (per-function breakdown)
 test-cover-report:
 	@mkdir -p $(COVERAGE_DIR)
-	$(GOTEST) -coverprofile=$(COVERAGE_DIR)/coverage.out ./internal/...
+	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/coverage.out ./internal/...
 	@grep -v "internal/testutil" $(COVERAGE_DIR)/coverage.out > $(COVERAGE_DIR)/coverage.tmp && mv $(COVERAGE_DIR)/coverage.tmp $(COVERAGE_DIR)/coverage.out
-	$(GOCMD) tool cover -func=$(COVERAGE_DIR)/coverage.out
-	@echo ""
-	@echo "Coverage report saved to $(COVERAGE_DIR)/coverage.out"
-
-# Generate HTML coverage report - excludes testutil
-test-cover-html:
-	@mkdir -p $(COVERAGE_DIR)
-	$(GOTEST) -coverprofile=$(COVERAGE_DIR)/coverage.out ./internal/...
-	@grep -v "internal/testutil" $(COVERAGE_DIR)/coverage.out > $(COVERAGE_DIR)/coverage.tmp && mv $(COVERAGE_DIR)/coverage.tmp $(COVERAGE_DIR)/coverage.out
-	$(GOCMD) tool cover -html=$(COVERAGE_DIR)/coverage.out -o $(COVERAGE_DIR)/coverage.html
-	@echo "HTML coverage report: $(COVERAGE_DIR)/coverage.html"
+	@$(GOCMD) tool cover -func=$(COVERAGE_DIR)/coverage.out
 
 # Generate per-package coverage reports
 test-cover-packages:
@@ -215,8 +223,6 @@ test-cover-packages:
 	@echo "Generating per-package coverage..."
 	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/config.out $(PKG_CONFIG)
 	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/db.out $(PKG_DB)
-	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/handler.out $(PKG_HANDLER)
-	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/scheduler.out $(PKG_SCHEDULER)
 	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/validate.out $(PKG_VALIDATE)
 	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/server.out $(PKG_SERVER)
 	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/logging.out $(PKG_LOGGING)
@@ -224,6 +230,8 @@ test-cover-packages:
 	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/openapi.out $(PKG_OPENAPI)
 	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/tmpl.out $(PKG_TMPL)
 	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/ratelimit.out $(PKG_RATELIMIT)
+	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/workflow.out $(PKG_WORKFLOW)
+	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/types.out $(PKG_TYPES)
 	@echo ""
 	@echo "Per-package coverage reports saved to $(COVERAGE_DIR)/"
 
@@ -235,10 +243,14 @@ test-docs:
 # CI/CD targets
 # ============================================================================
 
-# Run full CI check (test + coverage threshold)
-ci: test-cover-report
+# Run full CI check (unit + e2e tests with coverage threshold)
+ci: test-cover
 	@echo "Checking coverage thresholds..."
 	@./scripts/check-coverage.sh $(COVERAGE_DIR)/coverage.out 70
+
+# Clear Go's test cache (forces fresh test execution)
+test-clean:
+	$(GOCMD) clean -testcache
 
 # Validate config
 validate: build
@@ -317,17 +329,16 @@ help:
 	@echo "Testing by package:"
 	@echo "  make test-config     Run config package tests"
 	@echo "  make test-db         Run db package tests"
-	@echo "  make test-handler    Run handler package tests"
-	@echo "  make test-scheduler  Run scheduler package tests"
 	@echo "  make test-validate   Run validate package tests"
 	@echo "  make test-server     Run server package tests"
 	@echo "  make test-logging    Run logging package tests"
 	@echo "  make test-metrics    Run metrics package tests"
 	@echo "  make test-openapi    Run openapi package tests"
-	@echo "  make test-webhook    Run webhook package tests"
 	@echo "  make test-cache      Run cache package tests"
 	@echo "  make test-tmpl       Run tmpl package tests"
 	@echo "  make test-ratelimit  Run ratelimit package tests"
+	@echo "  make test-workflow   Run workflow package tests"
+	@echo "  make test-types      Run types package tests"
 	@echo ""
 	@echo "Testing by type:"
 	@echo "  make test-unit        Run unit tests (internal packages)"
@@ -342,16 +353,16 @@ help:
 	@echo "  make test-bench-compare-new Compare against baseline"
 	@echo ""
 	@echo "Coverage:"
-	@echo "  make test-cover          Summary coverage for all packages"
-	@echo "  make test-cover-report   Detailed coverage report (text)"
-	@echo "  make test-cover-html     HTML coverage report"
+	@echo "  make test-cover          Run all tests (unit + e2e) with coverage"
+	@echo "  make test-cover-report   Per-function coverage breakdown"
 	@echo "  make test-cover-packages Per-package coverage files"
+	@echo "  make test-clean          Clear Go test cache"
 	@echo ""
 	@echo "Documentation:"
 	@echo "  make test-docs    Generate test documentation"
 	@echo ""
 	@echo "CI/CD:"
-	@echo "  make ci           Run tests with coverage threshold check"
+	@echo "  make ci           Run all tests with coverage threshold check"
 	@echo ""
 	@echo "Cross-compilation:"
 	@echo "  make build-linux        Linux amd64"

@@ -99,8 +99,8 @@ func TestNewSQLiteDriver_CustomSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to query busy_timeout: %v", err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(results))
+	if len(results.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(results.Rows))
 	}
 
 	// Check journal_mode
@@ -108,8 +108,8 @@ func TestNewSQLiteDriver_CustomSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to query journal_mode: %v", err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(results))
+	if len(results.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(results.Rows))
 	}
 }
 
@@ -126,14 +126,14 @@ func TestSQLiteDriver_Query_Simple(t *testing.T) {
 		t.Fatalf("query failed: %v", err)
 	}
 
-	if len(results) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(results))
+	if len(results.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(results.Rows))
 	}
-	if results[0]["num"] != int64(1) {
-		t.Errorf("expected num=1, got %v", results[0]["num"])
+	if results.Rows[0]["num"] != int64(1) {
+		t.Errorf("expected num=1, got %v", results.Rows[0]["num"])
 	}
-	if results[0]["msg"] != "hello" {
-		t.Errorf("expected msg='hello', got %v", results[0]["msg"])
+	if results.Rows[0]["msg"] != "hello" {
+		t.Errorf("expected msg='hello', got %v", results.Rows[0]["msg"])
 	}
 }
 
@@ -157,11 +157,11 @@ func TestSQLiteDriver_Query_WithParams(t *testing.T) {
 		t.Fatalf("query failed: %v", err)
 	}
 
-	if len(results) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(results))
+	if len(results.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(results.Rows))
 	}
-	if results[0]["name"] != "Bob" {
-		t.Errorf("expected Bob, got %v", results[0]["name"])
+	if results.Rows[0]["name"] != "Bob" {
+		t.Errorf("expected Bob, got %v", results.Rows[0]["name"])
 	}
 }
 
@@ -186,8 +186,8 @@ func TestSQLiteDriver_Query_NullParams(t *testing.T) {
 	}
 
 	// Should return all rows when status is NULL
-	if len(results) != 3 {
-		t.Errorf("expected 3 rows with NULL filter, got %d", len(results))
+	if len(results.Rows) != 3 {
+		t.Errorf("expected 3 rows with NULL filter, got %d", len(results.Rows))
 	}
 }
 
@@ -206,8 +206,8 @@ func TestSQLiteDriver_Query_EmptyResult(t *testing.T) {
 		t.Fatalf("query failed: %v", err)
 	}
 
-	if len(results) != 0 {
-		t.Errorf("expected 0 rows, got %d", len(results))
+	if len(results.Rows) != 0 {
+		t.Errorf("expected 0 rows, got %d", len(results.Rows))
 	}
 }
 
@@ -242,8 +242,8 @@ func TestSQLiteDriver_Query_DateTimeHandling(t *testing.T) {
 		t.Fatalf("query failed: %v", err)
 	}
 
-	if len(results) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(results))
+	if len(results.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(results.Rows))
 	}
 }
 
@@ -276,11 +276,11 @@ func TestSQLiteDriver_Query_SpecialCharacters(t *testing.T) {
 		t.Fatalf("query failed: %v", err)
 	}
 
-	if len(results) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(results))
+	if len(results.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(results.Rows))
 	}
-	if results[0]["name"] != specialChars {
-		t.Errorf("special characters not preserved: got %v", results[0]["name"])
+	if results.Rows[0]["name"] != specialChars {
+		t.Errorf("special characters not preserved: got %v", results.Rows[0]["name"])
 	}
 }
 
@@ -318,11 +318,11 @@ func TestSQLiteDriver_Query_Unicode(t *testing.T) {
 		t.Fatalf("query failed: %v", err)
 	}
 
-	if len(results) != len(unicodeNames) {
-		t.Fatalf("expected %d rows, got %d", len(unicodeNames), len(results))
+	if len(results.Rows) != len(unicodeNames) {
+		t.Fatalf("expected %d rows, got %d", len(unicodeNames), len(results.Rows))
 	}
 
-	for i, result := range results {
+	for i, result := range results.Rows {
 		if result["name"] != unicodeNames[i] {
 			t.Errorf("unicode not preserved at row %d: expected %q, got %q", i, unicodeNames[i], result["name"])
 		}
@@ -362,7 +362,7 @@ func TestSQLiteDriver_Query_LargeResult(t *testing.T) {
 		t.Fatalf("count query failed: %v", err)
 	}
 
-	cnt := results[0]["cnt"].(int64)
+	cnt := results.Rows[0]["cnt"].(int64)
 	if cnt != int64(rowCount) {
 		t.Errorf("expected %d rows, got %d", rowCount, cnt)
 	}
@@ -538,6 +538,124 @@ func TestSQLiteDriver_TranslateQuery(t *testing.T) {
 				t.Errorf("expected %d args, got %d", tt.wantArgs, len(args))
 			}
 		})
+	}
+}
+
+// TestIsWriteQuery tests the SQL statement type detection
+func TestIsWriteQuery(t *testing.T) {
+	tests := []struct {
+		sql      string
+		expected bool
+	}{
+		// Write operations
+		{"INSERT INTO users (name) VALUES ('Alice')", true},
+		{"  INSERT INTO users (name) VALUES ('Alice')", true}, // Leading whitespace
+		{"UPDATE users SET name = 'Bob'", true},
+		{"DELETE FROM users WHERE id = 1", true},
+		{"CREATE TABLE test (id INT)", true},
+		{"DROP TABLE test", true},
+		{"ALTER TABLE test ADD col INT", true},
+		{"TRUNCATE TABLE test", true},
+		{"MERGE INTO target USING source ON ...", true},
+		{"insert into users (name) values ('alice')", true}, // Lowercase
+
+		// Read operations
+		{"SELECT * FROM users", false},
+		{"  SELECT * FROM users", false}, // Leading whitespace
+		{"select * from users", false},   // Lowercase
+		{"WITH cte AS (SELECT 1) SELECT * FROM cte", false},
+
+		// CTEs with write operations
+		{"WITH cte AS (SELECT 1) INSERT INTO users SELECT * FROM cte", true},
+		{"WITH updates AS (SELECT id FROM users) UPDATE users SET status = 'done' WHERE id IN (SELECT id FROM updates)", true},
+		{"WITH to_delete AS (SELECT id FROM old_users) DELETE FROM users WHERE id IN (SELECT id FROM to_delete)", true},
+		{"with cte as (select 1) insert into t values (1)", true}, // Lowercase CTE with write
+
+		// Edge cases
+		{"", false},
+		{"   ", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.sql, func(t *testing.T) {
+			got := IsWriteQuery(tt.sql)
+			if got != tt.expected {
+				t.Errorf("IsWriteQuery(%q) = %v, want %v", tt.sql, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestSQLiteDriver_WriteOperations_RowsAffected tests that write operations return correct rows affected
+func TestSQLiteDriver_WriteOperations_RowsAffected(t *testing.T) {
+	driver := createTestSQLiteDriver(t)
+	defer driver.Close()
+
+	ctx := context.Background()
+	sessCfg := config.SessionConfig{}
+
+	// Create a test table
+	result, err := driver.Query(ctx, sessCfg, `
+		CREATE TABLE test_rows (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL
+		)
+	`, nil)
+	if err != nil {
+		t.Fatalf("failed to create table: %v", err)
+	}
+	// CREATE TABLE returns 0 rows affected
+	if result.RowsAffected != 0 {
+		t.Errorf("CREATE TABLE RowsAffected = %d, want 0", result.RowsAffected)
+	}
+
+	// Insert multiple rows
+	result, err = driver.Query(ctx, sessCfg, `
+		INSERT INTO test_rows (name) VALUES ('Alice'), ('Bob'), ('Charlie')
+	`, nil)
+	if err != nil {
+		t.Fatalf("failed to insert: %v", err)
+	}
+	if result.RowsAffected != 3 {
+		t.Errorf("INSERT RowsAffected = %d, want 3", result.RowsAffected)
+	}
+	if len(result.Rows) != 0 {
+		t.Errorf("INSERT should return no rows, got %d", len(result.Rows))
+	}
+
+	// Update some rows
+	result, err = driver.Query(ctx, sessCfg, `
+		UPDATE test_rows SET name = 'Updated' WHERE id <= 2
+	`, nil)
+	if err != nil {
+		t.Fatalf("failed to update: %v", err)
+	}
+	if result.RowsAffected != 2 {
+		t.Errorf("UPDATE RowsAffected = %d, want 2", result.RowsAffected)
+	}
+
+	// Delete one row
+	result, err = driver.Query(ctx, sessCfg, `
+		DELETE FROM test_rows WHERE id = 1
+	`, nil)
+	if err != nil {
+		t.Fatalf("failed to delete: %v", err)
+	}
+	if result.RowsAffected != 1 {
+		t.Errorf("DELETE RowsAffected = %d, want 1", result.RowsAffected)
+	}
+
+	// Verify SELECT still works and returns rows (not rows affected)
+	result, err = driver.Query(ctx, sessCfg, `SELECT * FROM test_rows`, nil)
+	if err != nil {
+		t.Fatalf("failed to select: %v", err)
+	}
+	if len(result.Rows) != 2 {
+		t.Errorf("SELECT should return 2 rows, got %d", len(result.Rows))
+	}
+	// SELECT shouldn't populate RowsAffected
+	if result.RowsAffected != 0 {
+		t.Errorf("SELECT RowsAffected = %d, want 0", result.RowsAffected)
 	}
 }
 

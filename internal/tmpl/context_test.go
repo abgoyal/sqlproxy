@@ -124,11 +124,11 @@ func TestContextBuilder_ResolveClientIP_WithProxy(t *testing.T) {
 	b := NewContextBuilder(true, "test")
 
 	tests := []struct {
-		name     string
-		xff      string
-		xri      string
-		remote   string
-		wantIP   string
+		name   string
+		xff    string
+		xri    string
+		remote string
+		wantIP string
 	}{
 		{
 			name:   "X-Forwarded-For single",

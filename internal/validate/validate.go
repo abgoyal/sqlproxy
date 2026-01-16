@@ -3,18 +3,13 @@ package validate
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
-	"text/template"
 	"time"
 
-	"github.com/robfig/cron/v3"
-
-	"sql-proxy/internal/cache"
 	"sql-proxy/internal/config"
 	"sql-proxy/internal/db"
 	"sql-proxy/internal/tmpl"
-	"sql-proxy/internal/webhook"
+	"sql-proxy/internal/workflow"
 )
 
 // Result holds validation results
@@ -43,7 +38,13 @@ func Run(cfg *config.Config) *Result {
 	validateLogging(cfg, r)
 	validateDebug(cfg, r)
 	validateRateLimits(cfg, r)
-	validateQueries(cfg, r)
+
+	// Validate workflows
+	if len(cfg.Workflows) == 0 {
+		r.addWarning("No workflows configured - service will have no endpoints")
+	} else {
+		validateWorkflows(cfg, r)
+	}
 
 	// If format is valid, test database connections
 	if r.Valid {
@@ -110,18 +111,18 @@ func validateDatabase(cfg *config.Config, r *Result) {
 		}
 		names[dbCfg.Name] = true
 
-		// Validate database type (default to sqlserver)
-		dbType := dbCfg.Type
-		if dbType == "" {
-			dbType = "sqlserver"
+		// Validate database type
+		if dbCfg.Type == "" {
+			r.addError("%s: type is required (must be sqlserver or sqlite)", prefix)
+			continue
 		}
-		if !config.ValidDatabaseTypes[dbType] {
+		if !config.ValidDatabaseTypes[dbCfg.Type] {
 			r.addError("%s: invalid type '%s' (must be sqlserver or sqlite)", prefix, dbCfg.Type)
 			continue
 		}
 
 		// Type-specific validation
-		switch dbType {
+		switch dbCfg.Type {
 		case "sqlserver":
 			if dbCfg.Host == "" {
 				r.addError("%s: host is required for sqlserver", prefix)
@@ -270,426 +271,6 @@ func validateRateLimits(cfg *config.Config, r *Result) {
 	}
 }
 
-func validateQueries(cfg *config.Config, r *Result) {
-	if len(cfg.Queries) == 0 {
-		r.addWarning("No queries configured - service will have no endpoints")
-		return
-	}
-
-	// Build map of database names and their read-only status
-	dbNames := make(map[string]bool) // name -> isReadOnly
-	for _, dbCfg := range cfg.Databases {
-		dbNames[dbCfg.Name] = dbCfg.IsReadOnly()
-	}
-
-	// Build map of rate limit pool names for validation
-	rateLimitPools := make(map[string]bool)
-	for _, pool := range cfg.RateLimits {
-		if pool.Name != "" {
-			rateLimitPools[pool.Name] = true
-		}
-	}
-
-	// Track which databases are used
-	usedDatabases := make(map[string]bool)
-
-	paths := make(map[string]string)
-	names := make(map[string]bool)
-
-	for i, q := range cfg.Queries {
-		prefix := fmt.Sprintf("queries[%d] (%s)", i, q.Name)
-
-		if q.Name == "" {
-			r.addError("queries[%d]: name is required", i)
-			continue
-		}
-
-		if names[q.Name] {
-			r.addError("%s: duplicate query name", prefix)
-		}
-		names[q.Name] = true
-
-		// Validate database connection reference
-		if q.Database == "" {
-			r.addError("%s: database is required", prefix)
-			continue
-		}
-		isReadOnly, dbExists := dbNames[q.Database]
-		if !dbExists {
-			r.addError("%s: references unknown database '%s'", prefix, q.Database)
-		} else {
-			usedDatabases[q.Database] = true
-		}
-
-		// Warn if query has neither HTTP endpoint nor schedule
-		if q.Path == "" && q.Schedule == nil {
-			r.addWarning("%s: has neither path nor schedule - query is unreachable", prefix)
-		}
-
-		// Validate HTTP endpoint settings (only if path is set)
-		if q.Path != "" {
-			if existing, ok := paths[q.Path]; ok {
-				r.addError("%s: path '%s' already used by '%s'", prefix, q.Path, existing)
-			}
-			paths[q.Path] = q.Name
-
-			if !strings.HasPrefix(q.Path, "/") {
-				r.addError("%s: path must start with '/'", prefix)
-			}
-
-			// /_/ prefix is reserved for internal endpoints
-			if strings.HasPrefix(q.Path, "/_/") {
-				r.addError("%s: path cannot start with '/_/' (reserved for internal endpoints)", prefix)
-			}
-
-			if q.Method != "GET" && q.Method != "POST" {
-				r.addError("%s: method must be GET or POST", prefix)
-			}
-		}
-
-		if strings.TrimSpace(q.SQL) == "" {
-			r.addError("%s: SQL is empty", prefix)
-		}
-
-		// Check for write operations
-		sqlUpper := strings.ToUpper(q.SQL)
-		writeKeywords := []string{"INSERT ", "UPDATE ", "DELETE ", "DROP ", "TRUNCATE ", "ALTER ", "CREATE ", "EXEC "}
-		for _, kw := range writeKeywords {
-			if strings.Contains(sqlUpper, kw) {
-				if dbExists && isReadOnly {
-					// Error: write query on read-only connection
-					r.addError("%s: SQL contains %s but database '%s' is read-only", prefix, strings.TrimSpace(kw), q.Database)
-				} else if dbExists && !isReadOnly {
-					// Info: write operation on write-enabled connection (just note it)
-					// No warning - this is intentional
-				} else {
-					// Database doesn't exist, already errored above - just warn about write
-					r.addWarning("%s: SQL contains %s", prefix, strings.TrimSpace(kw))
-				}
-				break // Only report first write keyword found
-			}
-		}
-
-		// Check SQL params match config params
-		validateParams(q, prefix, r)
-
-		// Validate timeout
-		if q.TimeoutSec < 0 {
-			r.addError("%s: timeout_sec cannot be negative", prefix)
-		}
-
-		// Validate session settings if specified
-		if q.Isolation != "" && !config.ValidIsolationLevels[q.Isolation] {
-			r.addError("%s: invalid isolation level '%s'", prefix, q.Isolation)
-		}
-		if q.DeadlockPriority != "" && !config.ValidDeadlockPriorities[q.DeadlockPriority] {
-			r.addError("%s: invalid deadlock_priority '%s'", prefix, q.DeadlockPriority)
-		}
-		if q.LockTimeoutMs != nil && *q.LockTimeoutMs < 0 {
-			r.addError("%s: lock_timeout_ms cannot be negative", prefix)
-		}
-
-		// Validate schedule if present
-		if q.Schedule != nil {
-			validateSchedule(q, prefix, r)
-		}
-
-		// Validate cache if present
-		if q.Cache != nil {
-			validateCache(q.Cache, q.Parameters, prefix, r)
-		}
-
-		// Validate json_columns if present
-		if len(q.JSONColumns) > 0 {
-			validateJSONColumns(q.JSONColumns, prefix, r)
-		}
-
-		// Validate rate limits if present
-		if len(q.RateLimit) > 0 {
-			validateQueryRateLimits(q.RateLimit, rateLimitPools, prefix, r)
-		}
-	}
-
-	// Warn about unused database connections
-	for name := range dbNames {
-		if !usedDatabases[name] {
-			r.addWarning("Database '%s' is configured but not used by any query", name)
-		}
-	}
-}
-
-func validateParams(q config.QueryConfig, prefix string, r *Result) {
-	// Find @params in SQL using shared regex from db package
-	matches := db.ParamRegex.FindAllStringSubmatch(q.SQL, -1)
-
-	sqlParams := make(map[string]bool)
-	for _, m := range matches {
-		sqlParams[m[1]] = true
-	}
-
-	configParams := make(map[string]bool)
-	for _, p := range q.Parameters {
-		configParams[p.Name] = true
-
-		if p.Name == "_timeout" {
-			r.addError("%s: '_timeout' is a reserved parameter name", prefix)
-		}
-		if p.Name == "_nocache" {
-			r.addError("%s: '_nocache' is a reserved parameter name", prefix)
-		}
-
-		// Validate parameter type
-		paramType := strings.ToLower(p.Type)
-		if paramType == "" {
-			paramType = "string" // Default type
-		}
-		if !config.ValidParameterTypes[paramType] {
-			r.addError("%s: parameter '%s' has invalid type '%s'", prefix, p.Name, p.Type)
-		}
-	}
-
-	// Warn about mismatches
-	for name := range sqlParams {
-		if !configParams[name] {
-			r.addWarning("%s: SQL references @%s but no parameter definition found", prefix, name)
-		}
-	}
-	for name := range configParams {
-		if !sqlParams[name] {
-			r.addWarning("%s: parameter '%s' defined but not used in SQL", prefix, name)
-		}
-	}
-}
-
-func validateSchedule(q config.QueryConfig, prefix string, r *Result) {
-	sched := q.Schedule
-
-	// Validate cron expression
-	if sched.Cron == "" {
-		r.addError("%s: schedule.cron is required", prefix)
-	} else {
-		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-		if _, err := parser.Parse(sched.Cron); err != nil {
-			r.addError("%s: invalid cron expression '%s': %v", prefix, sched.Cron, err)
-		}
-	}
-
-	// Check that required params have values in schedule.params
-	for _, p := range q.Parameters {
-		if p.Required {
-			if _, ok := sched.Params[p.Name]; !ok {
-				// Check if there's a default value
-				if p.Default == "" {
-					r.addError("%s: required parameter '%s' must have a value in schedule.params", prefix, p.Name)
-				}
-			}
-		}
-	}
-
-	// Validate dynamic date values
-	validDynamicDates := map[string]bool{
-		"now": true, "today": true, "yesterday": true, "tomorrow": true,
-	}
-	for name, value := range sched.Params {
-		// Check if it looks like a dynamic date but is misspelled
-		lower := strings.ToLower(value)
-		if strings.HasPrefix(lower, "to") || strings.HasPrefix(lower, "yes") || lower == "now" {
-			if !validDynamicDates[lower] && validDynamicDates[strings.ToLower(value)] == false {
-				// It might be a typo - only warn if it's close to a valid value
-				for valid := range validDynamicDates {
-					if strings.HasPrefix(lower, valid[:2]) && lower != valid {
-						r.addWarning("%s: schedule.params.%s value '%s' looks like a typo for '%s'", prefix, name, value, valid)
-						break
-					}
-				}
-			}
-		}
-	}
-
-	// Validate webhook if present
-	if sched.Webhook != nil {
-		validateWebhook(sched.Webhook, prefix, r)
-	}
-}
-
-func validateWebhook(w *config.WebhookConfig, prefix string, r *Result) {
-	webhookPrefix := prefix + ".webhook"
-
-	// URL is required
-	if w.URL == "" {
-		r.addError("%s: url is required", webhookPrefix)
-	}
-
-	// Validate method if specified
-	if w.Method != "" {
-		validMethods := map[string]bool{"GET": true, "POST": true, "PUT": true, "PATCH": true}
-		if !validMethods[strings.ToUpper(w.Method)] {
-			r.addError("%s: method must be GET, POST, PUT, or PATCH", webhookPrefix)
-		}
-	}
-
-	// Validate body config if present
-	if w.Body != nil {
-		validateWebhookBody(w.Body, webhookPrefix, r)
-	}
-}
-
-func validateWebhookBody(b *config.WebhookBodyConfig, prefix string, r *Result) {
-	bodyPrefix := prefix + ".body"
-
-	// Validate on_empty if specified
-	if b.OnEmpty != "" && b.OnEmpty != "send" && b.OnEmpty != "skip" {
-		r.addError("%s: on_empty must be 'send' or 'skip'", bodyPrefix)
-	}
-
-	// If empty template is provided, it implies on_empty: send
-	if b.Empty != "" && b.OnEmpty == "skip" {
-		r.addWarning("%s: 'empty' template is ignored when on_empty is 'skip'", bodyPrefix)
-	}
-
-	// Validate templates parse correctly (basic syntax check)
-	templates := map[string]string{
-		"header": b.Header,
-		"item":   b.Item,
-		"footer": b.Footer,
-		"empty":  b.Empty,
-	}
-	for name, tmpl := range templates {
-		if tmpl != "" {
-			if err := validateTemplate(tmpl); err != nil {
-				r.addError("%s.%s: invalid template: %v", bodyPrefix, name, err)
-			}
-		}
-	}
-}
-
-func validateTemplate(tmpl string) error {
-	_, err := template.New("").Funcs(webhook.TemplateFuncMap).Parse(tmpl)
-	return err
-}
-
-func validateJSONColumns(columns []string, prefix string, r *Result) {
-	seen := make(map[string]bool)
-	for _, col := range columns {
-		if col == "" {
-			r.addError("%s: json_columns contains empty column name", prefix)
-			continue
-		}
-		if seen[col] {
-			r.addWarning("%s: json_columns contains duplicate column '%s'", prefix, col)
-		}
-		seen[col] = true
-	}
-}
-
-func validateQueryRateLimits(limits []config.QueryRateLimitConfig, pools map[string]bool, prefix string, r *Result) {
-	tmplEngine := tmpl.New()
-
-	for i, limit := range limits {
-		limitPrefix := fmt.Sprintf("%s.rate_limit[%d]", prefix, i)
-
-		// Check for mutually exclusive settings
-		if limit.IsPoolReference() && limit.IsInline() {
-			r.addError("%s: cannot specify both 'pool' and inline rate limit settings (requests_per_second/burst/key)", limitPrefix)
-			continue
-		}
-
-		if !limit.IsPoolReference() && !limit.IsInline() {
-			// Check for partial inline config to give better error message
-			if limit.RequestsPerSecond > 0 || limit.Burst > 0 || limit.Key != "" {
-				r.addError("%s: incomplete inline rate limit - both requests_per_second and burst must be positive", limitPrefix)
-			} else {
-				r.addError("%s: must specify either 'pool' or inline rate limit settings", limitPrefix)
-			}
-			continue
-		}
-
-		if limit.IsPoolReference() {
-			// Validate pool reference
-			if !pools[limit.Pool] {
-				r.addError("%s: references unknown rate limit pool '%s'", limitPrefix, limit.Pool)
-			}
-		} else {
-			// Validate inline settings
-			if limit.RequestsPerSecond <= 0 {
-				r.addError("%s: requests_per_second must be positive", limitPrefix)
-			}
-			if limit.Burst <= 0 {
-				r.addError("%s: burst must be positive", limitPrefix)
-			}
-			// Key is optional - defaults to {{.ClientIP}} at runtime
-			if limit.Key != "" {
-				// Validate key template syntax if provided
-				if err := tmplEngine.Validate(limit.Key, tmpl.UsagePreQuery); err != nil {
-					r.addError("%s: invalid key template: %v", limitPrefix, err)
-				}
-			}
-		}
-	}
-}
-
-// cacheKeyFieldRegex matches template field references like {{.fieldName}} or {{.fieldName | ...}}
-var cacheKeyFieldRegex = regexp.MustCompile(`\{\{\s*\.([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:\||\}\})`)
-
-func validateCache(c *config.QueryCacheConfig, params []config.ParamConfig, prefix string, r *Result) {
-	cachePrefix := prefix + ".cache"
-
-	if !c.Enabled {
-		return // Skip validation for disabled cache
-	}
-
-	// Key template is required when cache is enabled
-	if c.Key == "" {
-		r.addError("%s: key template is required when cache is enabled", cachePrefix)
-	} else {
-		// Validate key template syntax using same FuncMap as cache package
-		if _, err := template.New("").Funcs(cache.KeyFuncMap).Parse(c.Key); err != nil {
-			r.addError("%s: invalid key template: %v", cachePrefix, err)
-		} else {
-			// Check that template field references match defined parameters
-			validateCacheKeyParams(c.Key, params, cachePrefix, r)
-		}
-	}
-
-	// Validate TTL
-	if c.TTLSec < 0 {
-		r.addError("%s: ttl_sec cannot be negative", cachePrefix)
-	}
-
-	// Validate max size
-	if c.MaxSizeMB < 0 {
-		r.addError("%s: max_size_mb cannot be negative", cachePrefix)
-	}
-
-	// Validate evict_cron if specified
-	if c.EvictCron != "" {
-		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-		if _, err := parser.Parse(c.EvictCron); err != nil {
-			r.addError("%s: invalid evict_cron expression '%s': %v", cachePrefix, c.EvictCron, err)
-		}
-	}
-}
-
-// validateCacheKeyParams checks that all field references in a cache key template
-// correspond to defined query parameters.
-func validateCacheKeyParams(keyTmpl string, params []config.ParamConfig, prefix string, r *Result) {
-	// Build set of defined parameter names
-	paramNames := make(map[string]bool)
-	for _, p := range params {
-		paramNames[p.Name] = true
-	}
-
-	// Find all field references in the template
-	matches := cacheKeyFieldRegex.FindAllStringSubmatch(keyTmpl, -1)
-	for _, m := range matches {
-		fieldName := m[1]
-		if !paramNames[fieldName] {
-			r.addWarning("%s: key template references '{{.%s}}' but no parameter '%s' is defined",
-				prefix, fieldName, fieldName)
-		}
-	}
-}
-
 func testDBConnections(cfg *config.Config, r *Result) {
 	for _, dbCfg := range cfg.Databases {
 		// Determine database type (default to sqlserver)
@@ -721,6 +302,36 @@ func testDBConnections(cfg *config.Config, r *Result) {
 
 		if err != nil {
 			r.addError("databases[%s]: ping failed: %v", dbCfg.Name, err)
+		}
+	}
+}
+
+func validateWorkflows(cfg *config.Config, r *Result) {
+	// Build validation context for workflows
+	databases := make(map[string]bool)
+	for _, dbCfg := range cfg.Databases {
+		databases[dbCfg.Name] = dbCfg.IsReadOnly()
+	}
+	rateLimitPools := make(map[string]bool)
+	for _, rl := range cfg.RateLimits {
+		rateLimitPools[rl.Name] = true
+	}
+	validationCtx := &workflow.ValidationContext{
+		Databases:      databases,
+		RateLimitPools: rateLimitPools,
+	}
+
+	// Validate each workflow
+	for i, wfCfg := range cfg.Workflows {
+		wfCfgCopy := wfCfg // Copy to avoid closure issues
+		result := workflow.Validate(&wfCfgCopy, validationCtx)
+
+		// Add workflow validation errors to our result
+		for _, err := range result.Errors {
+			r.addError("workflows[%d]: %s", i, err)
+		}
+		for _, warning := range result.Warnings {
+			r.addWarning("workflows[%d]: %s", i, warning)
 		}
 	}
 }

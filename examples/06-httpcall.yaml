@@ -1,0 +1,413 @@
+# HTTP Call Steps (External API Integration)
+# Demonstrates: webhooks, external APIs, retries, response parsing
+
+server:
+  host: "127.0.0.1"
+  port: 8080
+  default_timeout_sec: 30
+  max_timeout_sec: 300
+
+databases:
+  - name: "main"
+    type: "sqlite"
+    path: ":memory:"
+
+logging:
+  level: "info"
+  file_path: ""
+  max_size_mb: 100
+  max_backups: 5
+  max_age_days: 30
+
+metrics:
+  enabled: true
+
+workflows:
+  # ============================================================================
+  # BASIC HTTP CALLS
+  # ============================================================================
+
+  # Simple GET request
+  - name: "fetch_external"
+    triggers:
+      - type: http
+        path: "/api/external"
+        method: GET
+    steps:
+      - name: fetch
+        type: httpcall
+        url: "https://httpbin.org/get"
+        http_method: GET
+        parse: "json"
+      - type: response
+        template: |
+          {"external_data": {{json .steps.fetch.data}}, "status": {{.steps.fetch.status_code}}}
+
+  # GET with custom headers
+  - name: "fetch_with_headers"
+    triggers:
+      - type: http
+        path: "/api/external/headers"
+        method: GET
+    steps:
+      - name: fetch
+        type: httpcall
+        url: "https://httpbin.org/headers"
+        http_method: GET
+        headers:
+          Accept: "application/json"
+          X-Custom-Header: "custom-value"
+          X-Request-ID: "{{.workflow.request_id}}"
+        parse: "json"
+      - type: response
+        template: |
+          {"headers_sent": {{json .steps.fetch.data}}}
+
+  # GET with dynamic URL from parameters
+  - name: "proxy_request"
+    triggers:
+      - type: http
+        path: "/api/proxy"
+        method: GET
+        parameters:
+          - name: "target_url"
+            type: "string"
+            required: true
+    steps:
+      - name: proxy
+        type: httpcall
+        url: "{{.trigger.params.target_url}}"
+        http_method: GET
+        parse: "json"
+        timeout_sec: 30
+      - type: response
+        template: |
+          {"proxied_status": {{.steps.proxy.status_code}}, "data": {{json .steps.proxy.data}}}
+
+  # ============================================================================
+  # POST REQUESTS
+  # ============================================================================
+
+  # Simple POST with JSON body
+  - name: "post_data"
+    triggers:
+      - type: http
+        path: "/api/post"
+        method: POST
+        parameters:
+          - name: "message"
+            type: "string"
+            required: true
+    steps:
+      - name: post
+        type: httpcall
+        url: "https://httpbin.org/post"
+        http_method: POST
+        headers:
+          Content-Type: "application/json"
+        body: |
+          {"message": "{{.trigger.params.message}}", "timestamp": "{{.workflow.start_time}}"}
+        parse: "json"
+      - type: response
+        template: |
+          {"posted": true, "response": {{json .steps.post.data}}}
+
+  # POST with JSON object from parameter
+  - name: "post_json_object"
+    triggers:
+      - type: http
+        path: "/api/post/json"
+        method: POST
+        parameters:
+          - name: "payload"
+            type: "json"
+            required: true
+    steps:
+      - name: post
+        type: httpcall
+        url: "https://httpbin.org/post"
+        http_method: POST
+        headers:
+          Content-Type: "application/json"
+        body: "{{json .trigger.params.payload}}"
+        parse: "json"
+      - type: response
+        template: |
+          {"posted": true, "response": {{json .steps.post.data}}}
+
+  # ============================================================================
+  # OTHER HTTP METHODS
+  # ============================================================================
+
+  # PUT request
+  - name: "update_resource"
+    triggers:
+      - type: http
+        path: "/api/update"
+        method: PUT
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+          - name: "data"
+            type: "json"
+            required: true
+    steps:
+      - name: update
+        type: httpcall
+        url: "https://httpbin.org/put"
+        http_method: PUT
+        headers:
+          Content-Type: "application/json"
+        body: |
+          {"id": {{.trigger.params.id}}, "data": {{json .trigger.params.data}}}
+        parse: "json"
+      - type: response
+        template: |
+          {"updated": true, "response": {{json .steps.update.data}}}
+
+  # PATCH request
+  - name: "patch_resource"
+    triggers:
+      - type: http
+        path: "/api/patch"
+        method: PATCH
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+          - name: "updates"
+            type: "json"
+            required: true
+    steps:
+      - name: patch
+        type: httpcall
+        url: "https://httpbin.org/patch"
+        http_method: PATCH
+        headers:
+          Content-Type: "application/json"
+        body: |
+          {"id": {{.trigger.params.id}}, "updates": {{json .trigger.params.updates}}}
+        parse: "json"
+      - type: response
+        template: |
+          {"patched": true, "response": {{json .steps.patch.data}}}
+
+  # DELETE request
+  - name: "delete_resource"
+    triggers:
+      - type: http
+        path: "/api/delete"
+        method: DELETE
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    steps:
+      - name: delete
+        type: httpcall
+        url: "https://httpbin.org/delete"
+        http_method: DELETE
+        headers:
+          X-Resource-ID: "{{.trigger.params.id}}"
+        parse: "json"
+      - type: response
+        template: |
+          {"deleted": true, "response": {{json .steps.delete.data}}}
+
+  # ============================================================================
+  # RESPONSE PARSING
+  # ============================================================================
+
+  # Parse as JSON (default)
+  - name: "parse_json"
+    triggers:
+      - type: http
+        path: "/api/parse/json"
+        method: GET
+    steps:
+      - name: fetch
+        type: httpcall
+        url: "https://httpbin.org/json"
+        http_method: GET
+        parse: "json"  # Default
+      - type: response
+        template: |
+          {"parsed_json": {{json .steps.fetch.data}}}
+
+  # Parse as text (raw string)
+  - name: "parse_text"
+    triggers:
+      - type: http
+        path: "/api/parse/text"
+        method: GET
+    steps:
+      - name: fetch
+        type: httpcall
+        url: "https://httpbin.org/robots.txt"
+        http_method: GET
+        parse: "text"
+      - type: response
+        template: |
+          {"raw_text": "{{.steps.fetch.body}}"}
+
+  # ============================================================================
+  # RETRY CONFIGURATION
+  # ============================================================================
+
+  # Basic retry
+  - name: "retry_basic"
+    triggers:
+      - type: http
+        path: "/api/retry"
+        method: GET
+    steps:
+      - name: fetch
+        type: httpcall
+        url: "https://httpbin.org/status/500"  # Will fail
+        http_method: GET
+        parse: "json"
+        retry:
+          enabled: true
+          max_attempts: 3
+          initial_backoff_sec: 1
+          max_backoff_sec: 10
+        on_error: continue  # Don't abort workflow on failure
+      - type: response
+        template: |
+          {"attempted": true, "final_status": {{.steps.fetch.status_code}}}
+
+  # Aggressive retry for critical calls
+  - name: "retry_aggressive"
+    triggers:
+      - type: http
+        path: "/api/retry/aggressive"
+        method: POST
+        parameters:
+          - name: "data"
+            type: "json"
+            required: true
+    steps:
+      - name: critical_post
+        type: httpcall
+        url: "https://httpbin.org/post"
+        http_method: POST
+        headers:
+          Content-Type: "application/json"
+        body: "{{json .trigger.params.data}}"
+        parse: "json"
+        timeout_sec: 60
+        retry:
+          enabled: true
+          max_attempts: 5
+          initial_backoff_sec: 2
+          max_backoff_sec: 60
+      - type: response
+        template: |
+          {"success": {{.steps.critical_post.success}}, "attempts_made": true}
+
+  # ============================================================================
+  # WEBHOOKS (SCHEDULED HTTPCALLS)
+  # ============================================================================
+
+  # Basic webhook from cron
+  - name: "scheduled_webhook"
+    triggers:
+      - type: cron
+        schedule: "*/15 * * * *"  # Every 15 minutes
+    steps:
+      - name: data
+        type: query
+        database: "main"
+        sql: "SELECT datetime('now') AS timestamp, 42 AS count"
+      - name: notify
+        type: httpcall
+        url: "https://webhook.example.com/notify"
+        http_method: POST
+        headers:
+          Content-Type: "application/json"
+          X-Webhook-Secret: "secret-key"
+        body: |
+          {"source": "sql-proxy", "data": {{json .steps.data.data}}}
+        parse: "json"
+
+  # Conditional webhook (only on data)
+  - name: "conditional_webhook"
+    conditions:
+      has_alerts: "steps.check.count > 0"
+    triggers:
+      - type: cron
+        schedule: "*/5 * * * *"
+    steps:
+      - name: check
+        type: query
+        database: "main"
+        sql: "SELECT 'alert' AS type WHERE 1=0"  # Empty for demo
+      - name: alert
+        type: httpcall
+        condition: "has_alerts"  # Only call if there are alerts
+        url: "https://alerts.example.com/notify"
+        http_method: POST
+        body: |
+          {"alerts": {{json .steps.check.data}}}
+
+  # ============================================================================
+  # CHAINED HTTP CALLS
+  # ============================================================================
+
+  # Use result from one call in another
+  - name: "chained_calls"
+    triggers:
+      - type: http
+        path: "/api/chained"
+        method: GET
+    steps:
+      # First call: get a token or ID
+      - name: get_token
+        type: httpcall
+        url: "https://httpbin.org/uuid"
+        http_method: GET
+        parse: "json"
+
+      # Second call: use the result
+      - name: use_token
+        type: httpcall
+        url: "https://httpbin.org/post"
+        http_method: POST
+        headers:
+          Content-Type: "application/json"
+        body: |
+          {"token": {{json .steps.get_token.data}}}
+        parse: "json"
+
+      - type: response
+        template: |
+          {"token_response": {{json .steps.get_token.data}}, "final_response": {{json .steps.use_token.data}}}
+
+  # ============================================================================
+  # COMBINED QUERY + HTTPCALL
+  # ============================================================================
+
+  # Query database, then POST results to external API
+  - name: "query_and_post"
+    triggers:
+      - type: http
+        path: "/api/export"
+        method: POST
+    steps:
+      - name: fetch_data
+        type: query
+        database: "main"
+        sql: "SELECT 1 AS id, 'data' AS value UNION ALL SELECT 2, 'more data'"
+      - name: export
+        type: httpcall
+        url: "https://httpbin.org/post"
+        http_method: POST
+        headers:
+          Content-Type: "application/json"
+        body: |
+          {"count": {{.steps.fetch_data.count}}, "data": {{json .steps.fetch_data.data}}}
+        parse: "json"
+      - type: response
+        template: |
+          {"exported_count": {{.steps.fetch_data.count}}, "external_response": {{json .steps.export.data}}}

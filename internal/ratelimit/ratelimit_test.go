@@ -127,7 +127,7 @@ func TestAllow_NoLimits(t *testing.T) {
 		t.Error("expected allowed with no limits")
 	}
 
-	allowed, _, err = l.Allow([]config.QueryRateLimitConfig{}, ctx)
+	allowed, _, err = l.Allow([]config.RateLimitConfig{}, ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestAllow_NamedPool(t *testing.T) {
 	}
 
 	ctx := &tmpl.Context{ClientIP: "192.168.1.1"}
-	limits := []config.QueryRateLimitConfig{
+	limits := []config.RateLimitConfig{
 		{Pool: "strict"},
 	}
 
@@ -183,7 +183,7 @@ func TestAllow_InlineConfig(t *testing.T) {
 	}
 
 	ctx := &tmpl.Context{ClientIP: "192.168.1.1"}
-	limits := []config.QueryRateLimitConfig{
+	limits := []config.RateLimitConfig{
 		{RequestsPerSecond: 1, Burst: 1, Key: "{{.ClientIP}}"},
 	}
 
@@ -220,7 +220,7 @@ func TestAllow_MultiplePools(t *testing.T) {
 	ctx := &tmpl.Context{ClientIP: "192.168.1.1"}
 
 	// Both pools must pass
-	limits := []config.QueryRateLimitConfig{
+	limits := []config.RateLimitConfig{
 		{Pool: "pool1"},
 		{Pool: "pool2"},
 	}
@@ -254,7 +254,7 @@ func TestAllow_DifferentClients(t *testing.T) {
 		t.Fatalf("failed to create limiter: %v", err)
 	}
 
-	limits := []config.QueryRateLimitConfig{
+	limits := []config.RateLimitConfig{
 		{Pool: "default"},
 	}
 
@@ -299,7 +299,7 @@ func TestAllow_HeaderBasedKey(t *testing.T) {
 		t.Fatalf("failed to create limiter: %v", err)
 	}
 
-	limits := []config.QueryRateLimitConfig{
+	limits := []config.RateLimitConfig{
 		{Pool: "api"},
 	}
 
@@ -350,7 +350,7 @@ func TestAllow_MissingTemplateData(t *testing.T) {
 		t.Fatalf("failed to create limiter: %v", err)
 	}
 
-	limits := []config.QueryRateLimitConfig{
+	limits := []config.RateLimitConfig{
 		{Pool: "api"},
 	}
 
@@ -373,7 +373,7 @@ func TestAllow_NonexistentPool(t *testing.T) {
 	}
 
 	ctx := &tmpl.Context{ClientIP: "192.168.1.1"}
-	limits := []config.QueryRateLimitConfig{
+	limits := []config.RateLimitConfig{
 		{Pool: "nonexistent"},
 	}
 
@@ -394,7 +394,7 @@ func TestMetrics(t *testing.T) {
 	}
 
 	ctx := &tmpl.Context{ClientIP: "192.168.1.1"}
-	limits := []config.QueryRateLimitConfig{
+	limits := []config.RateLimitConfig{
 		{Pool: "default"},
 	}
 
@@ -437,7 +437,7 @@ func TestMetrics_InlinePool(t *testing.T) {
 
 	ctx := &tmpl.Context{ClientIP: "192.168.1.1"}
 	// Inline rate limit config
-	limits := []config.QueryRateLimitConfig{
+	limits := []config.RateLimitConfig{
 		{RequestsPerSecond: 1, Burst: 2, Key: "{{.ClientIP}}"},
 	}
 
@@ -535,7 +535,7 @@ func TestBucketCleanup(t *testing.T) {
 	pool.cleanEvery = 1 * time.Millisecond // Speed up for test
 
 	ctx := &tmpl.Context{ClientIP: "192.168.1.1"}
-	limits := []config.QueryRateLimitConfig{{Pool: "default"}}
+	limits := []config.RateLimitConfig{{Pool: "default"}}
 
 	// Create a bucket
 	_, _, _ = l.Allow(limits, ctx)

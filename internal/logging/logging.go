@@ -6,13 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 var (
 	levelVar = new(slog.LevelVar) // For runtime level changes
-	closer   io.Closer           // To close lumberjack on shutdown
+	closer   io.Closer            // To close lumberjack on shutdown
 )
 
 // Init initializes the global logger
@@ -41,6 +42,16 @@ func Init(level, filePath string, maxSizeMB, maxBackups, maxAgeDays int) error {
 
 	handler := slog.NewJSONHandler(w, &slog.HandlerOptions{
 		Level: levelVar,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			// Format time with exactly 9 digits of nanosecond precision for alignment
+			if a.Key == slog.TimeKey {
+				if t, ok := a.Value.Any().(time.Time); ok {
+					// Format: 2006-01-02T15:04:05.000000000Z07:00
+					a.Value = slog.StringValue(t.Format("2006-01-02T15:04:05.000000000Z07:00"))
+				}
+			}
+			return a
+		},
 	})
 	slog.SetDefault(slog.New(handler))
 	return nil

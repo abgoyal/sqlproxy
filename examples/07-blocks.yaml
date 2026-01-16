@@ -1,0 +1,288 @@
+# Block Steps (Iteration and Batch Processing)
+# Demonstrates: iterate loops, data iteration, nested blocks
+
+server:
+  host: "127.0.0.1"
+  port: 8080
+  default_timeout_sec: 30
+  max_timeout_sec: 300
+
+databases:
+  - name: "main"
+    type: "sqlite"
+    path: ":memory:"
+
+logging:
+  level: "info"
+  file_path: ""
+  max_size_mb: 100
+  max_backups: 5
+  max_age_days: 30
+
+metrics:
+  enabled: true
+
+workflows:
+  # ============================================================================
+  # BASIC ITERATION
+  # ============================================================================
+
+  # Iterate over query results
+  - name: "process_items"
+    triggers:
+      - type: http
+        path: "/api/items/process"
+        method: POST
+    steps:
+      # First, fetch items to process
+      - name: fetch_items
+        type: query
+        database: "main"
+        sql: |
+          SELECT 1 AS id, 'Item A' AS name
+          UNION ALL SELECT 2, 'Item B'
+          UNION ALL SELECT 3, 'Item C'
+
+      # Iterate over each item - use @param for SQL parameters
+      - name: process_each
+        iterate:
+          over: "steps.fetch_items.data"
+          as: "item"
+        steps:
+          - name: process
+            type: query
+            database: "main"
+            sql: "SELECT @id AS processed_id, 'Processed: ' || @name AS result"
+
+      - type: response
+        template: |
+          {"processed_count": {{.steps.fetch_items.count}}, "iterations": {{json .steps.process_each.iterations}}}
+
+  # Iterate over parameter array
+  - name: "batch_lookup"
+    triggers:
+      - type: http
+        path: "/api/batch/lookup"
+        method: POST
+        parameters:
+          - name: "ids"
+            type: "int[]"
+            required: true
+    steps:
+      - name: lookup_each
+        iterate:
+          over: "trigger.params.ids"
+          as: "current_id"
+        steps:
+          - name: lookup
+            type: query
+            database: "main"
+            sql: "SELECT @current_id AS id, 'Data for ID' AS data"
+
+      - type: response
+        template: |
+          {"lookups": {{json .steps.lookup_each.iterations}}}
+
+  # ============================================================================
+  # NESTED BLOCKS
+  # ============================================================================
+
+  # Two-level iteration (categories and items)
+  - name: "nested_process"
+    triggers:
+      - type: http
+        path: "/api/nested"
+        method: GET
+    steps:
+      # Fetch categories
+      - name: categories
+        type: query
+        database: "main"
+        sql: |
+          SELECT 1 AS cat_id, 'Electronics' AS cat_name
+          UNION ALL SELECT 2, 'Clothing'
+
+      # For each category, process items
+      - name: by_category
+        iterate:
+          over: "steps.categories.data"
+          as: "category"
+        steps:
+          # Fetch items in this category (simulated with arithmetic)
+          - name: items
+            type: query
+            database: "main"
+            sql: |
+              SELECT @cat_id * 10 + 1 AS item_id, 'Item 1 in ' || @cat_name AS item_name
+              UNION ALL SELECT @cat_id * 10 + 2, 'Item 2 in ' || @cat_name
+
+          # Nested iteration over items
+          - name: process_items
+            iterate:
+              over: "steps.items.data"
+              as: "item"
+            steps:
+              - name: process
+                type: query
+                database: "main"
+                sql: "SELECT @item_id AS id, 'Processed' AS status"
+
+      - type: response
+        template: |
+          {"categories_processed": {{.steps.categories.count}}, "iterations": {{json .steps.by_category.iterations}}}
+
+  # ============================================================================
+  # BLOCK WITH CONDITIONS
+  # ============================================================================
+
+  # Conditional processing in loop
+  - name: "conditional_batch"
+    conditions:
+      is_active: "item.status == 'active'"
+    triggers:
+      - type: http
+        path: "/api/batch/conditional"
+        method: POST
+    steps:
+      - name: fetch
+        type: query
+        database: "main"
+        sql: |
+          SELECT 1 AS id, 'active' AS status
+          UNION ALL SELECT 2, 'inactive'
+          UNION ALL SELECT 3, 'active'
+
+      - name: process_active
+        iterate:
+          over: "steps.fetch.data"
+          as: "item"
+        steps:
+          - name: activate
+            type: query
+            condition: "is_active"  # Only process active items
+            database: "main"
+            sql: "SELECT @id AS id, 'activated' AS result"
+
+      - type: response
+        template: |
+          {"iterations": {{json .steps.process_active.iterations}}}
+
+  # ============================================================================
+  # BLOCK WITH HTTP CALLS
+  # ============================================================================
+
+  # Webhook fan-out (notify multiple endpoints)
+  - name: "notify_all"
+    triggers:
+      - type: http
+        path: "/api/notify"
+        method: POST
+        parameters:
+          - name: "message"
+            type: "string"
+            required: true
+    steps:
+      # Define endpoints to notify
+      - name: endpoints
+        type: query
+        database: "main"
+        sql: |
+          SELECT 'https://httpbin.org/post' AS url, 'Service A' AS name
+          UNION ALL SELECT 'https://httpbin.org/post', 'Service B'
+
+      # Notify each endpoint (httpcall templates are OK)
+      - name: notify_each
+        iterate:
+          over: "steps.endpoints.data"
+          as: "endpoint"
+        steps:
+          - name: notify
+            type: httpcall
+            url: "{{.endpoint.url}}"
+            http_method: POST
+            headers:
+              Content-Type: "application/json"
+            body: |
+              {"service": "{{.endpoint.name}}", "message": "{{.trigger.params.message}}"}
+            parse: "json"
+
+      - type: response
+        template: |
+          {"notified": {{.steps.endpoints.count}}, "iterations": {{json .steps.notify_each.iterations}}}
+
+  # ============================================================================
+  # BLOCK WITH ERROR HANDLING
+  # ============================================================================
+
+  # Continue on error within block
+  - name: "resilient_batch"
+    triggers:
+      - type: http
+        path: "/api/batch/resilient"
+        method: POST
+    steps:
+      - name: items
+        type: query
+        database: "main"
+        sql: |
+          SELECT 1 AS id, 'good' AS type
+          UNION ALL SELECT 2, 'bad'
+          UNION ALL SELECT 3, 'good'
+
+      - name: process
+        iterate:
+          over: "steps.items.data"
+          as: "item"
+          on_error: continue  # Don't stop on individual failures
+        steps:
+          - name: process_item
+            type: query
+            database: "main"
+            sql: "SELECT @id AS id, @type AS type"
+
+      - type: response
+        template: |
+          {"attempted": {{.steps.items.count}}, "iterations": {{json .steps.process.iterations}}}
+
+  # ============================================================================
+  # BLOCK WITH AGGREGATION
+  # ============================================================================
+
+  # Collect results from block iterations
+  - name: "aggregate_results"
+    triggers:
+      - type: http
+        path: "/api/aggregate"
+        method: GET
+    steps:
+      - name: sources
+        type: query
+        database: "main"
+        sql: |
+          SELECT 'source_a' AS name, 10 AS value
+          UNION ALL SELECT 'source_b', 20
+          UNION ALL SELECT 'source_c', 30
+
+      - name: fetch_each
+        iterate:
+          over: "steps.sources.data"
+          as: "source"
+        steps:
+          - name: fetch
+            type: query
+            database: "main"
+            sql: "SELECT @name AS source, @value * 2 AS doubled"
+
+      # Summary query (count from previous step uses static value since SQL can't reference step results)
+      - name: summary
+        type: query
+        database: "main"
+        sql: "SELECT 'aggregated' AS status"
+
+      - type: response
+        template: |
+          {
+            "sources": {{.steps.sources.count}},
+            "individual_iterations": {{json .steps.fetch_each.iterations}},
+            "summary": {{json (index .steps.summary.data 0)}}
+          }

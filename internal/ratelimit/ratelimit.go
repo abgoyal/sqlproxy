@@ -117,7 +117,7 @@ func New(pools []config.RateLimitPoolConfig, engine *tmpl.Engine) (*Limiter, err
 // Returns (allowed, retryAfter, error). If any pool denies, the request is denied.
 // retryAfter indicates how long the client should wait before retrying (only set when denied).
 // An error indicates a template evaluation failure (config bug, should not happen at runtime).
-func (l *Limiter) Allow(limits []config.QueryRateLimitConfig, ctx *tmpl.Context) (bool, time.Duration, error) {
+func (l *Limiter) Allow(limits []config.RateLimitConfig, ctx *tmpl.Context) (bool, time.Duration, error) {
 	if len(limits) == 0 {
 		return true, 0, nil
 	}
@@ -137,7 +137,7 @@ func (l *Limiter) Allow(limits []config.QueryRateLimitConfig, ctx *tmpl.Context)
 }
 
 // inlinePoolKey generates a unique key for an inline rate limit config
-func inlinePoolKey(limit config.QueryRateLimitConfig) string {
+func inlinePoolKey(limit config.RateLimitConfig) string {
 	key := limit.Key
 	if key == "" {
 		key = "{{.ClientIP}}"
@@ -147,7 +147,7 @@ func inlinePoolKey(limit config.QueryRateLimitConfig) string {
 
 // allowOne checks a single rate limit configuration
 // Returns (allowed, retryAfter, error) where retryAfter is set when denied
-func (l *Limiter) allowOne(limit config.QueryRateLimitConfig, ctx *tmpl.Context) (bool, time.Duration, error) {
+func (l *Limiter) allowOne(limit config.RateLimitConfig, ctx *tmpl.Context) (bool, time.Duration, error) {
 	var pool *Pool
 	var keyTemplate string
 
