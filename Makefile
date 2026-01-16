@@ -194,6 +194,7 @@ test-bench-compare-new:
 # - Runs the server with GOCOVERDIR to collect coverage
 # - Tests all API endpoints comprehensively
 test-cover:
+	@mkdir -p $(COVERAGE_DIR)
 	@rm -rf $(COVERAGE_DIR)/e2e
 	@echo "=== Running unit tests with coverage ==="
 	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/unit.out ./internal/...
