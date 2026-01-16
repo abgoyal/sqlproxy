@@ -644,21 +644,6 @@ Run `make test-cover` for current coverage statistics.
 - **TestE2E_ConfigValidation**: TestE2E_ConfigValidation tests -validate flag
 - **TestE2E_InvalidConfig**: TestE2E_InvalidConfig tests server rejects invalid config
 
-### taskapp_test.go
-
-- **TestTaskApp_PathParameters**: TestTaskApp_PathParameters tests path parameter extraction for /api/tasks/{id}
-- **TestTaskApp_AllHTTPMethods**: TestTaskApp_AllHTTPMethods tests all 7 HTTP methods on /api/tasks
-- **TestTaskApp_TriggerCaching**: TestTaskApp_TriggerCaching tests X-Cache header behavior
-- **TestTaskApp_RateLimiting**: TestTaskApp_RateLimiting tests 429 response when rate limit exceeded
-- **TestTaskApp_ConditionalResponses**: TestTaskApp_ConditionalResponses tests different response codes based on conditions
-- **TestTaskApp_TemplateFunctions**: TestTaskApp_TemplateFunctions tests template functions in responses
-- **TestTaskApp_BatchOperations**: TestTaskApp_BatchOperations tests block iteration for batch create/delete
-- **TestTaskApp_StepCaching**: TestTaskApp_StepCaching tests step-level cache behavior
-- **TestTaskApp_Pagination**: TestTaskApp_Pagination tests pagination parameters
-- **TestTaskApp_Filtering**: TestTaskApp_Filtering tests status and priority filters
-- **TestTaskApp_Categories**: TestTaskApp_Categories tests secondary entity CRUD
-- **TestTaskApp_CompleteTask**: TestTaskApp_CompleteTask tests the complete workflow with disabled audit step
-
 
 ---
 

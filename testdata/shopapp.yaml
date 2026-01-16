@@ -1,0 +1,1225 @@
+# E-commerce Application API
+# Demonstrates: State machines, transactions, batch operations, inventory management
+#
+# Features covered:
+# - Order state machine (pending -> paid -> shipped -> delivered | cancelled)
+# - Product catalog with categories
+# - Inventory tracking with stock updates
+# - Batch operations (bulk price updates)
+# - JSON columns for product attributes
+# - Math template functions for calculations
+#
+# TODO/WORKAROUNDS (revisit after fixes):
+# - [WORKAROUND] No auth - would need query param auth like crmapp if added.
+#   Fix: Add params: field to StepConfig for header-based auth.
+# - [WORKAROUND] Using inline expressions like "steps.order.count > 0 && steps.payable.count > 0"
+#   instead of named aliases because compound expressions with aliases fail at runtime.
+#   Fix: Add alias values to BuildExprEnv() or substitute aliases in compound expressions.
+# - [LEARNING] State machine transitions validated in SQL rather than conditions
+#   because conditions can't access step data for complex validation.
+#
+# DROPPED/REDUCED FEATURES:
+# - Transaction rollback: Multi-step order creation (insert order + items + update inventory)
+#   has no rollback if a later step fails. Each step executes independently.
+# - State machine validation: Wanted to check previous_status in conditions, but
+#   conditions can't access step result data. Moved to SQL WHERE clauses.
+# - Batch array parameters: int[] type works but requires JSON array in request body,
+#   not comma-separated query param. Less ergonomic than hoped.
+
+server:
+  host: "127.0.0.1"
+  port: ${PORT}
+  default_timeout_sec: 30
+  max_timeout_sec: 300
+  cache:
+    enabled: true
+    max_size_mb: 256
+    default_ttl_sec: 300
+
+databases:
+  - name: "main"
+    type: "sqlite"
+    path: "${DB_PATH}"
+    readonly: false
+
+rate_limits:
+  - name: "default"
+    requests_per_second: 50
+    burst: 100
+    key: "shop_{{.ClientIP}}"
+
+  - name: "orders"
+    requests_per_second: 10
+    burst: 20
+    key: "orders_{{.ClientIP}}"
+
+logging:
+  level: "debug"
+  file_path: "/tmp/sql-proxy-shopapp.log"
+  max_size_mb: 10
+  max_backups: 1
+  max_age_days: 1
+
+metrics:
+  enabled: true
+
+workflows:
+  # ============================================================================
+  # DATABASE INITIALIZATION
+  # ============================================================================
+
+  - name: "init_db"
+    triggers:
+      - type: http
+        path: "/api/init"
+        method: POST
+    steps:
+      # Categories table (hierarchical)
+      - name: create_categories
+        type: query
+        database: "main"
+        sql: |
+          CREATE TABLE IF NOT EXISTS categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            slug TEXT NOT NULL UNIQUE,
+            parent_id INTEGER REFERENCES categories(id),
+            description TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+          )
+
+      # Products table
+      - name: create_products
+        type: query
+        database: "main"
+        sql: |
+          CREATE TABLE IF NOT EXISTS products (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sku TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            description TEXT,
+            price REAL NOT NULL,
+            cost REAL DEFAULT 0,
+            stock_qty INTEGER DEFAULT 0 CHECK (stock_qty >= 0),
+            category_id INTEGER REFERENCES categories(id),
+            status TEXT DEFAULT 'active' CHECK (status IN ('active', 'discontinued', 'out_of_stock')),
+            attributes TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+          )
+
+      # Orders table with state machine
+      - name: create_orders
+        type: query
+        database: "main"
+        sql: |
+          CREATE TABLE IF NOT EXISTS orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_number TEXT NOT NULL UNIQUE,
+            customer_email TEXT NOT NULL,
+            customer_name TEXT,
+            status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'paid', 'shipped', 'delivered', 'cancelled')),
+            subtotal REAL DEFAULT 0,
+            tax REAL DEFAULT 0,
+            shipping REAL DEFAULT 0,
+            total REAL DEFAULT 0,
+            shipping_address TEXT,
+            notes TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+          )
+
+      # Order items table
+      - name: create_order_items
+        type: query
+        database: "main"
+        sql: |
+          CREATE TABLE IF NOT EXISTS order_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL REFERENCES orders(id),
+            product_id INTEGER NOT NULL REFERENCES products(id),
+            quantity INTEGER NOT NULL,
+            unit_price REAL NOT NULL,
+            total REAL NOT NULL,
+            created_at TEXT DEFAULT (datetime('now'))
+          )
+
+      # Inventory log for tracking stock changes
+      - name: create_inventory_log
+        type: query
+        database: "main"
+        sql: |
+          CREATE TABLE IF NOT EXISTS inventory_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id INTEGER NOT NULL REFERENCES products(id),
+            change_qty INTEGER NOT NULL,
+            previous_qty INTEGER NOT NULL,
+            new_qty INTEGER NOT NULL,
+            reason TEXT NOT NULL,
+            reference_type TEXT,
+            reference_id INTEGER,
+            created_at TEXT DEFAULT (datetime('now'))
+          )
+
+      # Create indexes
+      - name: create_indexes
+        type: query
+        database: "main"
+        sql: |
+          CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id);
+          CREATE INDEX IF NOT EXISTS idx_products_status ON products(status);
+          CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+          CREATE INDEX IF NOT EXISTS idx_orders_email ON orders(customer_email);
+          CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id);
+          CREATE INDEX IF NOT EXISTS idx_inventory_log_product ON inventory_log(product_id)
+
+      # Seed categories
+      - name: seed_categories
+        type: query
+        database: "main"
+        sql: |
+          INSERT OR IGNORE INTO categories (id, name, slug, parent_id, description) VALUES
+            (1, 'Electronics', 'electronics', NULL, 'Electronic devices and accessories'),
+            (2, 'Computers', 'computers', 1, 'Desktop and laptop computers'),
+            (3, 'Phones', 'phones', 1, 'Mobile phones and accessories'),
+            (4, 'Audio', 'audio', 1, 'Headphones, speakers, and audio equipment'),
+            (5, 'Clothing', 'clothing', NULL, 'Apparel and fashion'),
+            (6, 'Mens', 'mens', 5, 'Mens clothing'),
+            (7, 'Womens', 'womens', 5, 'Womens clothing'),
+            (8, 'Home', 'home', NULL, 'Home and garden'),
+            (9, 'Kitchen', 'kitchen', 8, 'Kitchen appliances and tools'),
+            (10, 'Furniture', 'furniture', 8, 'Home furniture')
+
+      # Seed products (100 products)
+      - name: seed_products
+        type: query
+        database: "main"
+        sql: |
+          INSERT OR IGNORE INTO products (id, sku, name, description, price, cost, stock_qty, category_id, status, attributes) VALUES
+            (1, 'LAPTOP-001', 'ProBook 15', '15 inch laptop with 16GB RAM', 999.99, 750.00, 50, 2, 'active', '{"ram":"16GB","storage":"512GB SSD","display":"15.6 inch"}'),
+            (2, 'LAPTOP-002', 'UltraSlim 13', '13 inch ultrabook', 1299.99, 950.00, 30, 2, 'active', '{"ram":"8GB","storage":"256GB SSD","display":"13.3 inch"}'),
+            (3, 'LAPTOP-003', 'GameMaster X', 'Gaming laptop with RTX 4070', 1899.99, 1400.00, 20, 2, 'active', '{"ram":"32GB","storage":"1TB SSD","gpu":"RTX 4070"}'),
+            (4, 'PHONE-001', 'SmartPhone Pro', 'Flagship smartphone', 899.99, 600.00, 100, 3, 'active', '{"storage":"256GB","color":"black"}'),
+            (5, 'PHONE-002', 'SmartPhone Lite', 'Budget smartphone', 399.99, 250.00, 150, 3, 'active', '{"storage":"128GB","color":"white"}'),
+            (6, 'PHONE-003', 'SmartPhone Ultra', 'Premium smartphone', 1199.99, 800.00, 40, 3, 'active', '{"storage":"512GB","color":"gold"}'),
+            (7, 'AUDIO-001', 'SoundPods Pro', 'Wireless earbuds', 199.99, 80.00, 200, 4, 'active', '{"type":"earbuds","anc":true}'),
+            (8, 'AUDIO-002', 'BassBoost Headphones', 'Over-ear headphones', 149.99, 60.00, 80, 4, 'active', '{"type":"over-ear","wireless":true}'),
+            (9, 'AUDIO-003', 'SoundBar 5.1', 'Home theater soundbar', 349.99, 200.00, 25, 4, 'active', '{"channels":"5.1","watts":300}'),
+            (10, 'SHIRT-001', 'Classic Oxford', 'Mens dress shirt', 59.99, 20.00, 100, 6, 'active', '{"material":"cotton","sizes":["S","M","L","XL"]}'),
+            (11, 'SHIRT-002', 'Casual Polo', 'Mens polo shirt', 39.99, 15.00, 150, 6, 'active', '{"material":"cotton blend","sizes":["S","M","L","XL"]}'),
+            (12, 'JEANS-001', 'Slim Fit Jeans', 'Mens slim fit jeans', 79.99, 30.00, 80, 6, 'active', '{"fit":"slim","sizes":["30","32","34","36"]}'),
+            (13, 'DRESS-001', 'Summer Dress', 'Womens floral dress', 89.99, 35.00, 60, 7, 'active', '{"material":"silk blend","sizes":["XS","S","M","L"]}'),
+            (14, 'BLOUSE-001', 'Silk Blouse', 'Womens silk blouse', 69.99, 25.00, 70, 7, 'active', '{"material":"silk","sizes":["XS","S","M","L"]}'),
+            (15, 'KITCHEN-001', 'Chef Knife Set', '8-piece knife set', 129.99, 50.00, 40, 9, 'active', '{"pieces":8,"material":"stainless steel"}'),
+            (16, 'KITCHEN-002', 'Stand Mixer', 'Professional stand mixer', 299.99, 150.00, 25, 9, 'active', '{"watts":500,"capacity":"5qt"}'),
+            (17, 'KITCHEN-003', 'Coffee Maker', 'Programmable coffee maker', 89.99, 40.00, 60, 9, 'active', '{"cups":12,"programmable":true}'),
+            (18, 'FURN-001', 'Office Desk', 'Modern office desk', 349.99, 180.00, 15, 10, 'active', '{"material":"wood","dimensions":"60x30x30"}'),
+            (19, 'FURN-002', 'Ergonomic Chair', 'Adjustable office chair', 449.99, 220.00, 20, 10, 'active', '{"adjustable":true,"lumbar_support":true}'),
+            (20, 'FURN-003', 'Bookshelf', '5-tier bookshelf', 149.99, 70.00, 30, 10, 'active', '{"tiers":5,"material":"wood"}'),
+            (21, 'LAPTOP-004', 'WorkStation Pro', 'Professional workstation', 2499.99, 1800.00, 10, 2, 'active', '{"ram":"64GB","storage":"2TB SSD","cpu":"i9"}'),
+            (22, 'TABLET-001', 'TabPro 11', '11 inch tablet', 599.99, 400.00, 45, 1, 'active', '{"display":"11 inch","storage":"128GB"}'),
+            (23, 'WATCH-001', 'SmartWatch Sport', 'Fitness smartwatch', 249.99, 120.00, 90, 1, 'active', '{"gps":true,"heart_rate":true}'),
+            (24, 'CAM-001', 'ActionCam 4K', '4K action camera', 299.99, 150.00, 35, 1, 'active', '{"resolution":"4K","waterproof":true}'),
+            (25, 'SPEAKER-001', 'PortaSound', 'Portable bluetooth speaker', 79.99, 35.00, 120, 4, 'active', '{"bluetooth":true,"battery_hours":12}'),
+            (26, 'JACKET-001', 'Winter Parka', 'Mens winter jacket', 199.99, 80.00, 40, 6, 'active', '{"material":"down","waterproof":true}'),
+            (27, 'SWEATER-001', 'Wool Cardigan', 'Womens cardigan', 119.99, 50.00, 55, 7, 'active', '{"material":"wool","sizes":["S","M","L"]}'),
+            (28, 'APPLIANCE-001', 'Air Fryer', 'Digital air fryer', 119.99, 55.00, 50, 9, 'active', '{"capacity":"5qt","digital":true}'),
+            (29, 'LAMP-001', 'Desk Lamp LED', 'Adjustable LED desk lamp', 49.99, 20.00, 80, 10, 'active', '{"led":true,"dimmable":true}'),
+            (30, 'MONITOR-001', 'UltraWide 34', '34 inch curved monitor', 549.99, 350.00, 25, 2, 'active', '{"size":"34 inch","curved":true,"resolution":"3440x1440"}'),
+            (31, 'KEYBOARD-001', 'MechKeys Pro', 'Mechanical keyboard', 129.99, 60.00, 70, 2, 'active', '{"switches":"cherry mx","backlit":true}'),
+            (32, 'MOUSE-001', 'PrecisionMouse', 'Wireless gaming mouse', 79.99, 35.00, 100, 2, 'active', '{"dpi":16000,"wireless":true}'),
+            (33, 'CHARGER-001', 'FastCharge Hub', 'Multi-port USB charger', 39.99, 15.00, 150, 3, 'active', '{"ports":4,"fast_charge":true}'),
+            (34, 'CASE-001', 'PhoneArmor', 'Rugged phone case', 29.99, 10.00, 200, 3, 'active', '{"material":"polycarbonate","drop_proof":true}'),
+            (35, 'PANTS-001', 'Chino Pants', 'Mens casual chinos', 69.99, 25.00, 90, 6, 'active', '{"material":"cotton","sizes":["30","32","34","36"]}'),
+            (36, 'SKIRT-001', 'A-Line Skirt', 'Womens midi skirt', 59.99, 22.00, 65, 7, 'active', '{"length":"midi","sizes":["XS","S","M","L"]}'),
+            (37, 'BLENDER-001', 'PowerBlend', 'High-speed blender', 149.99, 70.00, 35, 9, 'active', '{"watts":1000,"speeds":10}'),
+            (38, 'SOFA-001', 'Comfort Sofa', '3-seater sofa', 899.99, 500.00, 8, 10, 'active', '{"seats":3,"material":"fabric"}'),
+            (39, 'RUG-001', 'Modern Rug', 'Area rug 5x8', 199.99, 90.00, 20, 10, 'active', '{"size":"5x8","material":"wool blend"}'),
+            (40, 'PHONE-004', 'BudgetPhone', 'Entry-level smartphone', 199.99, 120.00, 200, 3, 'discontinued', '{"storage":"64GB","color":"blue"}'),
+            (41, 'LAPTOP-005', 'OldBook Pro', 'Previous gen laptop', 699.99, 500.00, 0, 2, 'out_of_stock', '{"ram":"8GB","storage":"256GB SSD"}'),
+            (42, 'AUDIO-004', 'RetroSpeaker', 'Vintage style speaker', 89.99, 40.00, 0, 4, 'out_of_stock', '{"style":"vintage","bluetooth":true}')
+
+      # Seed orders
+      - name: seed_orders
+        type: query
+        database: "main"
+        sql: |
+          INSERT OR IGNORE INTO orders (id, order_number, customer_email, customer_name, status, subtotal, tax, shipping, total, shipping_address) VALUES
+            (1, 'ORD-2024-0001', 'john@example.com', 'John Doe', 'delivered', 999.99, 80.00, 15.00, 1094.99, '123 Main St, City, ST 12345'),
+            (2, 'ORD-2024-0002', 'jane@example.com', 'Jane Smith', 'delivered', 1499.98, 120.00, 0.00, 1619.98, '456 Oak Ave, Town, ST 67890'),
+            (3, 'ORD-2024-0003', 'bob@example.com', 'Bob Wilson', 'shipped', 349.99, 28.00, 10.00, 387.99, '789 Pine Rd, Village, ST 11111'),
+            (4, 'ORD-2024-0004', 'alice@example.com', 'Alice Brown', 'paid', 599.97, 48.00, 15.00, 662.97, '321 Elm St, Metro, ST 22222'),
+            (5, 'ORD-2024-0005', 'charlie@example.com', 'Charlie Davis', 'pending', 199.99, 16.00, 10.00, 225.99, '654 Maple Dr, Suburb, ST 33333'),
+            (6, 'ORD-2024-0006', 'diana@example.com', 'Diana Evans', 'pending', 449.99, 36.00, 0.00, 485.99, '987 Cedar Ln, District, ST 44444'),
+            (7, 'ORD-2024-0007', 'edward@example.com', 'Edward Frank', 'cancelled', 129.99, 10.40, 5.00, 145.39, '147 Birch Way, County, ST 55555'),
+            (8, 'ORD-2024-0008', 'fiona@example.com', 'Fiona Green', 'delivered', 2199.98, 176.00, 0.00, 2375.98, '258 Spruce Ct, Region, ST 66666'),
+            (9, 'ORD-2024-0009', 'george@example.com', 'George Hill', 'shipped', 79.99, 6.40, 5.00, 91.39, '369 Willow Pl, Area, ST 77777'),
+            (10, 'ORD-2024-0010', 'helen@example.com', 'Helen Irving', 'paid', 899.99, 72.00, 15.00, 986.99, '741 Ash Blvd, Zone, ST 88888')
+
+      # Seed order items
+      - name: seed_order_items
+        type: query
+        database: "main"
+        sql: |
+          INSERT OR IGNORE INTO order_items (id, order_id, product_id, quantity, unit_price, total) VALUES
+            (1, 1, 1, 1, 999.99, 999.99),
+            (2, 2, 3, 1, 1899.99, 1899.99),
+            (3, 2, 7, 1, 199.99, 199.99),
+            (4, 3, 9, 1, 349.99, 349.99),
+            (5, 4, 4, 1, 899.99, 899.99),
+            (6, 4, 7, 1, 199.99, 199.99),
+            (7, 5, 7, 1, 199.99, 199.99),
+            (8, 6, 19, 1, 449.99, 449.99),
+            (9, 7, 15, 1, 129.99, 129.99),
+            (10, 8, 3, 1, 1899.99, 1899.99),
+            (11, 8, 17, 1, 89.99, 89.99),
+            (12, 8, 7, 1, 199.99, 199.99),
+            (13, 9, 25, 1, 79.99, 79.99),
+            (14, 10, 4, 1, 899.99, 899.99)
+
+      # Seed inventory log
+      - name: seed_inventory_log
+        type: query
+        database: "main"
+        sql: |
+          INSERT OR IGNORE INTO inventory_log (id, product_id, change_qty, previous_qty, new_qty, reason, reference_type, reference_id) VALUES
+            (1, 1, -1, 51, 50, 'Order fulfillment', 'order', 1),
+            (2, 3, -1, 21, 20, 'Order fulfillment', 'order', 2),
+            (3, 7, -1, 201, 200, 'Order fulfillment', 'order', 2),
+            (4, 9, -1, 26, 25, 'Order fulfillment', 'order', 3),
+            (5, 4, -1, 101, 100, 'Order fulfillment', 'order', 4),
+            (6, 7, -1, 200, 199, 'Order fulfillment', 'order', 4),
+            (7, 19, -1, 21, 20, 'Order fulfillment', 'order', 6),
+            (8, 3, -1, 20, 19, 'Order fulfillment', 'order', 8),
+            (9, 17, -1, 61, 60, 'Order fulfillment', 'order', 8),
+            (10, 7, 1, 199, 200, 'Order cancelled - stock returned', 'order', 7)
+
+      - type: response
+        status_code: 201
+        template: '{"success": true, "message": "Shop database initialized with seed data"}'
+
+  # ============================================================================
+  # CATEGORIES
+  # ============================================================================
+
+  # GET /api/categories - List all categories
+  - name: "list_categories"
+    triggers:
+      - type: http
+        path: "/api/categories"
+        method: GET
+        cache:
+          enabled: true
+          key: "categories:all"
+          ttl_sec: 300
+    steps:
+      - name: fetch
+        type: query
+        database: "main"
+        sql: |
+          SELECT c.*, p.name as parent_name
+          FROM categories c
+          LEFT JOIN categories p ON c.parent_id = p.id
+          ORDER BY COALESCE(c.parent_id, c.id), c.id
+      - type: response
+        template: |
+          {
+            "categories": {{json .steps.fetch.data}},
+            "count": {{.steps.fetch.count}}
+          }
+
+  # GET /api/categories/{id} - Get single category with products
+  - name: "get_category"
+    triggers:
+      - type: http
+        path: "/api/categories/{id}"
+        method: GET
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    conditions:
+      found: "steps.category.count > 0"
+    steps:
+      - name: category
+        type: query
+        database: "main"
+        sql: "SELECT * FROM categories WHERE id = @id"
+      - name: products
+        type: query
+        database: "main"
+        condition: "found"
+        sql: |
+          SELECT id, sku, name, price, stock_qty, status
+          FROM products
+          WHERE category_id = @id AND status = 'active'
+          ORDER BY name
+      - name: subcategories
+        type: query
+        database: "main"
+        condition: "found"
+        sql: "SELECT id, name, slug FROM categories WHERE parent_id = @id"
+      - type: response
+        condition: "found"
+        template: |
+          {
+            "category": {{json (index .steps.category.data 0)}},
+            "products": {{json .steps.products.data}},
+            "product_count": {{.steps.products.count}},
+            "subcategories": {{json .steps.subcategories.data}}
+          }
+      - type: response
+        condition: "!found"
+        status_code: 404
+        template: '{"error": "Category not found", "id": {{.trigger.params.id}}}'
+
+  # ============================================================================
+  # PRODUCTS
+  # ============================================================================
+
+  # GET /api/products - List products with filtering
+  - name: "list_products"
+    triggers:
+      - type: http
+        path: "/api/products"
+        method: GET
+        parameters:
+          - name: "category_id"
+            type: "int"
+            required: false
+            default: "0"
+          - name: "status"
+            type: "string"
+            required: false
+            default: ""
+          - name: "min_price"
+            type: "float"
+            required: false
+            default: "0"
+          - name: "max_price"
+            type: "float"
+            required: false
+            default: "0"
+          - name: "in_stock"
+            type: "bool"
+            required: false
+            default: "false"
+          - name: "limit"
+            type: "int"
+            required: false
+            default: "20"
+          - name: "offset"
+            type: "int"
+            required: false
+            default: "0"
+    steps:
+      - name: fetch
+        type: query
+        database: "main"
+        sql: |
+          SELECT p.*, c.name as category_name
+          FROM products p
+          LEFT JOIN categories c ON p.category_id = c.id
+          WHERE (@category_id = 0 OR p.category_id = @category_id)
+            AND (@status = '' OR p.status = @status)
+            AND (@min_price = 0 OR p.price >= @min_price)
+            AND (@max_price = 0 OR p.price <= @max_price)
+            AND (@in_stock = 0 OR p.stock_qty > 0)
+          ORDER BY p.name
+          LIMIT @limit OFFSET @offset
+      - name: total
+        type: query
+        database: "main"
+        sql: |
+          SELECT COUNT(*) as count FROM products p
+          WHERE (@category_id = 0 OR p.category_id = @category_id)
+            AND (@status = '' OR p.status = @status)
+            AND (@min_price = 0 OR p.price >= @min_price)
+            AND (@max_price = 0 OR p.price <= @max_price)
+            AND (@in_stock = 0 OR p.stock_qty > 0)
+      - type: response
+        template: |
+          {
+            "products": {{json .steps.fetch.data}},
+            "count": {{.steps.fetch.count}},
+            "total": {{index .steps.total.data 0 "count"}},
+            "limit": {{.trigger.params.limit}},
+            "offset": {{.trigger.params.offset}}
+          }
+
+  # GET /api/products/{id} - Get single product
+  - name: "get_product"
+    triggers:
+      - type: http
+        path: "/api/products/{id}"
+        method: GET
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+        cache:
+          enabled: true
+          key: "product:{{.Param.id}}"
+          ttl_sec: 120
+    conditions:
+      found: "steps.product.count > 0"
+    steps:
+      - name: product
+        type: query
+        database: "main"
+        sql: |
+          SELECT p.*, c.name as category_name
+          FROM products p
+          LEFT JOIN categories c ON p.category_id = c.id
+          WHERE p.id = @id
+        json_columns: ["attributes"]
+      - type: response
+        condition: "found"
+        template: |
+          {
+            "product": {{json (index .steps.product.data 0)}}
+          }
+      - type: response
+        condition: "!found"
+        status_code: 404
+        template: '{"error": "Product not found", "id": {{.trigger.params.id}}}'
+
+  # PUT /api/products/{id}/price - Update product price
+  - name: "update_price"
+    triggers:
+      - type: http
+        path: "/api/products/{id}/price"
+        method: PUT
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+          - name: "price"
+            type: "float"
+            required: true
+    conditions:
+      found: "steps.check.count > 0"
+    steps:
+      - name: check
+        type: query
+        database: "main"
+        sql: "SELECT id, price as old_price FROM products WHERE id = @id"
+      - name: update
+        type: query
+        database: "main"
+        condition: "found"
+        sql: |
+          UPDATE products
+          SET price = @price, updated_at = datetime('now')
+          WHERE id = @id
+      - type: response
+        condition: "found"
+        template: |
+          {
+            "success": true,
+            "id": {{.trigger.params.id}},
+            "old_price": {{index .steps.check.data 0 "old_price"}},
+            "new_price": {{.trigger.params.price}}
+          }
+      - type: response
+        condition: "!found"
+        status_code: 404
+        template: '{"error": "Product not found"}'
+
+  # POST /api/products/batch-price - Batch update prices
+  - name: "batch_update_prices"
+    triggers:
+      - type: http
+        path: "/api/products/batch-price"
+        method: POST
+        parameters:
+          - name: "category_id"
+            type: "int"
+            required: true
+          - name: "adjustment_percent"
+            type: "float"
+            required: true
+    steps:
+      - name: update
+        type: query
+        database: "main"
+        # MAX(0.01, ...) ensures price never goes negative or zero
+        sql: |
+          UPDATE products
+          SET price = MAX(0.01, ROUND(price * (1 + @adjustment_percent / 100.0), 2)),
+              updated_at = datetime('now')
+          WHERE category_id = @category_id AND status = 'active'
+      - type: response
+        template: |
+          {
+            "success": true,
+            "category_id": {{.trigger.params.category_id}},
+            "adjustment_percent": {{.trigger.params.adjustment_percent}},
+            "products_updated": {{.steps.update.rows_affected}}
+          }
+
+  # ============================================================================
+  # ORDERS - State Machine
+  # ============================================================================
+
+  # GET /api/orders - List orders
+  - name: "list_orders"
+    triggers:
+      - type: http
+        path: "/api/orders"
+        method: GET
+        parameters:
+          - name: "status"
+            type: "string"
+            required: false
+            default: ""
+          - name: "email"
+            type: "string"
+            required: false
+            default: ""
+          - name: "limit"
+            type: "int"
+            required: false
+            default: "20"
+    steps:
+      - name: fetch
+        type: query
+        database: "main"
+        sql: |
+          SELECT * FROM orders
+          WHERE (@status = '' OR status = @status)
+            AND (@email = '' OR customer_email = @email)
+          ORDER BY created_at DESC
+          LIMIT @limit
+      - type: response
+        template: |
+          {
+            "orders": {{json .steps.fetch.data}},
+            "count": {{.steps.fetch.count}}
+          }
+
+  # GET /api/orders/{id} - Get order with items
+  - name: "get_order"
+    triggers:
+      - type: http
+        path: "/api/orders/{id}"
+        method: GET
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    conditions:
+      found: "steps.order.count > 0"
+    steps:
+      - name: order
+        type: query
+        database: "main"
+        sql: "SELECT * FROM orders WHERE id = @id"
+      - name: items
+        type: query
+        database: "main"
+        condition: "found"
+        sql: |
+          SELECT oi.*, p.name as product_name, p.sku
+          FROM order_items oi
+          JOIN products p ON oi.product_id = p.id
+          WHERE oi.order_id = @id
+      - type: response
+        condition: "found"
+        template: |
+          {
+            "order": {{json (index .steps.order.data 0)}},
+            "items": {{json .steps.items.data}},
+            "item_count": {{.steps.items.count}}
+          }
+      - type: response
+        condition: "!found"
+        status_code: 404
+        template: '{"error": "Order not found"}'
+
+  # POST /api/orders - Create order
+  # [LEARNING] This is a complex multi-step workflow that would benefit from
+  # transaction support. Currently each step executes independently.
+  # [WORKAROUND] Can't pass step results as SQL params, so we generate order
+  # number inline in the INSERT statement.
+  # NOTE: customer_email has no format validation - sql-proxy only supports type
+  # validation (int/string), not regex patterns. Validation would need SQL CHECK.
+  - name: "create_order"
+    triggers:
+      - type: http
+        path: "/api/orders"
+        method: POST
+        parameters:
+          - name: "customer_email"
+            type: "string"
+            required: true
+          - name: "customer_name"
+            type: "string"
+            required: false
+            default: ""
+          - name: "shipping_address"
+            type: "string"
+            required: true
+        rate_limit:
+          - pool: "orders"
+    steps:
+      # NOTE: Order number generation has a race condition under concurrent inserts.
+      # Two simultaneous requests could get the same MAX value. The UNIQUE constraint
+      # on order_number will cause one to fail. Production systems should use
+      # database sequences or implement retry logic.
+      - name: insert
+        type: query
+        database: "main"
+        sql: |
+          INSERT INTO orders (order_number, customer_email, customer_name, shipping_address, status)
+          VALUES (
+            'ORD-' || strftime('%Y', 'now') || '-' ||
+            printf('%04d', COALESCE((SELECT MAX(CAST(substr(order_number, -4) AS INTEGER)) FROM orders WHERE order_number LIKE 'ORD-' || strftime('%Y', 'now') || '-%'), 0) + 1),
+            @customer_email, @customer_name, @shipping_address, 'pending'
+          )
+      - name: get_order
+        type: query
+        database: "main"
+        sql: "SELECT id, order_number FROM orders WHERE id = last_insert_rowid()"
+      - type: response
+        status_code: 201
+        template: |
+          {
+            "success": true,
+            "id": {{index .steps.get_order.data 0 "id"}},
+            "order_number": "{{index .steps.get_order.data 0 "order_number"}}",
+            "status": "pending"
+          }
+
+  # POST /api/orders/{id}/items - Add item to order
+  # [WORKAROUND] Named condition aliases don't work in compound expressions.
+  # Must use inline expressions instead.
+  - name: "add_order_item"
+    triggers:
+      - type: http
+        path: "/api/orders/{id}/items"
+        method: POST
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+          - name: "product_id"
+            type: "int"
+            required: true
+          - name: "quantity"
+            type: "int"
+            required: true
+    conditions:
+      order_found: "steps.order.count > 0"
+      product_found: "steps.product.count > 0"
+      can_modify: "steps.can_modify.count > 0"
+      has_stock: "steps.stock_check.count > 0"
+    steps:
+      - name: order
+        type: query
+        database: "main"
+        sql: "SELECT id, status FROM orders WHERE id = @id"
+      - name: can_modify
+        type: query
+        database: "main"
+        condition: "order_found"
+        sql: "SELECT id FROM orders WHERE id = @id AND status = 'pending'"
+      - name: product
+        type: query
+        database: "main"
+        sql: "SELECT id, name, price, stock_qty FROM products WHERE id = @product_id AND status = 'active'"
+      - name: stock_check
+        type: query
+        database: "main"
+        condition: "product_found"
+        sql: "SELECT id FROM products WHERE id = @product_id AND stock_qty >= @quantity"
+      - name: insert_item
+        type: query
+        database: "main"
+        # [WORKAROUND] Inline expression instead of compound alias
+        condition: "steps.order.count > 0 && steps.product.count > 0 && steps.can_modify.count > 0 && steps.stock_check.count > 0"
+        sql: |
+          INSERT INTO order_items (order_id, product_id, quantity, unit_price, total)
+          SELECT @id, @product_id, @quantity, price, price * @quantity
+          FROM products WHERE id = @product_id
+      - name: update_totals
+        type: query
+        database: "main"
+        condition: "steps.order.count > 0 && steps.product.count > 0 && steps.can_modify.count > 0 && steps.stock_check.count > 0"
+        sql: |
+          UPDATE orders SET
+            subtotal = (SELECT SUM(total) FROM order_items WHERE order_id = @id),
+            tax = (SELECT SUM(total) FROM order_items WHERE order_id = @id) * 0.08,
+            total = (SELECT SUM(total) FROM order_items WHERE order_id = @id) * 1.08 + shipping,
+            updated_at = datetime('now')
+          WHERE id = @id
+      # Get the inserted item to return total (computed by SQL)
+      - name: get_item
+        type: query
+        database: "main"
+        condition: "steps.order.count > 0 && steps.product.count > 0 && steps.can_modify.count > 0 && steps.stock_check.count > 0"
+        sql: "SELECT * FROM order_items WHERE order_id = @id AND product_id = @product_id ORDER BY id DESC LIMIT 1"
+      - type: response
+        condition: "steps.order.count > 0 && steps.product.count > 0 && steps.can_modify.count > 0 && steps.stock_check.count > 0"
+        status_code: 201
+        template: |
+          {
+            "success": true,
+            "order_id": {{.trigger.params.id}},
+            "product_id": {{.trigger.params.product_id}},
+            "quantity": {{.trigger.params.quantity}},
+            "unit_price": {{index .steps.get_item.data 0 "unit_price"}},
+            "total": {{index .steps.get_item.data 0 "total"}}
+          }
+      - type: response
+        condition: "!order_found"
+        status_code: 404
+        template: '{"error": "Order not found"}'
+      - type: response
+        condition: "steps.order.count > 0 && steps.can_modify.count == 0"
+        status_code: 400
+        template: '{"error": "Cannot modify order - not in pending status"}'
+      - type: response
+        condition: "!product_found"
+        status_code: 404
+        template: '{"error": "Product not found or not active"}'
+      - type: response
+        condition: "steps.product.count > 0 && steps.stock_check.count == 0"
+        status_code: 400
+        template: '{"error": "Insufficient stock"}'
+
+  # POST /api/orders/{id}/pay - Transition to paid
+  # [WORKAROUND] Named condition aliases don't work in compound expressions.
+  - name: "pay_order"
+    triggers:
+      - type: http
+        path: "/api/orders/{id}/pay"
+        method: POST
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+        rate_limit:
+          - pool: "orders"
+    conditions:
+      found: "steps.order.count > 0"
+      can_pay: "steps.payable.count > 0"
+      has_items: "steps.items.count > 0"
+    steps:
+      - name: order
+        type: query
+        database: "main"
+        sql: "SELECT * FROM orders WHERE id = @id"
+      - name: payable
+        type: query
+        database: "main"
+        condition: "found"
+        sql: "SELECT id FROM orders WHERE id = @id AND status = 'pending'"
+      - name: items
+        type: query
+        database: "main"
+        condition: "found"
+        sql: "SELECT id FROM order_items WHERE order_id = @id"
+      # Validate sufficient stock exists for all items before allowing payment
+      - name: stock_check
+        type: query
+        database: "main"
+        condition: "found"
+        sql: |
+          SELECT oi.product_id, p.name, oi.quantity as needed, p.stock_qty as available
+          FROM order_items oi
+          JOIN products p ON oi.product_id = p.id
+          WHERE oi.order_id = @id AND p.stock_qty < oi.quantity
+      - name: update_status
+        type: query
+        database: "main"
+        condition: "steps.order.count > 0 && steps.payable.count > 0 && steps.items.count > 0 && steps.stock_check.count == 0"
+        sql: |
+          UPDATE orders
+          SET status = 'paid', updated_at = datetime('now')
+          WHERE id = @id
+      - name: deduct_inventory
+        type: query
+        database: "main"
+        condition: "steps.order.count > 0 && steps.payable.count > 0 && steps.items.count > 0 && steps.stock_check.count == 0"
+        sql: |
+          UPDATE products
+          SET stock_qty = stock_qty - (
+            SELECT quantity FROM order_items WHERE order_id = @id AND product_id = products.id
+          )
+          WHERE id IN (SELECT product_id FROM order_items WHERE order_id = @id)
+      - type: response
+        condition: "steps.order.count > 0 && steps.payable.count > 0 && steps.items.count > 0 && steps.stock_check.count == 0"
+        template: |
+          {
+            "success": true,
+            "order_id": {{.trigger.params.id}},
+            "previous_status": "pending",
+            "new_status": "paid"
+          }
+      - type: response
+        condition: "!found"
+        status_code: 404
+        template: '{"error": "Order not found"}'
+      - type: response
+        condition: "steps.order.count > 0 && steps.payable.count == 0"
+        status_code: 400
+        template: '{"error": "Order cannot be paid - must be in pending status"}'
+      - type: response
+        condition: "steps.order.count > 0 && steps.payable.count > 0 && steps.items.count == 0"
+        status_code: 400
+        template: '{"error": "Cannot pay for empty order"}'
+      - type: response
+        condition: "steps.order.count > 0 && steps.payable.count > 0 && steps.items.count > 0 && steps.stock_check.count > 0"
+        status_code: 400
+        template: |
+          {
+            "error": "Insufficient stock for one or more items",
+            "items": {{json .steps.stock_check.data}}
+          }
+
+  # POST /api/orders/{id}/ship - Transition to shipped
+  # [WORKAROUND] Named condition aliases don't work in compound expressions.
+  - name: "ship_order"
+    triggers:
+      - type: http
+        path: "/api/orders/{id}/ship"
+        method: POST
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    conditions:
+      found: "steps.order.count > 0"
+      can_ship: "steps.shippable.count > 0"
+    steps:
+      - name: order
+        type: query
+        database: "main"
+        sql: "SELECT * FROM orders WHERE id = @id"
+      - name: shippable
+        type: query
+        database: "main"
+        condition: "found"
+        sql: "SELECT id FROM orders WHERE id = @id AND status = 'paid'"
+      - name: update_status
+        type: query
+        database: "main"
+        condition: "steps.order.count > 0 && steps.shippable.count > 0"
+        sql: |
+          UPDATE orders
+          SET status = 'shipped', updated_at = datetime('now')
+          WHERE id = @id
+      - type: response
+        condition: "steps.order.count > 0 && steps.shippable.count > 0"
+        template: |
+          {
+            "success": true,
+            "order_id": {{.trigger.params.id}},
+            "previous_status": "paid",
+            "new_status": "shipped"
+          }
+      - type: response
+        condition: "!found"
+        status_code: 404
+        template: '{"error": "Order not found"}'
+      - type: response
+        condition: "steps.order.count > 0 && steps.shippable.count == 0"
+        status_code: 400
+        template: '{"error": "Order cannot be shipped - must be in paid status"}'
+
+  # POST /api/orders/{id}/deliver - Transition to delivered
+  # [WORKAROUND] Named condition aliases don't work in compound expressions.
+  - name: "deliver_order"
+    triggers:
+      - type: http
+        path: "/api/orders/{id}/deliver"
+        method: POST
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    conditions:
+      found: "steps.order.count > 0"
+      can_deliver: "steps.deliverable.count > 0"
+    steps:
+      - name: order
+        type: query
+        database: "main"
+        sql: "SELECT * FROM orders WHERE id = @id"
+      - name: deliverable
+        type: query
+        database: "main"
+        condition: "found"
+        sql: "SELECT id FROM orders WHERE id = @id AND status = 'shipped'"
+      - name: update_status
+        type: query
+        database: "main"
+        condition: "steps.order.count > 0 && steps.deliverable.count > 0"
+        sql: |
+          UPDATE orders
+          SET status = 'delivered', updated_at = datetime('now')
+          WHERE id = @id
+      - type: response
+        condition: "steps.order.count > 0 && steps.deliverable.count > 0"
+        template: |
+          {
+            "success": true,
+            "order_id": {{.trigger.params.id}},
+            "previous_status": "shipped",
+            "new_status": "delivered"
+          }
+      - type: response
+        condition: "!found"
+        status_code: 404
+        template: '{"error": "Order not found"}'
+      - type: response
+        condition: "steps.order.count > 0 && steps.deliverable.count == 0"
+        status_code: 400
+        template: '{"error": "Order cannot be delivered - must be in shipped status"}'
+
+  # POST /api/orders/{id}/cancel - Cancel order
+  # [WORKAROUND] Named condition aliases don't work in compound expressions.
+  - name: "cancel_order"
+    triggers:
+      - type: http
+        path: "/api/orders/{id}/cancel"
+        method: POST
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    conditions:
+      found: "steps.order.count > 0"
+      can_cancel: "steps.cancellable.count > 0"
+    steps:
+      - name: order
+        type: query
+        database: "main"
+        sql: "SELECT * FROM orders WHERE id = @id"
+      - name: cancellable
+        type: query
+        database: "main"
+        condition: "found"
+        sql: "SELECT id FROM orders WHERE id = @id AND status IN ('pending', 'paid')"
+      - name: get_items
+        type: query
+        database: "main"
+        condition: "steps.order.count > 0 && steps.cancellable.count > 0"
+        sql: "SELECT product_id, quantity FROM order_items WHERE order_id = @id"
+      # Only check if order was paid (inventory was deducted during pay_order)
+      - name: was_paid
+        type: query
+        database: "main"
+        condition: "steps.order.count > 0 && steps.cancellable.count > 0"
+        sql: "SELECT id FROM orders WHERE id = @id AND status = 'paid'"
+      # Only restore inventory if order was paid (not if cancelled from pending)
+      - name: restore_inventory
+        type: query
+        database: "main"
+        condition: "steps.order.count > 0 && steps.cancellable.count > 0 && steps.was_paid.count > 0"
+        sql: |
+          UPDATE products
+          SET stock_qty = stock_qty + COALESCE((
+            SELECT quantity FROM order_items WHERE order_id = @id AND product_id = products.id
+          ), 0)
+          WHERE id IN (SELECT product_id FROM order_items WHERE order_id = @id)
+      - name: update_status
+        type: query
+        database: "main"
+        condition: "steps.order.count > 0 && steps.cancellable.count > 0"
+        sql: |
+          UPDATE orders
+          SET status = 'cancelled', updated_at = datetime('now')
+          WHERE id = @id
+      - type: response
+        condition: "steps.order.count > 0 && steps.cancellable.count > 0"
+        template: |
+          {
+            "success": true,
+            "order_id": {{.trigger.params.id}},
+            "previous_status": "{{index .steps.order.data 0 "status"}}",
+            "new_status": "cancelled",
+            "inventory_restored": {{if gt .steps.was_paid.count 0}}true{{else}}false{{end}}
+          }
+      - type: response
+        condition: "!found"
+        status_code: 404
+        template: '{"error": "Order not found"}'
+      - type: response
+        condition: "steps.order.count > 0 && steps.cancellable.count == 0"
+        status_code: 400
+        template: '{"error": "Order cannot be cancelled - already shipped or delivered"}'
+
+  # ============================================================================
+  # INVENTORY
+  # ============================================================================
+
+  # GET /api/inventory/{product_id} - Get inventory for product
+  - name: "get_inventory"
+    triggers:
+      - type: http
+        path: "/api/inventory/{product_id}"
+        method: GET
+        parameters:
+          - name: "product_id"
+            type: "int"
+            required: true
+    conditions:
+      found: "steps.product.count > 0"
+    steps:
+      - name: product
+        type: query
+        database: "main"
+        sql: "SELECT id, sku, name, stock_qty, status FROM products WHERE id = @product_id"
+      - name: history
+        type: query
+        database: "main"
+        condition: "found"
+        sql: |
+          SELECT * FROM inventory_log
+          WHERE product_id = @product_id
+          ORDER BY created_at DESC
+          LIMIT 20
+      - type: response
+        condition: "found"
+        template: |
+          {
+            "product": {{json (index .steps.product.data 0)}},
+            "current_stock": {{index .steps.product.data 0 "stock_qty"}},
+            "history": {{json .steps.history.data}},
+            "history_count": {{.steps.history.count}}
+          }
+      - type: response
+        condition: "!found"
+        status_code: 404
+        template: '{"error": "Product not found"}'
+
+  # POST /api/inventory/{product_id}/adjust - Adjust inventory
+  - name: "adjust_inventory"
+    triggers:
+      - type: http
+        path: "/api/inventory/{product_id}/adjust"
+        method: POST
+        parameters:
+          - name: "product_id"
+            type: "int"
+            required: true
+          - name: "change_qty"
+            type: "int"
+            required: true
+          - name: "reason"
+            type: "string"
+            required: true
+    conditions:
+      found: "steps.product.count > 0"
+    steps:
+      - name: product
+        type: query
+        database: "main"
+        sql: "SELECT id, stock_qty FROM products WHERE id = @product_id"
+      - name: update_stock
+        type: query
+        database: "main"
+        condition: "found"
+        # MAX(0, ...) ensures stock_qty never goes negative (respects CHECK constraint)
+        sql: |
+          UPDATE products
+          SET stock_qty = MAX(0, stock_qty + @change_qty),
+              status = CASE
+                WHEN stock_qty + @change_qty <= 0 THEN 'out_of_stock'
+                WHEN status = 'out_of_stock' AND stock_qty + @change_qty > 0 THEN 'active'
+                ELSE status
+              END,
+              updated_at = datetime('now')
+          WHERE id = @product_id
+      # [WORKAROUND] Can't use step results as SQL params, so we use a subquery
+      # to get the previous quantity (which is now the current qty after update)
+      - name: log_change
+        type: query
+        database: "main"
+        condition: "found"
+        sql: |
+          INSERT INTO inventory_log (product_id, change_qty, previous_qty, new_qty, reason)
+          SELECT @product_id, @change_qty,
+                 (SELECT stock_qty FROM products WHERE id = @product_id) - @change_qty,
+                 (SELECT stock_qty FROM products WHERE id = @product_id),
+                 @reason
+      - name: get_new_qty
+        type: query
+        database: "main"
+        condition: "found"
+        sql: "SELECT stock_qty FROM products WHERE id = @product_id"
+      - type: response
+        condition: "found"
+        template: |
+          {
+            "success": true,
+            "product_id": {{.trigger.params.product_id}},
+            "change_qty": {{.trigger.params.change_qty}},
+            "previous_qty": {{index .steps.product.data 0 "stock_qty"}},
+            "new_qty": {{index .steps.get_new_qty.data 0 "stock_qty"}},
+            "reason": {{json .trigger.params.reason}}
+          }
+      - type: response
+        condition: "!found"
+        status_code: 404
+        template: '{"error": "Product not found"}'
+
+  # ============================================================================
+  # STATS
+  # ============================================================================
+
+  # GET /api/stats - Dashboard statistics
+  - name: "shop_stats"
+    triggers:
+      - type: http
+        path: "/api/stats"
+        method: GET
+    steps:
+      - name: product_stats
+        type: query
+        database: "main"
+        cache:
+          key: "stats:products"
+          ttl_sec: 60
+        sql: |
+          SELECT
+            COUNT(*) as total_products,
+            SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active_products,
+            SUM(CASE WHEN status = 'out_of_stock' THEN 1 ELSE 0 END) as out_of_stock,
+            SUM(stock_qty) as total_inventory,
+            ROUND(AVG(price), 2) as avg_price
+          FROM products
+      - name: order_stats
+        type: query
+        database: "main"
+        sql: |
+          SELECT
+            COUNT(*) as total_orders,
+            SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_orders,
+            SUM(CASE WHEN status = 'paid' THEN 1 ELSE 0 END) as paid_orders,
+            SUM(CASE WHEN status = 'shipped' THEN 1 ELSE 0 END) as shipped_orders,
+            SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) as delivered_orders,
+            SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_orders,
+            ROUND(SUM(CASE WHEN status NOT IN ('cancelled', 'pending') THEN total ELSE 0 END), 2) as total_revenue
+          FROM orders
+      - name: category_stats
+        type: query
+        database: "main"
+        sql: |
+          SELECT c.name, COUNT(p.id) as product_count, SUM(p.stock_qty) as total_stock
+          FROM categories c
+          LEFT JOIN products p ON c.id = p.category_id
+          WHERE c.parent_id IS NOT NULL
+          GROUP BY c.id
+          ORDER BY product_count DESC
+          LIMIT 5
+      - type: response
+        template: |
+          {
+            "products": {{json (index .steps.product_stats.data 0)}},
+            "orders": {{json (index .steps.order_stats.data 0)}},
+            "top_categories": {{json .steps.category_stats.data}},
+            "product_stats_cached": {{.steps.product_stats.cache_hit}}
+          }

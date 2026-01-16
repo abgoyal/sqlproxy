@@ -18,14 +18,8 @@ jobs:
         with:
           go-version: '1.25'
 
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Run tests
-        run: make test
-
-      - name: Run tests with coverage
-        run: make test-cover
+      - name: Run CI
+        run: make ci
 
       - name: Build
         run: make build

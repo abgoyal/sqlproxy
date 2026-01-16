@@ -54,6 +54,9 @@ const (
 	maxRequestBodySize = 1 << 20
 )
 
+// fallbackIDCounter provides unique IDs when crypto/rand fails
+var fallbackIDCounter atomic.Uint64
+
 type Server struct {
 	httpServer  *http.Server
 	debugServer *http.Server // Separate debug server (pprof) if configured on different port
@@ -961,6 +964,17 @@ func (s *Server) addWorkflowCronJobs() error {
 
 // executeWorkflowCron executes a workflow for a cron trigger
 func (s *Server) executeWorkflowCron(wf *workflow.CompiledWorkflow, trigger *workflow.CompiledTrigger) {
+	// Recover from panics to prevent crashing the cron goroutine
+	defer func() {
+		if r := recover(); r != nil {
+			logging.Error("workflow_cron_panic", map[string]any{
+				"workflow": wf.Config.Name,
+				"panic":    fmt.Sprintf("%v", r),
+			})
+			metrics.RecordCronPanic(wf.Config.Name)
+		}
+	}()
+
 	requestID := generateCronRequestID()
 
 	// Build trigger data for cron execution
@@ -1014,7 +1028,9 @@ func (s *Server) executeWorkflowCron(wf *workflow.CompiledWorkflow, trigger *wor
 func generateCronRequestID() string {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("cron-%x", time.Now().UnixNano())
+		// Use counter + time for uniqueness when crypto/rand fails
+		counter := fallbackIDCounter.Add(1)
+		return fmt.Sprintf("cron-%x-%d", time.Now().UnixNano(), counter)
 	}
 	return fmt.Sprintf("cron-%s", hex.EncodeToString(b))
 }

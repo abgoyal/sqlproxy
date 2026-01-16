@@ -60,6 +60,13 @@ func (s *HTTPCallStep) Execute(ctx context.Context, data ExecutionData) (*Result
 	start := time.Now()
 	result := &Result{}
 
+	// Apply step-level timeout if configured
+	if s.TimeoutSec > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(s.TimeoutSec)*time.Second)
+		defer cancel()
+	}
+
 	// Render URL template
 	var urlBuf bytes.Buffer
 	if err := s.URLTemplate.Execute(&urlBuf, data.TemplateData); err != nil {

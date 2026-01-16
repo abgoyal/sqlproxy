@@ -531,6 +531,46 @@ func TestValidate_Warnings(t *testing.T) {
 		}
 	})
 
+	t.Run("all response steps conditional warning", func(t *testing.T) {
+		cfg := &WorkflowConfig{
+			Name:     "test",
+			Triggers: []TriggerConfig{{Type: "http", Path: "/test", Method: "GET"}},
+			Steps: []StepConfig{
+				{Name: "q", Type: "query", Database: "db", SQL: "SELECT 1"},
+				{Type: "response", Template: `{"found": true}`, Condition: "steps.q.count > 0"},
+				{Type: "response", Template: `{"found": false}`, Condition: "steps.q.count == 0"},
+			},
+		}
+		ctx := &ValidationContext{Databases: map[string]bool{"db": true}}
+		result := Validate(cfg, ctx)
+		if !result.Valid {
+			t.Errorf("expected valid with warnings, got errors: %v", result.Errors)
+		}
+		if !containsWarning(result.Warnings, "all response steps have conditions") {
+			t.Errorf("expected conditional-response warning, got: %v", result.Warnings)
+		}
+	})
+
+	t.Run("no warning with unconditional fallback response", func(t *testing.T) {
+		cfg := &WorkflowConfig{
+			Name:     "test",
+			Triggers: []TriggerConfig{{Type: "http", Path: "/test", Method: "GET"}},
+			Steps: []StepConfig{
+				{Name: "q", Type: "query", Database: "db", SQL: "SELECT 1"},
+				{Type: "response", Template: `{"found": true}`, Condition: "steps.q.count > 0"},
+				{Type: "response", Template: `{"found": false}`}, // unconditional fallback
+			},
+		}
+		ctx := &ValidationContext{Databases: map[string]bool{"db": true}}
+		result := Validate(cfg, ctx)
+		if !result.Valid {
+			t.Errorf("expected valid, got errors: %v", result.Errors)
+		}
+		if containsWarning(result.Warnings, "all response steps have conditions") {
+			t.Errorf("should not warn when unconditional fallback exists, got: %v", result.Warnings)
+		}
+	})
+
 	t.Run("cron trigger ignores HTTP fields", func(t *testing.T) {
 		cfg := &WorkflowConfig{
 			Name: "test",

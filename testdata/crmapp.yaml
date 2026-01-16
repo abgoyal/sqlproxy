@@ -1,0 +1,1154 @@
+# CRM Application API
+# Demonstrates: Auth, role-based access, relationships, multiple rate limits, workflows
+#
+# Features covered:
+# - API key authentication via api_key query parameter
+# - Role-based access control (admin/sales/viewer)
+# - Multiple rate limit pools per role
+# - Customer/Contact/Deal/Activity relationships
+# - Complex multi-step workflows
+# - Extensive seed data (50+ customers, 100+ contacts, etc.)
+#
+# TODO/WORKAROUNDS (revisit after fixes):
+# - [WORKAROUND] Using query param auth instead of X-API-Key header because
+#   query steps can't bind header values to SQL params. Fix: Add params: field
+#   to StepConfig with template evaluation.
+# - [WORKAROUND] Using inline expressions like "steps.auth.count > 0 && steps.auth_write.count == 0"
+#   instead of named aliases because compound expressions with aliases fail at runtime.
+#   Fix: Add alias values to BuildExprEnv() or substitute aliases in compound expressions.
+# - [WORKAROUND] Role filtering embedded in SQL WHERE clauses instead of conditions
+#   because conditions can't access step data (e.g., steps.auth.data[0].role).
+#   Fix: Support array indexing in condition expressions.
+# - [WORKAROUND] Using SQL subqueries for owner_id/created_by instead of step results
+#   because can't pass step data to SQL params. Fix: params: field with templates.
+#
+# DROPPED FEATURES (not implemented due to sql-proxy limitations):
+# - HTTPCall step for customer enrichment via external API - HTTPCall exists but
+#   couldn't integrate results back into workflow due to params limitations
+# - Dynamic response templates by role - wanted admin/sales/viewer to see different
+#   fields, but conditions can't access steps.auth.data[0].role
+
+server:
+  host: "127.0.0.1"
+  port: ${PORT}
+  default_timeout_sec: 30
+  max_timeout_sec: 300
+  cache:
+    enabled: true
+    max_size_mb: 256
+    default_ttl_sec: 300
+
+databases:
+  - name: "main"
+    type: "sqlite"
+    path: "${DB_PATH}"
+    readonly: false
+
+rate_limits:
+  # High limit for admins
+  - name: "admin_limit"
+    requests_per_second: 100
+    burst: 200
+    key: "admin_{{.ClientIP}}"
+
+  # Medium limit for sales users
+  - name: "sales_limit"
+    requests_per_second: 20
+    burst: 40
+    key: "sales_{{.ClientIP}}"
+
+  # Low limit for viewers
+  - name: "viewer_limit"
+    requests_per_second: 10
+    burst: 20
+    key: "viewer_{{.ClientIP}}"
+
+  # Public endpoint limit (no auth)
+  - name: "public_limit"
+    requests_per_second: 5
+    burst: 10
+    key: "public_{{.ClientIP}}"
+
+logging:
+  level: "debug"
+  file_path: "/tmp/sql-proxy-crmapp.log"
+  max_size_mb: 10
+  max_backups: 1
+  max_age_days: 1
+
+metrics:
+  enabled: true
+
+workflows:
+  # ============================================================================
+  # DATABASE INITIALIZATION
+  # ============================================================================
+
+  - name: "init_db"
+    triggers:
+      - type: http
+        path: "/api/init"
+        method: POST
+    steps:
+      # Create users table (for API key auth)
+      - name: create_users
+        type: query
+        database: "main"
+        sql: |
+          CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            role TEXT NOT NULL CHECK (role IN ('admin', 'sales', 'viewer')),
+            api_key TEXT NOT NULL UNIQUE,
+            created_at TEXT DEFAULT (datetime('now'))
+          )
+
+      # Create customers table
+      - name: create_customers
+        type: query
+        database: "main"
+        sql: |
+          CREATE TABLE IF NOT EXISTS customers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            email TEXT,
+            phone TEXT,
+            company TEXT,
+            status TEXT DEFAULT 'lead' CHECK (status IN ('lead', 'prospect', 'customer', 'churned')),
+            owner_id INTEGER REFERENCES users(id),
+            notes TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+          )
+
+      # Create contacts table
+      - name: create_contacts
+        type: query
+        database: "main"
+        sql: |
+          CREATE TABLE IF NOT EXISTS contacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            email TEXT,
+            phone TEXT,
+            title TEXT,
+            is_primary INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now'))
+          )
+
+      # Create deals table
+      - name: create_deals
+        type: query
+        database: "main"
+        sql: |
+          CREATE TABLE IF NOT EXISTS deals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            value REAL DEFAULT 0,
+            stage TEXT DEFAULT 'new' CHECK (stage IN ('new', 'qualified', 'proposal', 'negotiation', 'won', 'lost')),
+            probability INTEGER DEFAULT 10,
+            owner_id INTEGER REFERENCES users(id),
+            expected_close TEXT,
+            notes TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+          )
+
+      # Create activities table
+      - name: create_activities
+        type: query
+        database: "main"
+        sql: |
+          CREATE TABLE IF NOT EXISTS activities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER REFERENCES customers(id) ON DELETE CASCADE,
+            deal_id INTEGER REFERENCES deals(id) ON DELETE CASCADE,
+            type TEXT NOT NULL CHECK (type IN ('call', 'email', 'meeting', 'note', 'task')),
+            subject TEXT NOT NULL,
+            description TEXT,
+            due_date TEXT,
+            completed INTEGER DEFAULT 0,
+            created_by INTEGER REFERENCES users(id),
+            created_at TEXT DEFAULT (datetime('now'))
+          )
+
+      # Create indexes
+      - name: create_indexes
+        type: query
+        database: "main"
+        sql: |
+          CREATE INDEX IF NOT EXISTS idx_customers_owner ON customers(owner_id);
+          CREATE INDEX IF NOT EXISTS idx_customers_status ON customers(status);
+          CREATE INDEX IF NOT EXISTS idx_contacts_customer ON contacts(customer_id);
+          CREATE INDEX IF NOT EXISTS idx_deals_customer ON deals(customer_id);
+          CREATE INDEX IF NOT EXISTS idx_deals_stage ON deals(stage);
+          CREATE INDEX IF NOT EXISTS idx_activities_customer ON activities(customer_id);
+          CREATE INDEX IF NOT EXISTS idx_activities_deal ON activities(deal_id)
+
+      # Seed users (10 users: 3 admin, 5 sales, 2 viewer)
+      - name: seed_users
+        type: query
+        database: "main"
+        sql: |
+          INSERT OR IGNORE INTO users (id, email, name, role, api_key) VALUES
+            (1, 'admin1@example.com', 'Alice Admin', 'admin', 'admin-key-001'),
+            (2, 'admin2@example.com', 'Bob Boss', 'admin', 'admin-key-002'),
+            (3, 'admin3@example.com', 'Carol Chief', 'admin', 'admin-key-003'),
+            (4, 'sales1@example.com', 'Dan Dealer', 'sales', 'sales-key-001'),
+            (5, 'sales2@example.com', 'Eve Exec', 'sales', 'sales-key-002'),
+            (6, 'sales3@example.com', 'Frank Field', 'sales', 'sales-key-003'),
+            (7, 'sales4@example.com', 'Grace Growth', 'sales', 'sales-key-004'),
+            (8, 'sales5@example.com', 'Henry Hunter', 'sales', 'sales-key-005'),
+            (9, 'viewer1@example.com', 'Ivy Inspector', 'viewer', 'viewer-key-001'),
+            (10, 'viewer2@example.com', 'Jack Judge', 'viewer', 'viewer-key-002')
+
+      # Seed customers (50 customers)
+      - name: seed_customers
+        type: query
+        database: "main"
+        sql: |
+          INSERT OR IGNORE INTO customers (id, name, email, phone, company, status, owner_id, notes) VALUES
+            (1, 'Acme Corp', 'contact@acme.com', '555-0101', 'Acme Corporation', 'customer', 4, 'Long-term customer'),
+            (2, 'Globex Inc', 'info@globex.com', '555-0102', 'Globex Industries', 'customer', 5, 'Enterprise client'),
+            (3, 'Initech', 'sales@initech.com', '555-0103', 'Initech LLC', 'prospect', 4, 'Interested in premium'),
+            (4, 'Umbrella Corp', 'biz@umbrella.com', '555-0104', 'Umbrella Corporation', 'lead', 6, 'New inquiry'),
+            (5, 'Stark Industries', 'tony@stark.com', '555-0105', 'Stark Industries', 'customer', 5, 'High value'),
+            (6, 'Wayne Enterprises', 'bruce@wayne.com', '555-0106', 'Wayne Enterprises', 'customer', 4, 'Long-term partner'),
+            (7, 'Oscorp', 'norman@oscorp.com', '555-0107', 'Oscorp Industries', 'prospect', 7, 'In discussion'),
+            (8, 'LexCorp', 'lex@lexcorp.com', '555-0108', 'LexCorp', 'lead', 8, 'Initial contact'),
+            (9, 'Cyberdyne', 'info@cyberdyne.com', '555-0109', 'Cyberdyne Systems', 'customer', 6, 'Tech partner'),
+            (10, 'Weyland-Yutani', 'corp@weyland.com', '555-0110', 'Weyland-Yutani Corp', 'prospect', 7, 'Negotiating'),
+            (11, 'Tyrell Corp', 'eldon@tyrell.com', '555-0111', 'Tyrell Corporation', 'customer', 4, 'Premium tier'),
+            (12, 'Massive Dynamic', 'nina@massive.com', '555-0112', 'Massive Dynamic', 'customer', 5, 'Strategic account'),
+            (13, 'Hooli', 'gavin@hooli.com', '555-0113', 'Hooli Inc', 'churned', 6, 'Lost to competitor'),
+            (14, 'Pied Piper', 'richard@piedpiper.com', '555-0114', 'Pied Piper', 'customer', 4, 'Startup partner'),
+            (15, 'Aviato', 'erlich@aviato.com', '555-0115', 'Aviato', 'lead', 7, 'Founder referral'),
+            (16, 'Dunder Mifflin', 'michael@dundermifflin.com', '555-0116', 'Dunder Mifflin', 'customer', 5, 'Paper supplies'),
+            (17, 'Sterling Cooper', 'don@sterlingcooper.com', '555-0117', 'Sterling Cooper', 'prospect', 8, 'Ad agency'),
+            (18, 'SPECTRE', 'blofeld@spectre.com', '555-0118', 'SPECTRE Holdings', 'lead', 4, 'Anonymous inquiry'),
+            (19, 'Wonka Industries', 'willy@wonka.com', '555-0119', 'Wonka Industries', 'customer', 6, 'Food sector'),
+            (20, 'Soylent Corp', 'sol@soylent.com', '555-0120', 'Soylent Corporation', 'prospect', 7, 'Green products'),
+            (21, 'Nakatomi Corp', 'takagi@nakatomi.com', '555-0121', 'Nakatomi Corporation', 'customer', 5, 'Real estate'),
+            (22, 'Buy N Large', 'shelby@bnl.com', '555-0122', 'Buy N Large', 'customer', 4, 'Retail giant'),
+            (23, 'Monsters Inc', 'sully@monsters.com', '555-0123', 'Monsters Incorporated', 'customer', 6, 'Energy sector'),
+            (24, 'InGen', 'hammond@ingen.com', '555-0124', 'InGen Corporation', 'churned', 8, 'Project cancelled'),
+            (25, 'Dharma Initiative', 'jacob@dharma.com', '555-0125', 'Dharma Initiative', 'lead', 7, 'Research org'),
+            (26, 'Rekall', 'quaid@rekall.com', '555-0126', 'Rekall Inc', 'prospect', 4, 'Memory services'),
+            (27, 'Omni Consumer', 'bob@ocp.com', '555-0127', 'Omni Consumer Products', 'customer', 5, 'Detroit HQ'),
+            (28, 'Veidt Enterprises', 'adrian@veidt.com', '555-0128', 'Veidt Enterprises', 'customer', 6, 'Global reach'),
+            (29, 'Multi-National United', 'wikus@mnu.com', '555-0129', 'MNU', 'prospect', 7, 'Defense contract'),
+            (30, 'Yoyodyne', 'john@yoyodyne.com', '555-0130', 'Yoyodyne Propulsion', 'lead', 8, 'Aerospace'),
+            (31, 'Aperture Science', 'cave@aperture.com', '555-0131', 'Aperture Science', 'customer', 4, 'Testing lab'),
+            (32, 'Black Mesa', 'gordon@blackmesa.com', '555-0132', 'Black Mesa Research', 'customer', 5, 'Research facility'),
+            (33, 'Vault-Tec', 'overseer@vaulttec.com', '555-0133', 'Vault-Tec Corporation', 'prospect', 6, 'Infrastructure'),
+            (34, 'Abstergo', 'warren@abstergo.com', '555-0134', 'Abstergo Industries', 'lead', 7, 'Pharma sector'),
+            (35, 'Bluth Company', 'michael@bluth.com', '555-0135', 'Bluth Company', 'churned', 8, 'Real estate'),
+            (36, 'Prestige Worldwide', 'dale@prestige.com', '555-0136', 'Prestige Worldwide', 'lead', 4, 'Entertainment'),
+            (37, 'Initrode', 'bill@initrode.com', '555-0137', 'Initrode Global', 'prospect', 5, 'Competitor to Initech'),
+            (38, 'Virtucon', 'evil@virtucon.com', '555-0138', 'Virtucon', 'customer', 6, 'Diverse holdings'),
+            (39, 'Gringotts', 'griphook@gringotts.com', '555-0139', 'Gringotts Bank', 'customer', 7, 'Financial'),
+            (40, 'Daily Planet', 'perry@dailyplanet.com', '555-0140', 'Daily Planet', 'customer', 8, 'Media'),
+            (41, 'Planet Express', 'fry@planetexpress.com', '555-0141', 'Planet Express', 'prospect', 4, 'Delivery'),
+            (42, 'Central Perk', 'gunther@centralperk.com', '555-0142', 'Central Perk', 'lead', 5, 'Coffee shop'),
+            (43, 'Krusty Krab', 'krabs@krustykrab.com', '555-0143', 'Krusty Krab', 'customer', 6, 'Restaurant'),
+            (44, 'Paddys Pub', 'charlie@paddyspub.com', '555-0144', 'Paddys Pub', 'churned', 7, 'Bar'),
+            (45, 'Moes Tavern', 'moe@moestavern.com', '555-0145', 'Moes Tavern', 'lead', 8, 'Bar'),
+            (46, 'Los Pollos', 'gus@lospollos.com', '555-0146', 'Los Pollos Hermanos', 'customer', 4, 'Restaurant chain'),
+            (47, 'Beneke Fabricators', 'ted@beneke.com', '555-0147', 'Beneke Fabricators', 'prospect', 5, 'Manufacturing'),
+            (48, 'Gray Matter', 'elliot@graymatter.com', '555-0148', 'Gray Matter Technologies', 'customer', 6, 'Tech research'),
+            (49, 'Madrigal', 'lydia@madrigal.com', '555-0149', 'Madrigal Electromotive', 'prospect', 7, 'Logistics'),
+            (50, 'Saul Goodman & Assoc', 'saul@bettercallsaul.com', '555-0150', 'Saul Goodman & Associates', 'customer', 8, 'Legal services')
+
+      # Seed contacts (100+ contacts, ~2 per customer)
+      - name: seed_contacts
+        type: query
+        database: "main"
+        sql: |
+          INSERT OR IGNORE INTO contacts (id, customer_id, name, email, phone, title, is_primary) VALUES
+            (1, 1, 'John Smith', 'john@acme.com', '555-1001', 'CEO', 1),
+            (2, 1, 'Jane Doe', 'jane@acme.com', '555-1002', 'CFO', 0),
+            (3, 2, 'Bob Johnson', 'bob@globex.com', '555-1003', 'Director', 1),
+            (4, 2, 'Alice Brown', 'alice@globex.com', '555-1004', 'Manager', 0),
+            (5, 3, 'Peter Gibbons', 'peter@initech.com', '555-1005', 'Engineer', 1),
+            (6, 3, 'Michael Bolton', 'michael@initech.com', '555-1006', 'Developer', 0),
+            (7, 4, 'Albert Wesker', 'wesker@umbrella.com', '555-1007', 'Director', 1),
+            (8, 5, 'Pepper Potts', 'pepper@stark.com', '555-1008', 'CEO', 1),
+            (9, 5, 'Happy Hogan', 'happy@stark.com', '555-1009', 'Security', 0),
+            (10, 6, 'Alfred Pennyworth', 'alfred@wayne.com', '555-1010', 'Butler', 1),
+            (11, 6, 'Lucius Fox', 'lucius@wayne.com', '555-1011', 'CEO', 0),
+            (12, 7, 'Harry Osborn', 'harry@oscorp.com', '555-1012', 'VP', 1),
+            (13, 8, 'Mercy Graves', 'mercy@lexcorp.com', '555-1013', 'Assistant', 1),
+            (14, 9, 'Miles Dyson', 'miles@cyberdyne.com', '555-1014', 'CTO', 1),
+            (15, 10, 'Ellen Ripley', 'ripley@weyland.com', '555-1015', 'Officer', 1),
+            (16, 11, 'Rachael Tyrell', 'rachael@tyrell.com', '555-1016', 'Assistant', 1),
+            (17, 12, 'Walter Bishop', 'walter@massive.com', '555-1017', 'Scientist', 1),
+            (18, 12, 'Olivia Dunham', 'olivia@massive.com', '555-1018', 'Agent', 0),
+            (19, 13, 'Bighead', 'bighead@hooli.com', '555-1019', 'Engineer', 1),
+            (20, 14, 'Jared Dunn', 'jared@piedpiper.com', '555-1020', 'COO', 1),
+            (21, 14, 'Dinesh Chugtai', 'dinesh@piedpiper.com', '555-1021', 'Developer', 0),
+            (22, 14, 'Bertram Gilfoyle', 'gilfoyle@piedpiper.com', '555-1022', 'SysAdmin', 0),
+            (23, 15, 'Jian Yang', 'jian@aviato.com', '555-1023', 'Founder', 1),
+            (24, 16, 'Jim Halpert', 'jim@dundermifflin.com', '555-1024', 'Sales', 1),
+            (25, 16, 'Dwight Schrute', 'dwight@dundermifflin.com', '555-1025', 'Sales', 0),
+            (26, 16, 'Pam Beesly', 'pam@dundermifflin.com', '555-1026', 'Reception', 0),
+            (27, 17, 'Peggy Olson', 'peggy@sterlingcooper.com', '555-1027', 'Copywriter', 1),
+            (28, 18, 'Ernst Stavro', 'ernst@spectre.com', '555-1028', 'Director', 1),
+            (29, 19, 'Charlie Bucket', 'charlie@wonka.com', '555-1029', 'Heir', 1),
+            (30, 20, 'Sol Roth', 'sol@soylent.com', '555-1030', 'Researcher', 1),
+            (31, 21, 'Joseph Takagi', 'joseph@nakatomi.com', '555-1031', 'President', 1),
+            (32, 22, 'Shelby Forthright', 'shelby@bnl.com', '555-1032', 'CEO', 1),
+            (33, 23, 'James Sullivan', 'james@monsters.com', '555-1033', 'Scarer', 1),
+            (34, 23, 'Mike Wazowski', 'mike@monsters.com', '555-1034', 'Assistant', 0),
+            (35, 24, 'Ian Malcolm', 'ian@ingen.com', '555-1035', 'Consultant', 1),
+            (36, 25, 'Benjamin Linus', 'ben@dharma.com', '555-1036', 'Leader', 1),
+            (37, 26, 'Douglas Quaid', 'doug@rekall.com', '555-1037', 'Client', 1),
+            (38, 27, 'Dick Jones', 'dick@ocp.com', '555-1038', 'VP', 1),
+            (39, 28, 'Adrian Veidt', 'adrian@veidt.com', '555-1039', 'CEO', 1),
+            (40, 29, 'Wikus Van De Merwe', 'wikus@mnu.com', '555-1040', 'Agent', 1),
+            (41, 30, 'John Whorfin', 'john@yoyodyne.com', '555-1041', 'Director', 1),
+            (42, 31, 'GLaDOS', 'glados@aperture.com', '555-1042', 'AI', 1),
+            (43, 32, 'Gordon Freeman', 'gordon@blackmesa.com', '555-1043', 'Scientist', 1),
+            (44, 33, 'The Overseer', 'overseer@vaulttec.com', '555-1044', 'Manager', 1),
+            (45, 34, 'Warren Vidic', 'warren@abstergo.com', '555-1045', 'Director', 1),
+            (46, 35, 'George Bluth', 'george@bluth.com', '555-1046', 'Founder', 1),
+            (47, 36, 'Brennan Huff', 'brennan@prestige.com', '555-1047', 'CEO', 1),
+            (48, 37, 'Bill Lumbergh', 'bill@initrode.com', '555-1048', 'VP', 1),
+            (49, 38, 'Dr Evil', 'evil@virtucon.com', '555-1049', 'CEO', 1),
+            (50, 39, 'Griphook', 'griphook@gringotts.com', '555-1050', 'Teller', 1)
+
+      # Seed deals (75 deals)
+      - name: seed_deals
+        type: query
+        database: "main"
+        sql: |
+          INSERT OR IGNORE INTO deals (id, customer_id, title, value, stage, probability, owner_id, expected_close) VALUES
+            (1, 1, 'Annual Contract Renewal', 50000, 'won', 100, 4, '2024-01-15'),
+            (2, 1, 'Product Expansion', 25000, 'negotiation', 70, 4, '2024-03-01'),
+            (3, 2, 'Enterprise License', 150000, 'won', 100, 5, '2024-02-01'),
+            (4, 2, 'Support Package', 30000, 'proposal', 60, 5, '2024-04-15'),
+            (5, 3, 'Initial Purchase', 15000, 'qualified', 40, 4, '2024-05-01'),
+            (6, 4, 'Discovery Deal', 5000, 'new', 10, 6, '2024-06-01'),
+            (7, 5, 'Arc Reactor License', 500000, 'won', 100, 5, '2024-01-01'),
+            (8, 5, 'Consulting Services', 75000, 'proposal', 50, 5, '2024-03-15'),
+            (9, 6, 'Security Contract', 200000, 'won', 100, 4, '2024-02-15'),
+            (10, 6, 'R&D Partnership', 100000, 'negotiation', 80, 4, '2024-04-01'),
+            (11, 7, 'Research Grant', 45000, 'qualified', 30, 7, '2024-07-01'),
+            (12, 8, 'Pilot Program', 10000, 'new', 20, 8, '2024-08-01'),
+            (13, 9, 'AI Systems', 80000, 'won', 100, 6, '2024-01-20'),
+            (14, 10, 'Colonial Contract', 250000, 'proposal', 55, 7, '2024-05-15'),
+            (15, 11, 'Replicant Services', 120000, 'won', 100, 4, '2024-02-28'),
+            (16, 12, 'Research License', 90000, 'won', 100, 5, '2024-03-01'),
+            (17, 14, 'Compression Tech', 35000, 'negotiation', 75, 4, '2024-04-30'),
+            (18, 16, 'Office Supplies', 8000, 'won', 100, 5, '2024-01-10'),
+            (19, 17, 'Ad Campaign', 60000, 'qualified', 35, 8, '2024-06-15'),
+            (20, 19, 'Chocolate Factory Tour', 12000, 'won', 100, 6, '2024-02-14'),
+            (21, 21, 'Building Contract', 180000, 'won', 100, 5, '2024-01-25'),
+            (22, 22, 'Retail Partnership', 95000, 'won', 100, 4, '2024-03-10'),
+            (23, 23, 'Energy Contract', 70000, 'won', 100, 6, '2024-02-20'),
+            (24, 26, 'Memory Package', 20000, 'proposal', 45, 4, '2024-07-15'),
+            (25, 27, 'Product Line', 55000, 'won', 100, 5, '2024-01-30'),
+            (26, 28, 'Global Expansion', 300000, 'negotiation', 65, 6, '2024-06-01'),
+            (27, 31, 'Testing Contract', 40000, 'won', 100, 4, '2024-02-10'),
+            (28, 32, 'Research Services', 65000, 'won', 100, 5, '2024-03-05'),
+            (29, 38, 'Holdings Deal', 110000, 'won', 100, 6, '2024-01-15'),
+            (30, 39, 'Banking Services', 85000, 'won', 100, 7, '2024-02-25'),
+            (31, 40, 'Media Partnership', 45000, 'won', 100, 8, '2024-03-20'),
+            (32, 43, 'Franchise License', 25000, 'won', 100, 6, '2024-01-05'),
+            (33, 46, 'Restaurant Chain', 60000, 'won', 100, 4, '2024-02-01'),
+            (34, 48, 'Tech License', 95000, 'won', 100, 6, '2024-03-15'),
+            (35, 50, 'Legal Retainer', 30000, 'won', 100, 8, '2024-01-20'),
+            (36, 1, 'Q2 Expansion', 35000, 'new', 15, 4, '2024-09-01'),
+            (37, 2, 'Training Package', 18000, 'qualified', 40, 5, '2024-08-15'),
+            (38, 5, 'Iron Man Suit Lease', 1000000, 'new', 5, 5, '2025-01-01'),
+            (39, 6, 'Batmobile Fleet', 500000, 'qualified', 25, 4, '2024-12-01'),
+            (40, 9, 'Skynet Prevention', 200000, 'lost', 0, 6, '2024-03-01'),
+            (41, 11, 'Blade Runner Contract', 80000, 'new', 20, 4, '2024-10-01'),
+            (42, 12, 'Fringe Division Support', 55000, 'proposal', 50, 5, '2024-09-15'),
+            (43, 14, 'Middle-Out Licensing', 250000, 'negotiation', 60, 4, '2024-08-01'),
+            (44, 16, 'Branch Expansion', 12000, 'qualified', 45, 5, '2024-07-01'),
+            (45, 21, 'Tower Security', 150000, 'new', 10, 5, '2024-11-01'),
+            (46, 22, 'E-commerce Platform', 80000, 'qualified', 35, 4, '2024-10-15'),
+            (47, 23, 'Laugh Energy R&D', 100000, 'proposal', 55, 6, '2024-09-01'),
+            (48, 27, 'RoboCop Program', 500000, 'new', 5, 5, '2025-06-01'),
+            (49, 28, 'Ozymandias Project', 1000000, 'qualified', 20, 6, '2025-03-01'),
+            (50, 31, 'Portal Technology', 300000, 'new', 10, 4, '2025-01-15'),
+            (51, 32, 'Resonance Cascade Prevention', 150000, 'proposal', 40, 5, '2024-11-15'),
+            (52, 33, 'Vault Construction', 200000, 'qualified', 30, 6, '2024-12-15'),
+            (53, 34, 'Animus Expansion', 90000, 'new', 15, 7, '2024-10-01'),
+            (54, 37, 'TPS Report Automation', 5000, 'lost', 0, 5, '2024-04-01'),
+            (55, 38, 'Laser Shark Program', 75000, 'proposal', 45, 6, '2024-08-15'),
+            (56, 39, 'Dragon Account', 120000, 'qualified', 35, 7, '2024-09-30'),
+            (57, 40, 'Superman Exclusive', 200000, 'negotiation', 70, 8, '2024-07-15'),
+            (58, 41, 'Delivery Contract', 40000, 'new', 20, 4, '2024-11-30'),
+            (59, 43, 'Secret Formula License', 100000, 'qualified', 25, 6, '2024-12-01'),
+            (60, 46, 'Distribution Deal', 75000, 'proposal', 50, 4, '2024-10-30'),
+            (61, 47, 'Manufacturing Contract', 55000, 'new', 15, 5, '2024-11-15'),
+            (62, 48, 'Chemistry Partnership', 150000, 'qualified', 40, 6, '2024-09-15'),
+            (63, 49, 'Logistics Overhaul', 85000, 'new', 10, 7, '2024-12-30'),
+            (64, 50, 'Criminal Defense Retainer', 50000, 'proposal', 60, 8, '2024-08-01'),
+            (65, 3, 'Premium Upgrade', 25000, 'proposal', 55, 4, '2024-06-30'),
+            (66, 7, 'Goblin Tech Deal', 100000, 'qualified', 30, 7, '2024-08-30'),
+            (67, 10, 'Xenomorph Research', 500000, 'new', 5, 7, '2025-02-01'),
+            (68, 15, 'Incubator Space', 15000, 'new', 25, 7, '2024-07-30'),
+            (69, 17, 'TV Campaign', 120000, 'proposal', 45, 8, '2024-09-01'),
+            (70, 19, 'Golden Ticket Promo', 50000, 'qualified', 50, 6, '2024-08-15'),
+            (71, 20, 'Green Initiative', 35000, 'new', 15, 7, '2024-10-15'),
+            (72, 25, 'Island Facility', 250000, 'new', 10, 7, '2025-01-01'),
+            (73, 29, 'Prawns Relocation', 75000, 'qualified', 25, 7, '2024-11-01'),
+            (74, 30, 'Propulsion Contract', 180000, 'proposal', 40, 8, '2024-10-01'),
+            (75, 36, 'Entertainment Package', 20000, 'new', 20, 4, '2024-09-30')
+
+      # Seed activities (200+ activities)
+      - name: seed_activities
+        type: query
+        database: "main"
+        sql: |
+          INSERT OR IGNORE INTO activities (id, customer_id, deal_id, type, subject, description, completed, created_by) VALUES
+            (1, 1, 1, 'call', 'Renewal Discussion', 'Discussed contract renewal terms', 1, 4),
+            (2, 1, 1, 'email', 'Contract Sent', 'Sent renewal contract for signature', 1, 4),
+            (3, 1, 1, 'meeting', 'Final Negotiation', 'Met to finalize terms', 1, 4),
+            (4, 1, 2, 'call', 'Expansion Inquiry', 'Called about product expansion', 0, 4),
+            (5, 2, 3, 'meeting', 'Enterprise Demo', 'Demonstrated enterprise features', 1, 5),
+            (6, 2, 3, 'email', 'Proposal Follow-up', 'Followed up on proposal', 1, 5),
+            (7, 2, 4, 'call', 'Support Discussion', 'Discussed support package options', 0, 5),
+            (8, 3, 5, 'note', 'Initial Contact', 'First meeting went well', 1, 4),
+            (9, 4, 6, 'email', 'Introduction', 'Sent introduction email', 1, 6),
+            (10, 5, 7, 'meeting', 'License Signing', 'Signed arc reactor license', 1, 5),
+            (11, 5, 8, 'call', 'Consulting Scope', 'Defined consulting scope', 0, 5),
+            (12, 6, 9, 'meeting', 'Security Audit', 'Completed security audit', 1, 4),
+            (13, 6, 10, 'call', 'R&D Planning', 'Discussed R&D partnership', 0, 4),
+            (14, 7, 11, 'email', 'Grant Application', 'Sent grant application details', 1, 7),
+            (15, 8, 12, 'note', 'Cold Lead', 'Needs more nurturing', 1, 8),
+            (16, 9, 13, 'meeting', 'AI Demo', 'Demonstrated AI capabilities', 1, 6),
+            (17, 10, 14, 'call', 'Colonial Discussion', 'Discussed colonial requirements', 0, 7),
+            (18, 11, 15, 'email', 'Service Agreement', 'Sent service agreement', 1, 4),
+            (19, 12, 16, 'meeting', 'Research License', 'Finalized research license', 1, 5),
+            (20, 14, 17, 'call', 'Tech Discussion', 'Discussed compression technology', 0, 4),
+            (21, 16, 18, 'email', 'Order Confirmation', 'Confirmed office supply order', 1, 5),
+            (22, 17, 19, 'meeting', 'Creative Brief', 'Reviewed creative brief', 1, 8),
+            (23, 19, 20, 'note', 'Tour Scheduled', 'Factory tour scheduled', 1, 6),
+            (24, 21, 21, 'call', 'Building Requirements', 'Discussed building needs', 1, 5),
+            (25, 22, 22, 'meeting', 'Partnership Agreement', 'Signed partnership', 1, 4),
+            (26, 23, 23, 'email', 'Energy Contract', 'Sent energy contract', 1, 6),
+            (27, 26, 24, 'call', 'Memory Options', 'Discussed memory packages', 0, 4),
+            (28, 27, 25, 'meeting', 'Product Review', 'Reviewed product line', 1, 5),
+            (29, 28, 26, 'call', 'Expansion Planning', 'Global expansion discussion', 0, 6),
+            (30, 31, 27, 'email', 'Testing Schedule', 'Sent testing schedule', 1, 4),
+            (31, 32, 28, 'meeting', 'Research Agreement', 'Signed research agreement', 1, 5),
+            (32, 38, 29, 'call', 'Holdings Review', 'Reviewed holdings portfolio', 1, 6),
+            (33, 39, 30, 'meeting', 'Banking Setup', 'Set up banking services', 1, 7),
+            (34, 40, 31, 'email', 'Media Agreement', 'Sent media partnership agreement', 1, 8),
+            (35, 43, 32, 'note', 'Franchise Approved', 'Franchise license approved', 1, 6),
+            (36, 46, 33, 'meeting', 'Chain Expansion', 'Discussed chain expansion', 1, 4),
+            (37, 48, 34, 'call', 'Tech Licensing', 'Discussed tech licensing terms', 1, 6),
+            (38, 50, 35, 'meeting', 'Retainer Setup', 'Set up legal retainer', 1, 8),
+            (39, 1, 36, 'task', 'Prepare Q2 Proposal', 'Need to prepare Q2 expansion proposal', 0, 4),
+            (40, 2, 37, 'call', 'Training Needs', 'Assessed training needs', 0, 5),
+            (41, 5, 38, 'note', 'Big Opportunity', 'Potential huge deal - need exec involvement', 0, 5),
+            (42, 6, 39, 'email', 'Fleet Inquiry', 'Sent Batmobile fleet inquiry', 0, 4),
+            (43, 9, 40, 'meeting', 'Prevention Strategy', 'Discussed prevention strategies', 1, 6),
+            (44, 11, 41, 'call', 'Blade Runner Scope', 'Defined project scope', 0, 4),
+            (45, 12, 42, 'task', 'Proposal Draft', 'Draft Fringe Division proposal', 0, 5),
+            (46, 14, 43, 'meeting', 'Licensing Terms', 'Negotiated licensing terms', 0, 4),
+            (47, 16, 44, 'note', 'Branch Interest', 'Branch showing interest in expansion', 0, 5),
+            (48, 21, 45, 'email', 'Security Proposal', 'Sent tower security proposal', 0, 5),
+            (49, 22, 46, 'call', 'E-commerce Demo', 'Scheduled e-commerce demo', 0, 4),
+            (50, 23, 47, 'meeting', 'R&D Kickoff', 'Laugh energy R&D kickoff', 0, 6)
+
+      - type: response
+        status_code: 201
+        template: '{"success": true, "message": "CRM database initialized with seed data"}'
+
+  # ============================================================================
+  # AUTHENTICATION - Validate API Key
+  # ============================================================================
+
+  # GET /api/auth/me - Get current user from API key
+  - name: "get_current_user"
+    triggers:
+      - type: http
+        path: "/api/auth/me"
+        method: GET
+        parameters:
+          - name: "api_key"
+            type: "string"
+            required: false
+            default: ""
+    conditions:
+      has_key: "steps.auth.count > 0"
+    steps:
+      - name: auth
+        type: query
+        database: "main"
+        sql: |
+          SELECT id, email, name, role, created_at
+          FROM users
+          WHERE api_key = @api_key
+      - type: response
+        condition: "has_key"
+        template: |
+          {
+            "user": {{json (index .steps.auth.data 0)}},
+            "authenticated": true
+          }
+      - type: response
+        condition: "!has_key"
+        status_code: 401
+        template: '{"error": "Invalid or missing API key", "authenticated": false}'
+
+  # ============================================================================
+  # CUSTOMERS ENDPOINTS
+  # ============================================================================
+
+  # GET /api/customers - List customers (auth-filtered via SQL)
+  - name: "list_customers"
+    triggers:
+      - type: http
+        path: "/api/customers"
+        method: GET
+        parameters:
+          - name: "api_key"
+            type: "string"
+            required: false
+            default: ""
+          - name: "status"
+            type: "string"
+            required: false
+            default: ""
+          - name: "limit"
+            type: "int"
+            required: false
+            default: "20"
+          - name: "page"
+            type: "int"
+            required: false
+            default: "1"
+    conditions:
+      authenticated: "steps.auth.count > 0"
+    steps:
+      - name: auth
+        type: query
+        database: "main"
+        sql: "SELECT id, role FROM users WHERE api_key = @api_key"
+      # SQL handles role filtering: admins see all, others see only their own
+      - name: fetch
+        type: query
+        database: "main"
+        condition: "authenticated"
+        sql: |
+          SELECT c.*, u.name as owner_name
+          FROM customers c
+          LEFT JOIN users u ON c.owner_id = u.id
+          WHERE (
+            (SELECT role FROM users WHERE api_key = @api_key) = 'admin'
+            OR c.owner_id = (SELECT id FROM users WHERE api_key = @api_key)
+          )
+          AND (@status = '' OR c.status = @status)
+          ORDER BY c.created_at DESC
+          LIMIT @limit OFFSET ((@page - 1) * @limit)
+      - name: count
+        type: query
+        database: "main"
+        condition: "authenticated"
+        sql: |
+          SELECT COUNT(*) as total FROM customers c
+          WHERE (
+            (SELECT role FROM users WHERE api_key = @api_key) = 'admin'
+            OR c.owner_id = (SELECT id FROM users WHERE api_key = @api_key)
+          )
+          AND (@status = '' OR c.status = @status)
+      - type: response
+        condition: "authenticated"
+        template: |
+          {
+            "customers": {{json .steps.fetch.data}},
+            "count": {{.steps.fetch.count}},
+            "total": {{index .steps.count.data 0 "total"}},
+            "page": {{.trigger.params.page}},
+            "limit": {{.trigger.params.limit}},
+            "role": "{{index .steps.auth.data 0 "role"}}"
+          }
+      - type: response
+        condition: "!authenticated"
+        status_code: 401
+        template: '{"error": "Authentication required"}'
+
+  # GET /api/customers/{id} - Get single customer with contacts and deals
+  - name: "get_customer"
+    triggers:
+      - type: http
+        path: "/api/customers/{id}"
+        method: GET
+        parameters:
+          - name: "api_key"
+            type: "string"
+            required: false
+            default: ""
+          - name: "id"
+            type: "int"
+            required: true
+        cache:
+          enabled: true
+          key: "customer:{{.Param.id}}"
+          ttl_sec: 120
+    conditions:
+      authenticated: "steps.auth.count > 0"
+      found: "steps.customer.count > 0"
+    steps:
+      - name: auth
+        type: query
+        database: "main"
+        sql: "SELECT id, role FROM users WHERE api_key = @api_key"
+      - name: customer
+        type: query
+        database: "main"
+        condition: "authenticated"
+        sql: |
+          SELECT c.*, u.name as owner_name
+          FROM customers c
+          LEFT JOIN users u ON c.owner_id = u.id
+          WHERE c.id = @id
+      - name: contacts
+        type: query
+        database: "main"
+        condition: "found"
+        sql: "SELECT * FROM contacts WHERE customer_id = @id ORDER BY is_primary DESC, name"
+      - name: deals
+        type: query
+        database: "main"
+        condition: "found"
+        sql: "SELECT * FROM deals WHERE customer_id = @id ORDER BY created_at DESC"
+      - type: response
+        condition: "found"
+        template: |
+          {
+            "customer": {{json (index .steps.customer.data 0)}},
+            "contacts": {{json .steps.contacts.data}},
+            "deals": {{json .steps.deals.data}},
+            "contacts_count": {{.steps.contacts.count}},
+            "deals_count": {{.steps.deals.count}}
+          }
+      - type: response
+        condition: "steps.auth.count > 0 && steps.customer.count == 0"
+        status_code: 404
+        template: '{"error": "Customer not found", "id": {{.trigger.params.id}}}'
+      - type: response
+        condition: "!authenticated"
+        status_code: 401
+        template: '{"error": "Authentication required"}'
+
+  # POST /api/customers - Create customer
+  - name: "create_customer"
+    triggers:
+      - type: http
+        path: "/api/customers"
+        method: POST
+        parameters:
+          - name: "api_key"
+            type: "string"
+            required: false
+            default: ""
+          - name: "name"
+            type: "string"
+            required: true
+          - name: "email"
+            type: "string"
+            required: false
+            default: ""
+          - name: "phone"
+            type: "string"
+            required: false
+            default: ""
+          - name: "company"
+            type: "string"
+            required: false
+            default: ""
+          - name: "status"
+            type: "string"
+            required: false
+            default: "lead"
+          - name: "notes"
+            type: "string"
+            required: false
+            default: ""
+        rate_limit:
+          - pool: "sales_limit"
+    conditions:
+      authenticated: "steps.auth.count > 0"
+      can_create: "steps.auth_write.count > 0"
+    steps:
+      - name: auth
+        type: query
+        database: "main"
+        sql: "SELECT id, role FROM users WHERE api_key = @api_key"
+      # Check if user has write access (admin or sales, not viewer)
+      - name: auth_write
+        type: query
+        database: "main"
+        condition: "authenticated"
+        sql: "SELECT id FROM users WHERE api_key = @api_key AND role IN ('admin', 'sales')"
+      - name: insert
+        type: query
+        database: "main"
+        condition: "can_create"
+        sql: |
+          INSERT INTO customers (name, email, phone, company, status, owner_id, notes)
+          VALUES (@name, NULLIF(@email, ''), NULLIF(@phone, ''), NULLIF(@company, ''), @status,
+                  (SELECT id FROM users WHERE api_key = @api_key), NULLIF(@notes, ''))
+      - name: get_id
+        type: query
+        database: "main"
+        condition: "can_create"
+        sql: "SELECT last_insert_rowid() AS id"
+      - type: response
+        condition: "can_create"
+        status_code: 201
+        template: |
+          {
+            "success": true,
+            "id": {{index .steps.get_id.data 0 "id"}},
+            "name": "{{.trigger.params.name}}",
+            "owner_id": {{index .steps.auth.data 0 "id"}}
+          }
+      - type: response
+        condition: "steps.auth.count > 0 && steps.auth_write.count == 0"
+        status_code: 403
+        template: '{"error": "Viewers cannot create customers"}'
+      - type: response
+        condition: "!authenticated"
+        status_code: 401
+        template: '{"error": "Authentication required"}'
+
+  # ============================================================================
+  # DEALS ENDPOINTS
+  # ============================================================================
+
+  # GET /api/deals - List deals with filtering
+  - name: "list_deals"
+    triggers:
+      - type: http
+        path: "/api/deals"
+        method: GET
+        parameters:
+          - name: "api_key"
+            type: "string"
+            required: false
+            default: ""
+          - name: "stage"
+            type: "string"
+            required: false
+            default: ""
+          - name: "customer_id"
+            type: "int"
+            required: false
+            default: "0"
+          - name: "limit"
+            type: "int"
+            required: false
+            default: "20"
+          - name: "page"
+            type: "int"
+            required: false
+            default: "1"
+    conditions:
+      authenticated: "steps.auth.count > 0"
+    steps:
+      - name: auth
+        type: query
+        database: "main"
+        sql: "SELECT id, role FROM users WHERE api_key = @api_key"
+      - name: fetch
+        type: query
+        database: "main"
+        condition: "authenticated"
+        sql: |
+          SELECT d.*, c.name as customer_name, u.name as owner_name
+          FROM deals d
+          JOIN customers c ON d.customer_id = c.id
+          LEFT JOIN users u ON d.owner_id = u.id
+          WHERE (@stage = '' OR d.stage = @stage)
+            AND (@customer_id = 0 OR d.customer_id = @customer_id)
+          ORDER BY d.value DESC
+          LIMIT @limit OFFSET ((@page - 1) * @limit)
+      - type: response
+        condition: "authenticated"
+        template: |
+          {
+            "deals": {{json .steps.fetch.data}},
+            "count": {{.steps.fetch.count}},
+            "page": {{.trigger.params.page}},
+            "limit": {{.trigger.params.limit}}
+          }
+      - type: response
+        condition: "!authenticated"
+        status_code: 401
+        template: '{"error": "Authentication required"}'
+
+  # GET /api/deals/pipeline - Get pipeline summary
+  - name: "deal_pipeline"
+    triggers:
+      - type: http
+        path: "/api/deals/pipeline"
+        method: GET
+        parameters:
+          - name: "api_key"
+            type: "string"
+            required: false
+            default: ""
+        cache:
+          enabled: true
+          key: "pipeline:summary"
+          ttl_sec: 60
+    conditions:
+      authenticated: "steps.auth.count > 0"
+    steps:
+      - name: auth
+        type: query
+        database: "main"
+        sql: "SELECT id, role FROM users WHERE api_key = @api_key"
+      - name: pipeline
+        type: query
+        database: "main"
+        condition: "authenticated"
+        sql: |
+          SELECT
+            stage,
+            COUNT(*) as count,
+            SUM(value) as total_value,
+            AVG(probability) as avg_probability
+          FROM deals
+          WHERE stage NOT IN ('won', 'lost')
+          GROUP BY stage
+          ORDER BY
+            CASE stage
+              WHEN 'new' THEN 1
+              WHEN 'qualified' THEN 2
+              WHEN 'proposal' THEN 3
+              WHEN 'negotiation' THEN 4
+            END
+      - name: totals
+        type: query
+        database: "main"
+        condition: "authenticated"
+        sql: |
+          SELECT
+            SUM(CASE WHEN stage = 'won' THEN value ELSE 0 END) as won_value,
+            SUM(CASE WHEN stage = 'lost' THEN value ELSE 0 END) as lost_value,
+            SUM(CASE WHEN stage NOT IN ('won', 'lost') THEN value * probability / 100 ELSE 0 END) as weighted_pipeline
+          FROM deals
+      - type: response
+        condition: "authenticated"
+        template: |
+          {
+            "pipeline": {{json .steps.pipeline.data}},
+            "totals": {{json (index .steps.totals.data 0)}},
+            "cache_hit": {{.steps.pipeline.cache_hit}}
+          }
+      - type: response
+        condition: "!authenticated"
+        status_code: 401
+        template: '{"error": "Authentication required"}'
+
+  # POST /api/deals/{id}/advance - Advance deal to next stage
+  - name: "advance_deal"
+    triggers:
+      - type: http
+        path: "/api/deals/{id}/advance"
+        method: POST
+        parameters:
+          - name: "api_key"
+            type: "string"
+            required: false
+            default: ""
+          - name: "id"
+            type: "int"
+            required: true
+    conditions:
+      authenticated: "steps.auth.count > 0"
+      found: "steps.deal.count > 0"
+      can_advance: "steps.advanceable.count > 0"
+    steps:
+      - name: auth
+        type: query
+        database: "main"
+        sql: "SELECT id, role FROM users WHERE api_key = @api_key"
+      - name: deal
+        type: query
+        database: "main"
+        condition: "authenticated"
+        sql: "SELECT id, stage, probability FROM deals WHERE id = @id"
+      # Check if deal is in a non-terminal stage
+      - name: advanceable
+        type: query
+        database: "main"
+        condition: "found"
+        sql: "SELECT id FROM deals WHERE id = @id AND stage NOT IN ('won', 'lost')"
+      - name: advance
+        type: query
+        database: "main"
+        condition: "can_advance"
+        sql: |
+          UPDATE deals
+          SET stage = CASE stage
+            WHEN 'new' THEN 'qualified'
+            WHEN 'qualified' THEN 'proposal'
+            WHEN 'proposal' THEN 'negotiation'
+            WHEN 'negotiation' THEN 'won'
+            ELSE stage
+          END,
+          probability = CASE stage
+            WHEN 'new' THEN 30
+            WHEN 'qualified' THEN 50
+            WHEN 'proposal' THEN 70
+            WHEN 'negotiation' THEN 100
+            ELSE probability
+          END,
+          updated_at = datetime('now')
+          WHERE id = @id
+      - name: updated
+        type: query
+        database: "main"
+        condition: "can_advance"
+        sql: "SELECT stage, probability FROM deals WHERE id = @id"
+      - type: response
+        condition: "can_advance"
+        template: |
+          {
+            "success": true,
+            "id": {{.trigger.params.id}},
+            "previous_stage": "{{index .steps.deal.data 0 "stage"}}",
+            "new_stage": "{{index .steps.updated.data 0 "stage"}}",
+            "probability": {{index .steps.updated.data 0 "probability"}}
+          }
+      - type: response
+        condition: "steps.deal.count > 0 && steps.advanceable.count == 0"
+        status_code: 400
+        template: '{"error": "Cannot advance deal in terminal stage", "stage": "{{index .steps.deal.data 0 "stage"}}"}'
+      - type: response
+        condition: "steps.auth.count > 0 && steps.deal.count == 0"
+        status_code: 404
+        template: '{"error": "Deal not found", "id": {{.trigger.params.id}}}'
+      - type: response
+        condition: "!authenticated"
+        status_code: 401
+        template: '{"error": "Authentication required"}'
+
+  # ============================================================================
+  # ACTIVITIES ENDPOINTS
+  # ============================================================================
+
+  # GET /api/activities - List recent activities
+  - name: "list_activities"
+    triggers:
+      - type: http
+        path: "/api/activities"
+        method: GET
+        parameters:
+          - name: "api_key"
+            type: "string"
+            required: false
+            default: ""
+          - name: "customer_id"
+            type: "int"
+            required: false
+            default: "0"
+          - name: "type"
+            type: "string"
+            required: false
+            default: ""
+          - name: "limit"
+            type: "int"
+            required: false
+            default: "50"
+          - name: "page"
+            type: "int"
+            required: false
+            default: "1"
+    conditions:
+      authenticated: "steps.auth.count > 0"
+    steps:
+      - name: auth
+        type: query
+        database: "main"
+        sql: "SELECT id, role FROM users WHERE api_key = @api_key"
+      - name: fetch
+        type: query
+        database: "main"
+        condition: "authenticated"
+        sql: |
+          SELECT a.*, c.name as customer_name, d.title as deal_title, u.name as created_by_name
+          FROM activities a
+          LEFT JOIN customers c ON a.customer_id = c.id
+          LEFT JOIN deals d ON a.deal_id = d.id
+          LEFT JOIN users u ON a.created_by = u.id
+          WHERE (@customer_id = 0 OR a.customer_id = @customer_id)
+            AND (@type = '' OR a.type = @type)
+          ORDER BY a.created_at DESC
+          LIMIT @limit OFFSET ((@page - 1) * @limit)
+      - type: response
+        condition: "authenticated"
+        template: |
+          {
+            "activities": {{json .steps.fetch.data}},
+            "count": {{.steps.fetch.count}},
+            "page": {{.trigger.params.page}},
+            "limit": {{.trigger.params.limit}}
+          }
+      - type: response
+        condition: "!authenticated"
+        status_code: 401
+        template: '{"error": "Authentication required"}'
+
+  # POST /api/activities - Create activity
+  - name: "create_activity"
+    triggers:
+      - type: http
+        path: "/api/activities"
+        method: POST
+        parameters:
+          - name: "api_key"
+            type: "string"
+            required: false
+            default: ""
+          - name: "customer_id"
+            type: "int"
+            required: true
+          - name: "deal_id"
+            type: "int"
+            required: false
+            default: "0"
+          - name: "type"
+            type: "string"
+            required: true
+          - name: "subject"
+            type: "string"
+            required: true
+          - name: "description"
+            type: "string"
+            required: false
+            default: ""
+        rate_limit:
+          - pool: "sales_limit"
+    conditions:
+      authenticated: "steps.auth.count > 0"
+      can_create: "steps.auth_write.count > 0"
+    steps:
+      - name: auth
+        type: query
+        database: "main"
+        sql: "SELECT id, role FROM users WHERE api_key = @api_key"
+      # Check if user has write access (admin or sales, not viewer)
+      - name: auth_write
+        type: query
+        database: "main"
+        condition: "authenticated"
+        sql: "SELECT id FROM users WHERE api_key = @api_key AND role IN ('admin', 'sales')"
+      - name: insert
+        type: query
+        database: "main"
+        condition: "can_create"
+        sql: |
+          INSERT INTO activities (customer_id, deal_id, type, subject, description, created_by)
+          VALUES (@customer_id, NULLIF(@deal_id, 0), @type, @subject, NULLIF(@description, ''),
+                  (SELECT id FROM users WHERE api_key = @api_key))
+      - name: get_id
+        type: query
+        database: "main"
+        condition: "can_create"
+        sql: "SELECT last_insert_rowid() AS id"
+      - type: response
+        condition: "can_create"
+        status_code: 201
+        template: |
+          {
+            "success": true,
+            "id": {{index .steps.get_id.data 0 "id"}},
+            "type": "{{.trigger.params.type}}",
+            "subject": "{{.trigger.params.subject}}"
+          }
+      - type: response
+        condition: "steps.auth.count > 0 && steps.auth_write.count == 0"
+        status_code: 403
+        template: '{"error": "Viewers cannot create activities"}'
+      - type: response
+        condition: "!authenticated"
+        status_code: 401
+        template: '{"error": "Authentication required"}'
+
+  # ============================================================================
+  # STATS ENDPOINTS
+  # ============================================================================
+
+  # GET /api/stats - Dashboard statistics
+  - name: "dashboard_stats"
+    triggers:
+      - type: http
+        path: "/api/stats"
+        method: GET
+        parameters:
+          - name: "api_key"
+            type: "string"
+            required: false
+            default: ""
+        cache:
+          enabled: true
+          key: "stats:dashboard"
+          ttl_sec: 30
+    conditions:
+      authenticated: "steps.auth.count > 0"
+    steps:
+      - name: auth
+        type: query
+        database: "main"
+        sql: "SELECT id, role FROM users WHERE api_key = @api_key"
+      - name: customer_stats
+        type: query
+        database: "main"
+        condition: "authenticated"
+        cache:
+          key: "stats:customers"
+          ttl_sec: 60
+        sql: |
+          SELECT
+            COUNT(*) as total_customers,
+            SUM(CASE WHEN status = 'lead' THEN 1 ELSE 0 END) as leads,
+            SUM(CASE WHEN status = 'prospect' THEN 1 ELSE 0 END) as prospects,
+            SUM(CASE WHEN status = 'customer' THEN 1 ELSE 0 END) as customers,
+            SUM(CASE WHEN status = 'churned' THEN 1 ELSE 0 END) as churned
+          FROM customers
+      - name: deal_stats
+        type: query
+        database: "main"
+        condition: "authenticated"
+        sql: |
+          SELECT
+            COUNT(*) as total_deals,
+            SUM(CASE WHEN stage = 'won' THEN value ELSE 0 END) as won_revenue,
+            SUM(CASE WHEN stage NOT IN ('won', 'lost') THEN value ELSE 0 END) as pipeline_value,
+            AVG(CASE WHEN stage = 'won' THEN value END) as avg_deal_size
+          FROM deals
+      - name: activity_stats
+        type: query
+        database: "main"
+        condition: "authenticated"
+        sql: |
+          SELECT
+            COUNT(*) as total_activities,
+            SUM(CASE WHEN completed = 0 THEN 1 ELSE 0 END) as pending_activities
+          FROM activities
+      - type: response
+        condition: "authenticated"
+        template: |
+          {
+            "customers": {{json (index .steps.customer_stats.data 0)}},
+            "deals": {{json (index .steps.deal_stats.data 0)}},
+            "activities": {{json (index .steps.activity_stats.data 0)}},
+            "customer_stats_cached": {{.steps.customer_stats.cache_hit}}
+          }
+      - type: response
+        condition: "!authenticated"
+        status_code: 401
+        template: '{"error": "Authentication required"}'

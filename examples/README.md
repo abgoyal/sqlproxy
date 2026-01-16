@@ -13,7 +13,7 @@ Each file focuses on a specific feature area with detailed comments explaining u
 | `04-rate-limiting.yaml` | Named pools and inline rate limits |
 | `05-scheduling.yaml` | Cron triggers, dynamic dates |
 | `06-httpcall.yaml` | External API calls, webhooks, retries |
-| `07-groups.yaml` | Iteration over results, batch processing |
+| `07-blocks.yaml` | Iteration over results, batch processing |
 | `08-conditions.yaml` | Conditional step execution |
 | `09-advanced.yaml` | Complex multi-feature workflows |
 | `10-rest-crud.yaml` | RESTful CRUD patterns, path parameters, all HTTP methods |

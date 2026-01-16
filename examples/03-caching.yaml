@@ -160,7 +160,9 @@ workflows:
             "cache_hit": {{.steps.fetch_item.cache_hit}}
           }
 
-  # Step cache referencing previous step results
+  # Multiple independent cached queries
+  # Note: To use previous step results in SQL, use JOINs or multiple requests.
+  # Template interpolation in SQL is not allowed for security reasons.
   - name: "chained_cache"
     triggers:
       - type: http
@@ -170,27 +172,27 @@ workflows:
           - name: "id"
             type: "int"
             required: true
+          - name: "org_id"
+            type: "int"
+            required: true
     steps:
       # First step: fetch user (cached by user ID)
       - name: fetch_user
         type: query
         database: "main"
-        sql: "SELECT @id AS id, 'User ' || @id AS name, 100 + @id AS org_id"
+        sql: "SELECT @id AS id, 'User ' || @id AS name"
         cache:
           key: "user:{{.Param.id}}"
           ttl_sec: 300
 
-      # Second step: fetch org (cached by org_id from previous step result)
-      # This demonstrates referencing previous step data in cache key
+      # Second step: fetch org (cached by org_id parameter)
+      # Org ID passed as separate parameter since we can't reference step data in SQL
       - name: fetch_org
         type: query
         database: "main"
-        sql: |
-          SELECT
-            {{index .steps.fetch_user.data 0 "org_id"}} AS org_id,
-            'Org ' || {{index .steps.fetch_user.data 0 "org_id"}} AS org_name
+        sql: "SELECT @org_id AS org_id, 'Org ' || @org_id AS org_name"
         cache:
-          key: "org:{{index .steps.fetch_user.data 0 \"org_id\"}}"
+          key: "org:{{.Param.org_id}}"
           ttl_sec: 600  # Org data cached longer
 
       - type: response

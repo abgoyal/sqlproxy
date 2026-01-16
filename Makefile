@@ -40,14 +40,16 @@ PKG_RATELIMIT := ./internal/ratelimit/...
 PKG_WORKFLOW := ./internal/workflow/...
 PKG_TYPES := ./internal/types/...
 
-.PHONY: all build clean test validate run install deps tidy version \
+.PHONY: all build clean test validate validate-examples run install deps tidy version \
         build-linux build-windows build-darwin build-all \
         build-linux-arm64 build-darwin-arm64 \
         test-config test-db test-validate \
         test-server test-logging test-metrics test-openapi \
         test-cache test-tmpl test-ratelimit test-workflow test-types \
         test-unit test-integration test-e2e test-bench \
-        test-cover test-cover-report test-cover-packages test-clean test-docs ci
+        test-e2e-taskapp test-e2e-crmapp test-e2e-shopapp test-e2e-blogapp \
+        test-cover test-cover-report test-cover-packages test-clean test-docs \
+        vet lint mod-tidy-check ci
 
 # Default target
 all: build
@@ -122,9 +124,32 @@ test-unit:
 test-integration:
 	$(GOTEST) -v -run "Integration" ./internal/...
 
-# Run end-to-end tests (shell script, human-friendly output)
-test-e2e:
+# Run end-to-end tests - individual apps
+test-e2e-taskapp:
 	./e2e/taskapp_test.sh
+
+test-e2e-crmapp:
+	./e2e/crmapp_test.sh
+
+test-e2e-shopapp:
+	./e2e/shopapp_test.sh
+
+test-e2e-blogapp:
+	./e2e/blogapp_test.sh
+
+# Run all end-to-end tests
+test-e2e:
+	@echo "=== Running all E2E test apps ==="
+	@echo ""
+	./e2e/taskapp_test.sh
+	@echo ""
+	./e2e/crmapp_test.sh
+	@echo ""
+	./e2e/shopapp_test.sh
+	@echo ""
+	./e2e/blogapp_test.sh
+	@echo ""
+	@echo "=== All E2E tests complete ==="
 
 # Run benchmarks
 test-bench:
@@ -189,10 +214,10 @@ test-bench-compare-new:
 # These are fundamentally different Go coverage mechanisms with no built-in merger,
 # so we convert e2e to text and merge using a script.
 #
-# E2E tests use the shell script (e2e/taskapp_test.sh --cover) which:
-# - Builds the binary with -cover flag
-# - Runs the server with GOCOVERDIR to collect coverage
-# - Tests all API endpoints comprehensively
+# E2E tests use shell scripts which:
+# - Build the binary with -cover flag
+# - Run the server with GOCOVERDIR to collect coverage
+# - Test all API endpoints comprehensively
 test-cover:
 	@mkdir -p $(COVERAGE_DIR)
 	@rm -rf $(COVERAGE_DIR)/e2e
@@ -200,8 +225,11 @@ test-cover:
 	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/unit.out ./internal/...
 	@grep -v "internal/testutil" $(COVERAGE_DIR)/unit.out > $(COVERAGE_DIR)/unit.tmp && mv $(COVERAGE_DIR)/unit.tmp $(COVERAGE_DIR)/unit.out
 	@echo ""
-	@echo "=== Running e2e tests with coverage ==="
-	@./e2e/taskapp_test.sh --cover
+	@echo "=== Running e2e tests with coverage (all apps) ==="
+	@E2E_COVERAGE_DIR=$(COVERAGE_DIR)/e2e ./e2e/taskapp_test.sh --cover
+	@E2E_COVERAGE_DIR=$(COVERAGE_DIR)/e2e ./e2e/crmapp_test.sh --cover
+	@E2E_COVERAGE_DIR=$(COVERAGE_DIR)/e2e ./e2e/shopapp_test.sh --cover
+	@E2E_COVERAGE_DIR=$(COVERAGE_DIR)/e2e ./e2e/blogapp_test.sh --cover
 	@echo ""
 	@echo "=== Merging coverage data ==="
 	@if [ -d "$(COVERAGE_DIR)/e2e" ] && [ "$$(ls -A $(COVERAGE_DIR)/e2e 2>/dev/null)" ]; then \
@@ -244,14 +272,36 @@ test-cover-packages:
 test-docs:
 	@./scripts/generate-test-docs.sh
 
+# Format, tidy, and vet - run before committing
+lint:
+	@echo "Running go fmt..."
+	$(GOCMD) fmt ./...
+	@echo "Running go mod tidy..."
+	$(GOMOD) tidy
+	@echo "Running go vet..."
+	$(GOCMD) vet ./...
+	@echo "Lint complete"
+
 # ============================================================================
 # CI/CD targets
 # ============================================================================
 
-# Run full CI check (unit + e2e tests with coverage threshold)
-ci: test-cover
+# Run full CI check (vet, mod tidy check, tests, coverage threshold, validate examples)
+ci: test-cover validate-examples
+	@echo "Checking go.mod is tidy..."
+	@cp go.mod go.mod.bak && cp go.sum go.sum.bak
+	@$(GOMOD) tidy
+	@if ! diff -q go.mod go.mod.bak > /dev/null 2>&1 || ! diff -q go.sum go.sum.bak > /dev/null 2>&1; then \
+		echo "go.mod or go.sum is not tidy. Run 'make lint' and commit."; \
+		mv go.mod.bak go.mod; mv go.sum.bak go.sum; \
+		exit 1; \
+	fi
+	@rm -f go.mod.bak go.sum.bak
+	@echo "Running go vet..."
+	@$(GOCMD) vet ./...
 	@echo "Checking coverage thresholds..."
 	@./scripts/check-coverage.sh $(COVERAGE_DIR)/coverage.out 70
+	@echo "CI passed"
 
 # Clear Go's test cache (forces fresh test execution)
 test-clean:
@@ -260,6 +310,15 @@ test-clean:
 # Validate config
 validate: build
 	./$(BINARY_NAME) -validate -config config.yaml
+
+# Validate all example configs
+validate-examples: build
+	@echo "Validating example configs..."
+	@for f in examples/*.yaml; do \
+		echo "=== $$f ===" && \
+		./$(BINARY_NAME) -validate -config "$$f" || exit 1; \
+	done
+	@echo "All examples valid"
 
 # Run interactively
 run: build
@@ -348,7 +407,13 @@ help:
 	@echo "Testing by type:"
 	@echo "  make test-unit        Run unit tests (internal packages)"
 	@echo "  make test-integration Run integration tests (httptest-based)"
-	@echo "  make test-e2e         Run end-to-end tests (shell script)"
+	@echo "  make test-e2e         Run all end-to-end test apps"
+	@echo ""
+	@echo "E2E test apps (individual):"
+	@echo "  make test-e2e-taskapp Run taskapp E2E tests"
+	@echo "  make test-e2e-crmapp  Run CRM app E2E tests"
+	@echo "  make test-e2e-shopapp Run shop app E2E tests"
+	@echo "  make test-e2e-blogapp Run blog app E2E tests"
 	@echo ""
 	@echo "Benchmarks:"
 	@echo "  make test-bench            Run all benchmarks"
@@ -362,6 +427,15 @@ help:
 	@echo "  make test-cover-report   Per-function coverage breakdown"
 	@echo "  make test-cover-packages Per-package coverage files"
 	@echo "  make test-clean          Clear Go test cache"
+	@echo ""
+	@echo "Static analysis:"
+	@echo "  make lint            Run go fmt, go mod tidy, go vet (pre-commit)"
+	@echo "  make vet             Run go vet"
+	@echo "  make mod-tidy-check  Check go.mod is tidy"
+	@echo ""
+	@echo "Validation:"
+	@echo "  make validate          Validate config.yaml"
+	@echo "  make validate-examples Validate all example configs"
 	@echo ""
 	@echo "Documentation:"
 	@echo "  make test-docs    Generate test documentation"

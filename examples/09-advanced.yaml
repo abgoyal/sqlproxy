@@ -377,7 +377,7 @@ workflows:
         rate_limit:
           - pool: "api"
     steps:
-      # Log the audit entry
+      # Log the audit entry (request_id available in response template, not in SQL)
       - name: audit_log
         type: query
         database: "main"
@@ -386,7 +386,6 @@ workflows:
             @user_id AS user_id,
             @action AS action,
             @resource_id AS resource_id,
-            '{{.workflow.request_id}}' AS request_id,
             datetime('now') AS timestamp
 
       # Notify on destructive actions

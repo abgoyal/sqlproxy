@@ -50,7 +50,7 @@ type StepResult struct {
 	Type       string // "query" | "httpcall" | "response" | "block"
 	Success    bool
 	Error      error
-	StartTime  time.Time
+	StartTime  time.Time // Currently unused - reserved for future per-step timing
 	DurationMs int64
 	CacheHit   bool // True if result came from cache
 
@@ -68,7 +68,7 @@ type StepResult struct {
 	Iterations   []*IterationResult
 	SuccessCount int
 	FailureCount int
-	SkippedCount int
+	SkippedCount int // Currently unused - reserved for conditional skip tracking
 }
 
 // IterationResult contains the result of a single iteration in a block.

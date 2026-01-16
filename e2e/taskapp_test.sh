@@ -2,462 +2,49 @@
 #
 # Task Management API - End-to-End Test Suite
 #
-# Comprehensive E2E tests for sql-proxy using the taskapp configuration.
-# Tests all API endpoints, caching, rate limiting, and template functions.
+# Tests the taskapp configuration which exercises:
+# - All HTTP methods (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS)
+# - Path parameters, query parameters, pagination, filtering
+# - Trigger-level and step-level caching
+# - Rate limiting
+# - Template functions
+# - Batch operations (blocks with iteration)
 #
 # Usage:
 #   ./e2e/taskapp_test.sh           # Run tests without coverage
-#   ./e2e/taskapp_test.sh --cover   # Run with coverage (default dir: coverage/e2e)
-#   E2E_COVERAGE_DIR=custom ./e2e/taskapp_test.sh --cover  # Custom coverage dir
-#
-# Requirements:
-#   - curl
-#   - jq (for JSON parsing)
-#   - Go toolchain (to build the binary)
+#   ./e2e/taskapp_test.sh --cover   # Run with coverage
 
 set -euo pipefail
 
 # ============================================================================
-# CONFIGURATION
+# SETUP
 # ============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Source shared libraries
+source "$SCRIPT_DIR/lib/helpers.sh"
+source "$SCRIPT_DIR/lib/runner.sh"
+
+# App configuration
+APP_NAME="taskapp"
+
+# Parse command line arguments
+parse_args "$@"
+
+# Set up test environment
+setup_test_env "$APP_NAME"
+
+# Config template (uses PROJECT_ROOT from setup_test_env)
 CONFIG_TEMPLATE="$PROJECT_ROOT/testdata/taskapp.yaml"
 
-# Temp directory for all artifacts
-TEMP_DIR=$(mktemp -d)
-BINARY="$TEMP_DIR/sql-proxy-test"
-DB_FILE="$TEMP_DIR/taskapp.db"
-CONFIG_FILE="$TEMP_DIR/taskapp.yaml"
-LOG_FILE="$TEMP_DIR/server.log"
-PID_FILE="$TEMP_DIR/server.pid"
-
-# Find a free port
-PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()' 2>/dev/null || echo "19876")
-BASE_URL="http://127.0.0.1:$PORT"
-
-# Coverage settings (off by default)
-COVERAGE_ENABLED=false
-COVERAGE_DIR=""
-
-# Parse arguments
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --cover)
-            COVERAGE_ENABLED=true
-            COVERAGE_DIR="${E2E_COVERAGE_DIR:-$PROJECT_ROOT/coverage/e2e}"
-            shift
-            ;;
-        --help|-h)
-            echo "Usage: $0 [--cover]"
-            echo ""
-            echo "Options:"
-            echo "  --cover    Enable coverage collection (default dir: coverage/e2e)"
-            echo ""
-            echo "Environment:"
-            echo "  E2E_COVERAGE_DIR    Override coverage output directory"
-            exit 0
-            ;;
-        *)
-            echo "Unknown option: $1"
-            exit 1
-            ;;
-    esac
-done
-
-# Make coverage dir absolute if set
-if [ "$COVERAGE_ENABLED" = true ] && [[ "$COVERAGE_DIR" != /* ]]; then
-    COVERAGE_DIR="$PROJECT_ROOT/$COVERAGE_DIR"
-fi
-
-# ============================================================================
-# OUTPUT HELPERS
-# ============================================================================
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
-info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
-success() { echo -e "${GREEN}[PASS]${NC} $1"; }
-fail()    { echo -e "${RED}[FAIL]${NC} $1"; }
-warn()    { echo -e "${YELLOW}[WARN]${NC} $1"; }
-header()  { echo -e "\n${BLUE}=== $1 ===${NC}"; }
-
-# Test counters
-TESTS_RUN=0
-TESTS_PASSED=0
-TESTS_FAILED=0
-
-# ============================================================================
-# HTTP REQUEST HELPERS
-# ============================================================================
-
-# Request/response state
-_response=""
-_status=""
-_headers=""
-
-# GET <path>
-GET() {
-    local path="$1"
-    _headers=$(mktemp)
-    _response=$(curl -s -D "$_headers" "$BASE_URL$path")
-    _status=$(grep "^HTTP" "$_headers" | tail -1 | awk '{print $2}')
-    _response_headers=$(cat "$_headers")
-    rm -f "$_headers"
-}
-
-# POST <path> [key=value ...] or POST <path> --json '<json>'
-POST() {
-    local path="$1"
-    shift
-    _do_request POST "$path" "$@"
-}
-
-# PUT <path> [key=value ...] or PUT <path> --json '<json>'
-PUT() {
-    local path="$1"
-    shift
-    _do_request PUT "$path" "$@"
-}
-
-# PATCH <path> [key=value ...] or PATCH <path> --json '<json>'
-PATCH() {
-    local path="$1"
-    shift
-    _do_request PATCH "$path" "$@"
-}
-
-# DELETE <path>
-DELETE() {
-    local path="$1"
-    shift
-    _do_request DELETE "$path" "$@"
-}
-
-# HEAD <path>
-HEAD() {
-    local path="$1"
-    _headers=$(mktemp)
-    curl -s -I -o "$_headers" -w "%{http_code}" "$BASE_URL$path" > /dev/null
-    _status=$(grep "^HTTP" "$_headers" | tail -1 | awk '{print $2}')
-    _response=""
-    # Store headers for later inspection
-    _response_headers=$(cat "$_headers")
-    rm -f "$_headers"
-}
-
-# OPTIONS <path>
-OPTIONS() {
-    local path="$1"
-    _headers=$(mktemp)
-    _response=$(curl -s -D "$_headers" -X OPTIONS "$BASE_URL$path")
-    _status=$(grep "^HTTP" "$_headers" | tail -1 | awk '{print $2}')
-    _response_headers=$(cat "$_headers")
-    rm -f "$_headers"
-}
-
-# Internal: perform request with body
-_do_request() {
-    local method="$1"
-    local path="$2"
-    shift 2
-
-    local content_type="application/x-www-form-urlencoded"
-    local data=""
-
-    if [ "${1:-}" = "--json" ]; then
-        content_type="application/json"
-        data="$2"
-    else
-        # Build form data from key=value pairs
-        for param in "$@"; do
-            if [ -n "$data" ]; then
-                data="$data&$param"
-            else
-                data="$param"
-            fi
-        done
-    fi
-
-    _headers=$(mktemp)
-    if [ -n "$data" ]; then
-        _response=$(curl -s -D "$_headers" -X "$method" \
-            -H "Content-Type: $content_type" \
-            -d "$data" \
-            "$BASE_URL$path")
-    else
-        _response=$(curl -s -D "$_headers" -X "$method" "$BASE_URL$path")
-    fi
-    _status=$(grep "^HTTP" "$_headers" | tail -1 | awk '{print $2}')
-    _response_headers=$(cat "$_headers")
-    rm -f "$_headers"
-}
-
-# ============================================================================
-# ASSERTION HELPERS
-# ============================================================================
-
-# expect_status <code> <test_name>
-expect_status() {
-    local expected="$1"
-    local test_name="$2"
-
-    TESTS_RUN=$((TESTS_RUN + 1))
-    if [ "$_status" = "$expected" ]; then
-        success "$test_name"
-        TESTS_PASSED=$((TESTS_PASSED + 1))
-    else
-        fail "$test_name"
-        echo "  Expected status: $expected"
-        echo "  Got: $_status"
-        TESTS_FAILED=$((TESTS_FAILED + 1))
-    fi
-}
-
-# expect_json <jq_path> <expected> <test_name>
-expect_json() {
-    local jq_path="$1"
-    local expected="$2"
-    local test_name="$3"
-
-    TESTS_RUN=$((TESTS_RUN + 1))
-    local actual=$(echo "$_response" | jq -r "$jq_path" 2>/dev/null)
-
-    if [ "$actual" = "$expected" ]; then
-        success "$test_name"
-        TESTS_PASSED=$((TESTS_PASSED + 1))
-    else
-        fail "$test_name"
-        echo "  Path: $jq_path"
-        echo "  Expected: $expected"
-        echo "  Got: $actual"
-        TESTS_FAILED=$((TESTS_FAILED + 1))
-    fi
-}
-
-# expect_json_contains <substring> <test_name>
-expect_contains() {
-    local expected="$1"
-    local test_name="$2"
-
-    TESTS_RUN=$((TESTS_RUN + 1))
-    if echo "$_response" | grep -q "$expected"; then
-        success "$test_name"
-        TESTS_PASSED=$((TESTS_PASSED + 1))
-    else
-        fail "$test_name"
-        echo "  Expected to contain: $expected"
-        echo "  Got: $_response"
-        TESTS_FAILED=$((TESTS_FAILED + 1))
-    fi
-}
-
-# expect_header <header_name> <expected_value> <test_name>
-expect_header() {
-    local header="$1"
-    local expected="$2"
-    local test_name="$3"
-
-    TESTS_RUN=$((TESTS_RUN + 1))
-    local actual=$(echo "$_response_headers" | grep -i "^$header:" | sed 's/.*: //' | tr -d '\r\n')
-
-    if [ "$actual" = "$expected" ]; then
-        success "$test_name"
-        TESTS_PASSED=$((TESTS_PASSED + 1))
-    else
-        fail "$test_name"
-        echo "  Header: $header"
-        echo "  Expected: $expected"
-        echo "  Got: $actual"
-        TESTS_FAILED=$((TESTS_FAILED + 1))
-    fi
-}
-
-# expect_header_exists <header_name> <test_name>
-expect_header_exists() {
-    local header="$1"
-    local test_name="$2"
-
-    TESTS_RUN=$((TESTS_RUN + 1))
-    local actual=$(echo "$_response_headers" | grep -i "^$header:" | sed 's/.*: //' | tr -d '\r\n')
-
-    if [ -n "$actual" ]; then
-        success "$test_name ($actual)"
-        TESTS_PASSED=$((TESTS_PASSED + 1))
-    else
-        fail "$test_name"
-        echo "  Header '$header' not found or empty"
-        TESTS_FAILED=$((TESTS_FAILED + 1))
-    fi
-}
-
-# expect_header_contains <header_name> <substring> <test_name>
-expect_header_contains() {
-    local header="$1"
-    local substring="$2"
-    local test_name="$3"
-
-    TESTS_RUN=$((TESTS_RUN + 1))
-    local actual=$(echo "$_response_headers" | grep -i "^$header:" | sed 's/.*: //' | tr -d '\r\n')
-
-    if echo "$actual" | grep -q "$substring"; then
-        success "$test_name"
-        TESTS_PASSED=$((TESTS_PASSED + 1))
-    else
-        fail "$test_name"
-        echo "  Header: $header"
-        echo "  Expected to contain: $substring"
-        echo "  Got: $actual"
-        TESTS_FAILED=$((TESTS_FAILED + 1))
-    fi
-}
-
-# expect_json_all <jq_path> <expected> <test_name>
-# Verifies all values at jq_path equal expected (e.g., all tasks have status=pending)
-expect_json_all() {
-    local jq_path="$1"
-    local expected="$2"
-    local test_name="$3"
-
-    TESTS_RUN=$((TESTS_RUN + 1))
-    local values=$(echo "$_response" | jq -r "$jq_path" 2>/dev/null | sort -u)
-
-    # Empty is OK (no results), single matching value is OK
-    if [ -z "$values" ] || [ "$values" = "$expected" ]; then
-        success "$test_name"
-        TESTS_PASSED=$((TESTS_PASSED + 1))
-    else
-        fail "$test_name"
-        echo "  Path: $jq_path"
-        echo "  Expected all: $expected"
-        echo "  Got: $values"
-        TESTS_FAILED=$((TESTS_FAILED + 1))
-    fi
-}
-
-# json_val <jq_path> - extract value from response
-json_val() {
-    echo "$_response" | jq -r "$1" 2>/dev/null
-}
-
-# ============================================================================
-# SETUP / TEARDOWN
-# ============================================================================
-
-cleanup() {
-    if [ -f "$PID_FILE" ]; then
-        local pid=$(cat "$PID_FILE")
-        if kill -0 "$pid" 2>/dev/null; then
-            info "Stopping server (PID: $pid)"
-            kill "$pid" 2>/dev/null || true
-            # Wait for graceful shutdown (important for coverage flush)
-            for i in {1..50}; do
-                if ! kill -0 "$pid" 2>/dev/null; then
-                    break
-                fi
-                sleep 0.1
-            done
-            # Force kill if still running
-            if kill -0 "$pid" 2>/dev/null; then
-                kill -9 "$pid" 2>/dev/null || true
-            fi
-        fi
-    fi
-    rm -rf "$TEMP_DIR"
-}
-
-trap cleanup EXIT
-
-check_dependencies() {
-    local missing=()
-    command -v curl &>/dev/null || missing+=("curl")
-    command -v jq &>/dev/null || missing+=("jq")
-    command -v go &>/dev/null || missing+=("go")
-
-    if [ ${#missing[@]} -gt 0 ]; then
-        fail "Missing required tools: ${missing[*]}"
-        exit 1
-    fi
-}
-
-build_binary() {
-    info "Building sql-proxy binary..."
-    local build_args=("build" "-o" "$BINARY")
-
-    if [ "$COVERAGE_ENABLED" = true ]; then
-        info "Coverage enabled, building with -cover flag"
-        build_args+=("-cover")
-        mkdir -p "$COVERAGE_DIR"
-    fi
-
-    build_args+=(".")
-
-    cd "$PROJECT_ROOT"
-    if ! go "${build_args[@]}" 2>&1; then
-        fail "Failed to build binary"
-        exit 1
-    fi
-    success "Binary built: $BINARY"
-}
-
-create_config() {
-    info "Creating config from template..."
-    sed -e "s|\${PORT}|$PORT|g" -e "s|\${DB_PATH}|$DB_FILE|g" "$CONFIG_TEMPLATE" > "$CONFIG_FILE"
-}
-
-start_server() {
-    info "Starting server on port $PORT..."
-
-    if ! "$BINARY" -validate -config "$CONFIG_FILE" > /dev/null 2>&1; then
-        fail "Configuration validation failed"
-        "$BINARY" -validate -config "$CONFIG_FILE"
-        exit 1
-    fi
-
-    local env_vars=()
-    if [ "$COVERAGE_ENABLED" = true ]; then
-        env_vars+=("GOCOVERDIR=$COVERAGE_DIR")
-        info "Coverage output: $COVERAGE_DIR"
-    fi
-
-    if [ ${#env_vars[@]} -gt 0 ]; then
-        env "${env_vars[@]}" "$BINARY" -config "$CONFIG_FILE" > "$LOG_FILE" 2>&1 &
-    else
-        "$BINARY" -config "$CONFIG_FILE" > "$LOG_FILE" 2>&1 &
-    fi
-    echo $! > "$PID_FILE"
-
-    info "Waiting for server to start..."
-    local retries=50
-    while [ $retries -gt 0 ]; do
-        if curl -s "$BASE_URL/_/health" > /dev/null 2>&1; then
-            success "Server started (PID: $(cat "$PID_FILE"))"
-            return 0
-        fi
-        sleep 0.1
-        retries=$((retries - 1))
-    done
-
-    fail "Server failed to start. Log:"
-    cat "$LOG_FILE"
-    exit 1
-}
+# Database path substitution
+declare -A DB_VARS
+DB_VARS[DB_PATH]="$TEMP_DIR/taskapp.db"
 
 # ============================================================================
 # TEST CASES
 # ============================================================================
-
-test_health_check() {
-    header "Health Check"
-
-    GET /_/health
-    expect_json '.status' 'healthy' "Health endpoint returns healthy"
-}
 
 test_init_database() {
     header "Database Initialization"
@@ -609,8 +196,8 @@ test_rate_limiting() {
         TESTS_PASSED=$((TESTS_PASSED + 1))
         expect_header_exists "Retry-After" "Retry-After header present"
     else
-        warn "Rate limit not triggered (may need more requests)"
-        TESTS_PASSED=$((TESTS_PASSED + 1))
+        fail "Rate limit not triggered after 15 requests"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
     fi
 
     sleep 2  # Let rate limit recover
@@ -768,42 +355,12 @@ test_template_functions() {
     fi
 }
 
-test_metrics() {
-    header "Metrics"
-
-    GET /_/metrics
-    expect_status 200 "Metrics returns 200"
-    expect_contains "sqlproxy_" "Contains sqlproxy metrics"
-    expect_contains "go_" "Contains go runtime metrics"
-}
-
-test_openapi() {
-    header "OpenAPI Spec"
-
-    GET /_/openapi.json
-    expect_status 200 "OpenAPI returns 200"
-    expect_contains "openapi" "Contains openapi field"
-    expect_contains "paths" "Contains paths"
-}
-
 # ============================================================================
 # MAIN
 # ============================================================================
 
 main() {
-    echo ""
-    echo "========================================"
-    echo " Task Management API - E2E Test Suite"
-    echo "========================================"
-    echo ""
-
-    if [ "$COVERAGE_ENABLED" = true ]; then
-        info "Coverage: ENABLED"
-        info "Coverage dir: $COVERAGE_DIR"
-    else
-        info "Coverage: disabled (use --cover to enable)"
-    fi
-    echo ""
+    print_test_header "$APP_NAME" "Task Management API - E2E Test Suite"
 
     check_dependencies
     build_binary
@@ -811,7 +368,7 @@ main() {
     start_server
 
     # Run all tests
-    test_health_check
+    test_health
     test_init_database
     test_list_tasks
     test_create_task
@@ -838,33 +395,9 @@ main() {
     test_openapi
 
     # Summary
-    echo ""
-    echo "========================================"
-    echo " Summary"
-    echo "========================================"
-    echo ""
-    echo "Tests run:    $TESTS_RUN"
-    echo -e "Tests passed: ${GREEN}$TESTS_PASSED${NC}"
-    if [ $TESTS_FAILED -gt 0 ]; then
-        echo -e "Tests failed: ${RED}$TESTS_FAILED${NC}"
-    else
-        echo "Tests failed: $TESTS_FAILED"
-    fi
-
-    if [ "$COVERAGE_ENABLED" = true ]; then
-        echo ""
-        info "Coverage data: $COVERAGE_DIR"
-        info "Convert: go tool covdata textfmt -i=$COVERAGE_DIR -o=coverage.out"
-    fi
-
-    echo ""
-    if [ $TESTS_FAILED -gt 0 ]; then
-        fail "Some tests failed!"
-        exit 1
-    else
-        success "All tests passed!"
-        exit 0
-    fi
+    print_summary
+    print_coverage_info
+    exit_with_result
 }
 
-main "$@"
+main

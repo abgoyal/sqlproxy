@@ -336,14 +336,18 @@ workflows:
         database: "main"
         sql: "SELECT 'processed' AS status"
 
-      # Log either way
-      - name: log
+      # Log either way (use conditions for branching, not SQL interpolation)
+      - name: log_work
         type: query
+        condition: "has_pending"
         database: "main"
-        sql: |
-          SELECT
-            datetime('now') AS checked_at,
-            CASE WHEN {{.steps.check.count}} > 0 THEN 'had work' ELSE 'idle' END AS status
+        sql: "SELECT datetime('now') AS checked_at, 'had work' AS status"
+
+      - name: log_idle
+        type: query
+        condition: "!has_pending"
+        database: "main"
+        sql: "SELECT datetime('now') AS checked_at, 'idle' AS status"
 
   # ============================================================================
   # FALLBACK PATTERNS

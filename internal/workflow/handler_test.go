@@ -64,7 +64,7 @@ func TestHTTPHandler_ServeHTTP_Success(t *testing.T) {
 	}
 	exec := NewExecutor(db, &mockHTTPClient{}, nil, logger)
 
-	wf, _ := Compile(&WorkflowConfig{
+	wf := mustCompile(t,&WorkflowConfig{
 		Name: "test",
 		Steps: []StepConfig{
 			{
@@ -110,7 +110,7 @@ func TestHTTPHandler_ServeHTTP_VersionWithBuildTime(t *testing.T) {
 	logger := &testLogger{}
 	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
 
-	wf, _ := Compile(&WorkflowConfig{
+	wf := mustCompile(t,&WorkflowConfig{
 		Name: "test",
 		Steps: []StepConfig{
 			{
@@ -140,7 +140,7 @@ func TestHTTPHandler_ServeHTTP_RequestID_FromHeader(t *testing.T) {
 	logger := &testLogger{}
 	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
 
-	wf, _ := Compile(&WorkflowConfig{
+	wf := mustCompile(t,&WorkflowConfig{
 		Name: "test",
 		Steps: []StepConfig{
 			{Name: "respond", Type: "response", Template: `{}`},
@@ -164,7 +164,7 @@ func TestHTTPHandler_ServeHTTP_CorrelationID(t *testing.T) {
 	logger := &testLogger{}
 	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
 
-	wf, _ := Compile(&WorkflowConfig{
+	wf := mustCompile(t,&WorkflowConfig{
 		Name: "test",
 		Steps: []StepConfig{
 			{Name: "respond", Type: "response", Template: `{}`},
@@ -188,7 +188,7 @@ func TestHTTPHandler_ParseParameters_QueryString(t *testing.T) {
 	logger := &testLogger{}
 	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
 
-	wf, _ := Compile(&WorkflowConfig{
+	wf := mustCompile(t,&WorkflowConfig{
 		Name: "test",
 		Steps: []StepConfig{
 			{Name: "respond", Type: "response", Template: `{}`},
@@ -219,7 +219,7 @@ func TestHTTPHandler_ParseParameters_MissingRequired(t *testing.T) {
 	logger := &testLogger{}
 	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
 
-	wf, _ := Compile(&WorkflowConfig{
+	wf := mustCompile(t,&WorkflowConfig{
 		Name: "test",
 		Steps: []StepConfig{
 			{Name: "respond", Type: "response", Template: `{}`},
@@ -258,7 +258,7 @@ func TestHTTPHandler_ParseParameters_JSONBody(t *testing.T) {
 	}
 	exec := NewExecutor(db, &mockHTTPClient{}, nil, logger)
 
-	wf, _ := Compile(&WorkflowConfig{
+	wf := mustCompile(t,&WorkflowConfig{
 		Name: "test",
 		Steps: []StepConfig{
 			{Name: "respond", Type: "response", Template: `{}`},
@@ -291,7 +291,7 @@ func TestHTTPHandler_ParseParameters_InvalidJSON(t *testing.T) {
 	logger := &testLogger{}
 	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
 
-	wf, _ := Compile(&WorkflowConfig{
+	wf := mustCompile(t,&WorkflowConfig{
 		Name:  "test",
 		Steps: []StepConfig{},
 	})
@@ -316,7 +316,7 @@ func TestHTTPHandler_ParseParameters_TypeConversion(t *testing.T) {
 	logger := &testLogger{}
 	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
 
-	wf, _ := Compile(&WorkflowConfig{
+	wf := mustCompile(t,&WorkflowConfig{
 		Name: "test",
 		Steps: []StepConfig{
 			{Name: "respond", Type: "response", Template: `{}`},
@@ -351,7 +351,7 @@ func TestHTTPHandler_WorkflowError_DefaultResponse(t *testing.T) {
 	}
 	exec := NewExecutor(db, &mockHTTPClient{}, nil, logger)
 
-	wf, _ := Compile(&WorkflowConfig{
+	wf := mustCompile(t,&WorkflowConfig{
 		Name: "test",
 		Steps: []StepConfig{
 			{Name: "query1", Type: "query", Database: "db", SQL: "SELECT 1"},
@@ -375,7 +375,7 @@ func TestHTTPHandler_NoResponse_EmptySuccess(t *testing.T) {
 	logger := &testLogger{}
 	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
 
-	wf, _ := Compile(&WorkflowConfig{
+	wf := mustCompile(t,&WorkflowConfig{
 		Name:  "test",
 		Steps: []StepConfig{}, // No steps at all
 	})
@@ -673,7 +673,7 @@ func TestHTTPHandler_ParseParameters_NestedObject(t *testing.T) {
 	logger := &testLogger{}
 	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
 
-	wf, _ := Compile(&WorkflowConfig{
+	wf := mustCompile(t,&WorkflowConfig{
 		Name:  "test",
 		Steps: []StepConfig{},
 	})
@@ -704,7 +704,7 @@ func TestHTTPHandler_ParseParameters_JSONType(t *testing.T) {
 	logger := &testLogger{}
 	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
 
-	wf, _ := Compile(&WorkflowConfig{
+	wf := mustCompile(t,&WorkflowConfig{
 		Name: "test",
 		Steps: []StepConfig{
 			{Name: "respond", Type: "response", Template: `{}`},
@@ -736,7 +736,7 @@ func TestHTTPHandler_ParseParameters_ArrayType(t *testing.T) {
 	logger := &testLogger{}
 	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
 
-	wf, _ := Compile(&WorkflowConfig{
+	wf := mustCompile(t,&WorkflowConfig{
 		Name: "test",
 		Steps: []StepConfig{
 			{Name: "respond", Type: "response", Template: `{}`},
@@ -966,4 +966,14 @@ func TestHTTPHandler_TriggerCache_NilCache(t *testing.T) {
 	if rec.Header().Get("X-Cache") != "" {
 		t.Errorf("X-Cache = %q, want empty", rec.Header().Get("X-Cache"))
 	}
+}
+
+// mustCompile compiles a workflow config and fails the test if compilation fails.
+func mustCompile(t *testing.T, cfg *WorkflowConfig) *CompiledWorkflow {
+	t.Helper()
+	wf, err := Compile(cfg)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	return wf
 }

@@ -273,11 +273,8 @@ func validateRateLimits(cfg *config.Config, r *Result) {
 
 func testDBConnections(cfg *config.Config, r *Result) {
 	for _, dbCfg := range cfg.Databases {
-		// Determine database type (default to sqlserver)
+		// Get database type (already validated as required by validateDatabase)
 		dbType := dbCfg.Type
-		if dbType == "" {
-			dbType = "sqlserver"
-		}
 
 		// Skip if config incomplete (unresolved env vars) - only for sqlserver
 		if dbType == "sqlserver" {

@@ -44,15 +44,15 @@ func (m *mockHTTPClient) Do(req *http.Request) (*http.Response, error) {
 
 func TestNewExecutor(t *testing.T) {
 	db := &mockDBManager{}
-	http := &mockHTTPClient{}
+	httpClient := &mockHTTPClient{}
 	logger := &testLogger{}
 
-	exec := NewExecutor(db, http, nil, logger)
+	exec := NewExecutor(db, httpClient, nil, logger)
 
 	if exec.dbManager != db {
 		t.Error("dbManager not set")
 	}
-	if exec.httpClient != http {
+	if exec.httpClient != httpClient {
 		t.Error("httpClient not set")
 	}
 	if exec.logger != logger {

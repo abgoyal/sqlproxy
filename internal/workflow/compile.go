@@ -93,6 +93,8 @@ func getMapValue(m any, key string) (string, bool) {
 }
 
 // TemplateFuncs provides template functions for workflow templates.
+// Note: Error handling in these functions returns error strings rather than Go errors
+// because text/template FuncMap functions cannot propagate errors cleanly.
 var TemplateFuncs = template.FuncMap{
 	// JSON functions
 	"json": func(v any) string {

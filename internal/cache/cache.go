@@ -339,7 +339,9 @@ func (c *Cache) Delete(endpoint, key string) {
 	}
 }
 
-// Clear removes all entries for an endpoint
+// Clear removes all entries for an endpoint.
+// NOTE: This only works for endpoints registered via RegisterEndpoint().
+// For unregistered endpoints, use ClearAll() instead.
 func (c *Cache) Clear(endpoint string) {
 	if c == nil {
 		return

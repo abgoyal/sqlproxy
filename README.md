@@ -1095,6 +1095,8 @@ workflows:
           {"success": false, "error": "User not found"}
 ```
 
+**Note:** Validation warns if all response steps have conditions with no unconditional fallback. In the example above, `found` and `not_found` are logically exhaustive, so the warning can be safely ignored. Alternatively, make the last response unconditional as a fallback.
+
 ### Multi-Step Workflow
 
 Chain multiple queries and combine results:
@@ -1892,6 +1894,7 @@ Returns OpenMetrics/Prometheus format with metrics including:
 - `sqlproxy_db_healthy` - Database health (1=healthy, 0=unhealthy)
 - `sqlproxy_cache_hits_total`, `sqlproxy_cache_misses_total` - Cache statistics
 - `sqlproxy_ratelimit_allowed_total`, `sqlproxy_ratelimit_denied_total` - Rate limit stats
+- `sqlproxy_cron_panics_total` - Panics recovered in cron workflows
 - Standard Go runtime metrics (`go_*`, `process_*`)
 
 ### JSON Format (`/_/metrics.json`)
@@ -2371,7 +2374,13 @@ make test
 # Run by test type
 make test-unit         # Unit tests only (internal packages)
 make test-integration  # Integration tests (httptest-based)
-make test-e2e          # End-to-end tests (shell script, human-friendly output)
+make test-e2e          # All end-to-end test apps
+
+# Run individual E2E apps
+make test-e2e-taskapp  # Task management app
+make test-e2e-crmapp   # CRM app (auth, roles, relationships)
+make test-e2e-shopapp  # E-commerce app (state machines, inventory)
+make test-e2e-blogapp  # Blog/CMS app (content, comments, search)
 
 # Run by package
 make test-db
@@ -2386,13 +2395,25 @@ make test-cover
 make test-bench
 ```
 
-### End-to-End Tests
+### End-to-End Test Apps
 
-The E2E test suite is a shell script that provides human-friendly colored output:
+The E2E test suite includes four demo applications that comprehensively exercise sql-proxy features:
+
+| App | Config | Focus Areas |
+|-----|--------|-------------|
+| **taskapp** | `testdata/taskapp.yaml` | Basic CRUD, caching, rate limiting, batch operations |
+| **crmapp** | `testdata/crmapp.yaml` | Auth, role-based access, relationships, multiple rate limits |
+| **shopapp** | `testdata/shopapp.yaml` | State machines, order workflows, inventory, JSON columns |
+| **blogapp** | `testdata/blogapp.yaml` | Content hierarchy, nested comments, search, pagination |
+
+Each test app is a shell script with human-friendly colored output:
 
 ```bash
-# Run without coverage (fast)
+# Run individual apps
 ./e2e/taskapp_test.sh
+./e2e/crmapp_test.sh
+./e2e/shopapp_test.sh
+./e2e/blogapp_test.sh
 
 # Run with coverage
 ./e2e/taskapp_test.sh --cover
@@ -2401,7 +2422,9 @@ The E2E test suite is a shell script that provides human-friendly colored output
 E2E_COVERAGE_DIR=my-coverage ./e2e/taskapp_test.sh --cover
 ```
 
-The script tests all API endpoints including CRUD operations, caching, rate limiting, batch operations, and template functions.
+The test apps share common infrastructure in `e2e/lib/`:
+- `helpers.sh` - HTTP wrappers, assertions, colored output
+- `runner.sh` - Server lifecycle, coverage collection, config templating
 
 ### Test Documentation
 
@@ -2419,7 +2442,9 @@ make test-docs
 |------|----------|-------------|
 | Unit tests | `internal/*/` | Test individual functions and methods |
 | Integration tests | `internal/server/` | Test component interactions via `httptest` |
-| End-to-end tests | `e2e/taskapp_test.sh` | Shell script, starts binary, makes real HTTP requests |
+| End-to-end tests | `e2e/*_test.sh` | Shell scripts, start binary, make real HTTP requests |
+| E2E configs | `testdata/*.yaml` | App configurations for E2E tests |
+| E2E shared lib | `e2e/lib/` | Shared test infrastructure |
 | Benchmarks | `internal/*/benchmark_test.go` | Performance tests |
 
 All unit and integration tests use SQLite in-memory databases (`:memory:`) to avoid external dependencies.

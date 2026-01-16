@@ -146,6 +146,7 @@ type Collector struct {
 	promRLAllowed     *prometheus.CounterVec
 	promRLDenied      *prometheus.CounterVec
 	promRLBuckets     *prometheus.GaugeVec
+	promCronPanics    *prometheus.CounterVec
 }
 
 var defaultCollector *Collector
@@ -341,6 +342,16 @@ func (c *Collector) initPrometheusMetrics() {
 		[]string{"pool"},
 	)
 	c.promRegistry.MustRegister(c.promRLBuckets)
+
+	// Cron panic counter
+	c.promCronPanics = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "sqlproxy_cron_panics_total",
+			Help: "Total panics recovered in cron workflows",
+		},
+		[]string{"workflow"},
+	)
+	c.promRegistry.MustRegister(c.promCronPanics)
 }
 
 // Registry returns the Prometheus registry for use with promhttp.Handler
@@ -535,6 +546,14 @@ func UpdateRateLimitBuckets(pool string, count int64) {
 		return
 	}
 	defaultCollector.promRLBuckets.WithLabelValues(pool).Set(float64(count))
+}
+
+// RecordCronPanic records a panic recovered in a cron workflow
+func RecordCronPanic(workflow string) {
+	if defaultCollector == nil {
+		return
+	}
+	defaultCollector.promCronPanics.WithLabelValues(workflow).Inc()
 }
 
 // getOrCreateEndpoint returns existing endpoint data or creates new one

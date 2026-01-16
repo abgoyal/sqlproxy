@@ -21,15 +21,9 @@ jobs:
         with:
           go-version: '1.25'
 
-      # Run all tests
-      - name: Run tests
-        run: make test
+      - name: Run CI
+        run: make ci
 
-      # Generate coverage report
-      - name: Generate coverage report
-        run: make test-cover-report
-
-      # Build with goreleaser (same as release, but don't publish)
       - name: Build with GoReleaser
         uses: goreleaser/goreleaser-action@v5
         with:
@@ -39,22 +33,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Find the linux amd64 binary for smoke tests
       - name: Locate binary
         id: binary
         run: |
           BINARY=$(find dist -type f -name "sql-proxy_linux_amd64_*" ! -name "*.exe" | head -1)
           echo "path=$BINARY" >> $GITHUB_OUTPUT
-          echo "Found binary: $BINARY"
 
-      # Smoke tests
       - name: Smoke test - version
         run: ${{ steps.binary.outputs.path }} -version
 
-      - name: Smoke test - help
-        run: ${{ steps.binary.outputs.path }} -help
-
-      # Validate example config
       - name: Smoke test - validate config
         run: ${{ steps.binary.outputs.path }} -validate -config testdata/config.ci.yaml
 

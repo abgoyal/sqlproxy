@@ -1,0 +1,1218 @@
+# Blog/CMS Application API
+# Demonstrates: Content hierarchy, full-text search, caching patterns, pagination
+#
+# Features covered:
+# - Nested comments (parent_id for replies)
+# - Search posts by title/content
+# - Post status workflow (draft -> published -> archived)
+# - Tag/category relationships (many-to-many)
+# - Pagination with limit/offset
+# - Caching patterns (posts cached, comments not)
+# - View counting
+#
+# TODO/WORKAROUNDS (revisit after fixes):
+# - [WORKAROUND] No auth - would need query param auth like crmapp if added.
+#   Fix: Add params: field to StepConfig for header-based auth.
+# - [WORKAROUND] Using inline expressions like "steps.post.count > 0 && steps.draft_check.count > 0"
+#   instead of named aliases because compound expressions with aliases fail at runtime.
+#   Fix: Add alias values to BuildExprEnv() or substitute aliases in compound expressions.
+# - [LEARNING] Full-text search uses LIKE patterns, not FTS5, for simplicity.
+#   Real apps would use SQLite FTS5 extension for better search.
+# - [LEARNING] Nested comment retrieval flattened - no recursive CTE needed
+#   since we return all comments for a post and let client build tree.
+#
+# DROPPED FEATURES (not implemented due to sql-proxy limitations):
+# - Cron job for daily view aggregation - planned to aggregate page_views table daily
+#   via cron trigger, but decided against adding page_views table complexity since
+#   view_count on posts table is simpler (incremented on each GET /api/posts/{slug})
+# - Author authentication - wanted authors to authenticate and only edit their own
+#   posts, but query param auth is awkward and conditions can't access step data
+#   for role-based filtering
+
+server:
+  host: "127.0.0.1"
+  port: ${PORT}
+  default_timeout_sec: 30
+  max_timeout_sec: 300
+  cache:
+    enabled: true
+    max_size_mb: 256
+    default_ttl_sec: 300
+
+databases:
+  - name: "main"
+    type: "sqlite"
+    path: "${DB_PATH}"
+    readonly: false
+
+rate_limits:
+  - name: "default"
+    requests_per_second: 50
+    burst: 100
+    key: "blog_{{.ClientIP}}"
+
+  - name: "comments"
+    requests_per_second: 5
+    burst: 10
+    key: "comments_{{.ClientIP}}"
+
+logging:
+  level: "debug"
+  file_path: "/tmp/sql-proxy-blogapp.log"
+  max_size_mb: 10
+  max_backups: 1
+  max_age_days: 1
+
+metrics:
+  enabled: true
+
+workflows:
+  # ============================================================================
+  # DATABASE INITIALIZATION
+  # ============================================================================
+
+  - name: "init_db"
+    triggers:
+      - type: http
+        path: "/api/init"
+        method: POST
+    steps:
+      # Authors table
+      - name: create_authors
+        type: query
+        database: "main"
+        sql: |
+          CREATE TABLE IF NOT EXISTS authors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            email TEXT NOT NULL UNIQUE,
+            display_name TEXT NOT NULL,
+            bio TEXT,
+            avatar_url TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+          )
+
+      # Posts table
+      - name: create_posts
+        type: query
+        database: "main"
+        sql: |
+          CREATE TABLE IF NOT EXISTS posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            author_id INTEGER NOT NULL REFERENCES authors(id),
+            title TEXT NOT NULL,
+            slug TEXT NOT NULL UNIQUE,
+            content TEXT NOT NULL,
+            excerpt TEXT,
+            status TEXT DEFAULT 'draft' CHECK (status IN ('draft', 'published', 'archived')),
+            view_count INTEGER DEFAULT 0,
+            published_at TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+          )
+
+      # Comments table (nested via parent_id)
+      - name: create_comments
+        type: query
+        database: "main"
+        sql: |
+          CREATE TABLE IF NOT EXISTS comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id INTEGER NOT NULL REFERENCES posts(id),
+            parent_id INTEGER REFERENCES comments(id),
+            author_name TEXT NOT NULL,
+            author_email TEXT NOT NULL,
+            content TEXT NOT NULL,
+            status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'spam')),
+            created_at TEXT DEFAULT (datetime('now'))
+          )
+
+      # Tags table
+      - name: create_tags
+        type: query
+        database: "main"
+        sql: |
+          CREATE TABLE IF NOT EXISTS tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            slug TEXT NOT NULL UNIQUE,
+            description TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+          )
+
+      # Post-Tag relationship (many-to-many)
+      - name: create_post_tags
+        type: query
+        database: "main"
+        sql: |
+          CREATE TABLE IF NOT EXISTS post_tags (
+            post_id INTEGER NOT NULL REFERENCES posts(id),
+            tag_id INTEGER NOT NULL REFERENCES tags(id),
+            PRIMARY KEY (post_id, tag_id)
+          )
+
+      # Create indexes
+      - name: create_indexes
+        type: query
+        database: "main"
+        sql: |
+          CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author_id);
+          CREATE INDEX IF NOT EXISTS idx_posts_status ON posts(status);
+          CREATE INDEX IF NOT EXISTS idx_posts_slug ON posts(slug);
+          CREATE INDEX IF NOT EXISTS idx_posts_published ON posts(published_at);
+          CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id);
+          CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id);
+          CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status);
+          CREATE INDEX IF NOT EXISTS idx_post_tags_post ON post_tags(post_id);
+          CREATE INDEX IF NOT EXISTS idx_post_tags_tag ON post_tags(tag_id)
+
+      # Seed authors
+      - name: seed_authors
+        type: query
+        database: "main"
+        sql: |
+          INSERT OR IGNORE INTO authors (id, username, email, display_name, bio, avatar_url) VALUES
+            (1, 'admin', 'admin@blog.com', 'Admin User', 'Site administrator and chief editor.', '/avatars/admin.png'),
+            (2, 'jsmith', 'john.smith@blog.com', 'John Smith', 'Tech writer and software developer. Loves Go and distributed systems.', '/avatars/john.png'),
+            (3, 'mjones', 'mary.jones@blog.com', 'Mary Jones', 'Data scientist and ML enthusiast. Python advocate.', '/avatars/mary.png'),
+            (4, 'bwilson', 'bob.wilson@blog.com', 'Bob Wilson', 'DevOps engineer. Kubernetes and cloud infrastructure specialist.', '/avatars/bob.png'),
+            (5, 'alee', 'alice.lee@blog.com', 'Alice Lee', 'Frontend developer. React, Vue, and modern CSS expert.', '/avatars/alice.png')
+
+      # Seed tags
+      - name: seed_tags
+        type: query
+        database: "main"
+        sql: |
+          INSERT OR IGNORE INTO tags (id, name, slug, description) VALUES
+            (1, 'Go', 'go', 'Articles about the Go programming language'),
+            (2, 'Python', 'python', 'Python programming tutorials and tips'),
+            (3, 'JavaScript', 'javascript', 'JavaScript and modern web development'),
+            (4, 'DevOps', 'devops', 'DevOps practices, CI/CD, and automation'),
+            (5, 'Kubernetes', 'kubernetes', 'Container orchestration with Kubernetes'),
+            (6, 'Docker', 'docker', 'Docker containerization'),
+            (7, 'Database', 'database', 'Database design and optimization'),
+            (8, 'SQL', 'sql', 'SQL queries and database management'),
+            (9, 'API', 'api', 'API design and development'),
+            (10, 'REST', 'rest', 'RESTful API architecture'),
+            (11, 'Security', 'security', 'Application and infrastructure security'),
+            (12, 'Testing', 'testing', 'Software testing strategies'),
+            (13, 'Performance', 'performance', 'Performance optimization techniques'),
+            (14, 'Architecture', 'architecture', 'Software architecture patterns'),
+            (15, 'Tutorial', 'tutorial', 'Step-by-step tutorials'),
+            (16, 'Best Practices', 'best-practices', 'Industry best practices'),
+            (17, 'Cloud', 'cloud', 'Cloud computing and services'),
+            (18, 'AWS', 'aws', 'Amazon Web Services'),
+            (19, 'Linux', 'linux', 'Linux administration and scripting'),
+            (20, 'Git', 'git', 'Version control with Git')
+
+      # Seed posts (mix of published and draft)
+      - name: seed_posts
+        type: query
+        database: "main"
+        sql: |
+          INSERT OR IGNORE INTO posts (id, author_id, title, slug, content, excerpt, status, view_count, published_at, created_at) VALUES
+            (1, 2, 'Getting Started with Go', 'getting-started-with-go', 'Go is a statically typed, compiled language designed for simplicity and efficiency. In this tutorial, we will cover the basics of Go programming including variables, functions, and control structures. Go was created at Google and has become popular for building scalable web services and command-line tools.', 'Learn the basics of Go programming language in this comprehensive tutorial.', 'published', 1523, '2024-01-15 10:00:00', '2024-01-10 09:00:00'),
+            (2, 2, 'Building REST APIs in Go', 'building-rest-apis-in-go', 'REST APIs are the backbone of modern web applications. In this guide, we explore how to build robust REST APIs using Go and the standard library. We will cover routing, middleware, JSON handling, and error management. Go''s net/http package provides everything you need for building production-ready APIs.', 'A comprehensive guide to building REST APIs with Go standard library.', 'published', 2341, '2024-01-20 14:00:00', '2024-01-18 11:00:00'),
+            (3, 3, 'Introduction to Machine Learning with Python', 'intro-ml-python', 'Machine learning is transforming industries across the globe. Python has become the de facto language for ML due to its rich ecosystem of libraries like NumPy, Pandas, and scikit-learn. This article introduces the fundamental concepts of machine learning and demonstrates basic implementations.', 'Start your machine learning journey with Python and scikit-learn.', 'published', 3102, '2024-01-25 09:00:00', '2024-01-22 15:00:00'),
+            (4, 4, 'Kubernetes for Beginners', 'kubernetes-for-beginners', 'Kubernetes has become the standard for container orchestration. This beginner-friendly guide walks you through the core concepts including pods, services, deployments, and configmaps. We''ll set up a local cluster using minikube and deploy our first application.', 'Learn Kubernetes fundamentals with hands-on examples.', 'published', 1876, '2024-02-01 08:00:00', '2024-01-28 10:00:00'),
+            (5, 5, 'Modern CSS Techniques', 'modern-css-techniques', 'CSS has evolved significantly in recent years. This article explores modern CSS features including Grid, Flexbox, Custom Properties, and Container Queries. We''ll build responsive layouts without any frameworks and learn to write maintainable CSS.', 'Explore modern CSS features for building responsive layouts.', 'published', 987, '2024-02-05 11:00:00', '2024-02-02 14:00:00'),
+            (6, 2, 'Concurrency in Go', 'concurrency-in-go', 'Go''s concurrency model is one of its most powerful features. Goroutines and channels provide an elegant way to write concurrent programs. This article dives deep into Go''s concurrency primitives, patterns, and best practices for writing safe concurrent code.', 'Master Go''s goroutines and channels for concurrent programming.', 'published', 2156, '2024-02-10 10:00:00', '2024-02-07 09:00:00'),
+            (7, 3, 'Data Visualization with Python', 'data-viz-python', 'Effective data visualization is crucial for communicating insights. This tutorial covers popular Python visualization libraries including Matplotlib, Seaborn, and Plotly. We''ll create various chart types and learn when to use each one.', 'Create stunning visualizations with Python libraries.', 'published', 1432, '2024-02-15 13:00:00', '2024-02-12 11:00:00'),
+            (8, 4, 'Docker Best Practices', 'docker-best-practices', 'Writing efficient Dockerfiles is an art. This guide covers Docker best practices including multi-stage builds, layer optimization, security considerations, and image size reduction. Follow these practices to create production-ready container images.', 'Optimize your Docker images with these best practices.', 'published', 2089, '2024-02-20 09:00:00', '2024-02-17 10:00:00'),
+            (9, 5, 'React Hooks Deep Dive', 'react-hooks-deep-dive', 'React Hooks revolutionized how we write React components. This deep dive covers useState, useEffect, useContext, useReducer, and custom hooks. We''ll explore common patterns and pitfalls to avoid.', 'Understanding React Hooks from basics to advanced patterns.', 'published', 1765, '2024-02-25 14:00:00', '2024-02-22 15:00:00'),
+            (10, 1, 'Site Update: New Features', 'site-update-new-features', 'We''re excited to announce several new features on our blog platform. This includes improved search functionality, better commenting system, and dark mode support. Read on to learn about all the updates.', 'Announcing new blog features and improvements.', 'published', 543, '2024-03-01 08:00:00', '2024-02-28 16:00:00'),
+            (11, 2, 'Go Error Handling Patterns', 'go-error-handling-patterns', 'Error handling in Go is explicit and straightforward. This article explores various error handling patterns including sentinel errors, error wrapping, and custom error types. Learn to write code that handles errors gracefully.', 'Best practices for handling errors in Go applications.', 'published', 1234, '2024-03-05 10:00:00', '2024-03-02 11:00:00'),
+            (12, 3, 'Pandas for Data Analysis', 'pandas-data-analysis', 'Pandas is the Swiss Army knife of data analysis in Python. This comprehensive guide covers DataFrames, Series, data cleaning, aggregation, and merging datasets. Includes practical examples from real-world scenarios.', 'Master data analysis with Pandas library.', 'published', 1678, '2024-03-10 09:00:00', '2024-03-07 14:00:00'),
+            (13, 4, 'CI/CD Pipeline Design', 'cicd-pipeline-design', 'A well-designed CI/CD pipeline is essential for modern software development. This article covers pipeline stages, testing strategies, deployment patterns, and monitoring. We''ll design a complete pipeline using GitHub Actions.', 'Design robust CI/CD pipelines for your projects.', 'published', 1456, '2024-03-15 11:00:00', '2024-03-12 10:00:00'),
+            (14, 5, 'TypeScript Best Practices', 'typescript-best-practices', 'TypeScript adds static typing to JavaScript, catching errors at compile time. This guide covers TypeScript best practices including strict mode, type inference, generics, and utility types. Write safer, more maintainable code.', 'Write better JavaScript with TypeScript best practices.', 'published', 1321, '2024-03-20 13:00:00', '2024-03-17 09:00:00'),
+            (15, 2, 'Building CLI Tools in Go', 'building-cli-tools-go', 'Go excels at building command-line tools. This tutorial shows how to create professional CLI applications using the cobra library. We''ll implement flags, subcommands, configuration files, and interactive prompts.', 'Create professional CLI applications with Go and Cobra.', 'published', 987, '2024-03-25 10:00:00', '2024-03-22 11:00:00'),
+            (16, 3, 'Neural Networks from Scratch', 'neural-networks-scratch', 'Understanding neural networks at a fundamental level is crucial for any ML practitioner. This article implements a simple neural network from scratch using only NumPy, explaining backpropagation and gradient descent along the way.', 'Build a neural network from scratch to understand the fundamentals.', 'draft', 0, NULL, '2024-03-28 14:00:00'),
+            (17, 4, 'Helm Charts Tutorial', 'helm-charts-tutorial', 'Helm simplifies Kubernetes application deployment. This tutorial covers Helm basics, chart structure, templating, and best practices. We''ll create and deploy a complete Helm chart for a web application.', 'Learn to package Kubernetes applications with Helm.', 'draft', 0, NULL, '2024-03-30 09:00:00'),
+            (18, 5, 'CSS Grid Advanced Layouts', 'css-grid-advanced', 'CSS Grid enables complex layouts that were previously impossible. This advanced guide covers grid areas, auto-fit/auto-fill, subgrid, and responsive design patterns. Build magazine-style layouts with pure CSS.', 'Advanced CSS Grid techniques for complex layouts.', 'draft', 0, NULL, '2024-04-01 10:00:00'),
+            (19, 2, 'Go Generics Guide', 'go-generics-guide', 'Go 1.18 introduced generics, enabling type-safe generic programming. This guide covers type parameters, constraints, and practical use cases. Learn when and how to use generics effectively.', 'Master Go generics for type-safe generic programming.', 'draft', 0, NULL, '2024-04-03 11:00:00'),
+            (20, 1, 'Blog Roadmap 2024', 'blog-roadmap-2024', 'Our plans for the blog in 2024 including new content series, community features, and technical improvements. We value your feedback - let us know what you want to see!', 'What to expect from our blog in 2024.', 'draft', 0, NULL, '2024-04-05 08:00:00')
+
+      # Seed post_tags
+      - name: seed_post_tags
+        type: query
+        database: "main"
+        sql: |
+          INSERT OR IGNORE INTO post_tags (post_id, tag_id) VALUES
+            (1, 1), (1, 15), (1, 16),
+            (2, 1), (2, 9), (2, 10),
+            (3, 2), (3, 15),
+            (4, 5), (4, 6), (4, 4), (4, 15),
+            (5, 3), (5, 15),
+            (6, 1), (6, 13), (6, 14),
+            (7, 2), (7, 15),
+            (8, 6), (8, 4), (8, 16), (8, 11),
+            (9, 3), (9, 15),
+            (10, 16),
+            (11, 1), (11, 16),
+            (12, 2), (12, 7), (12, 15),
+            (13, 4), (13, 12), (13, 16),
+            (14, 3), (14, 16),
+            (15, 1), (15, 15),
+            (16, 2),
+            (17, 5), (17, 4),
+            (18, 3),
+            (19, 1),
+            (20, 16)
+
+      # Seed comments (including nested replies)
+      - name: seed_comments
+        type: query
+        database: "main"
+        sql: |
+          INSERT OR IGNORE INTO comments (id, post_id, parent_id, author_name, author_email, content, status, created_at) VALUES
+            (1, 1, NULL, 'Reader One', 'reader1@example.com', 'Great introduction to Go! Very clear explanations.', 'approved', '2024-01-16 11:00:00'),
+            (2, 1, NULL, 'Go Newbie', 'newbie@example.com', 'This is exactly what I needed. Thanks!', 'approved', '2024-01-17 09:30:00'),
+            (3, 1, 1, 'John Smith', 'john.smith@blog.com', 'Glad you found it helpful! Let me know if you have questions.', 'approved', '2024-01-17 10:00:00'),
+            (4, 1, NULL, 'Skeptic', 'skeptic@example.com', 'Why Go over other languages?', 'approved', '2024-01-18 14:00:00'),
+            (5, 1, 4, 'John Smith', 'john.smith@blog.com', 'Go offers simplicity, fast compilation, and excellent concurrency support.', 'approved', '2024-01-18 15:30:00'),
+            (6, 2, NULL, 'API Developer', 'apidev@example.com', 'Solid REST API tutorial. The middleware section was especially useful.', 'approved', '2024-01-21 10:00:00'),
+            (7, 2, NULL, 'Backend Dev', 'backend@example.com', 'How would you handle authentication?', 'approved', '2024-01-22 11:30:00'),
+            (8, 2, 7, 'John Smith', 'john.smith@blog.com', 'I''ll cover JWT authentication in a follow-up article!', 'approved', '2024-01-22 14:00:00'),
+            (9, 3, NULL, 'ML Enthusiast', 'ml@example.com', 'Perfect starting point for ML beginners.', 'approved', '2024-01-26 08:00:00'),
+            (10, 3, NULL, 'Data Scientist', 'ds@example.com', 'Would love to see more on deep learning next.', 'approved', '2024-01-27 16:00:00'),
+            (11, 3, 10, 'Mary Jones', 'mary.jones@blog.com', 'Deep learning article coming soon! Stay tuned.', 'approved', '2024-01-27 17:30:00'),
+            (12, 4, NULL, 'DevOps Newbie', 'devops.new@example.com', 'Finally understood pods and services. Thank you!', 'approved', '2024-02-02 09:00:00'),
+            (13, 4, NULL, 'SRE Engineer', 'sre@example.com', 'Good intro. Would be nice to see production deployment patterns.', 'approved', '2024-02-03 11:00:00'),
+            (14, 4, 13, 'Bob Wilson', 'bob.wilson@blog.com', 'Great suggestion! I''ll write about production K8s patterns.', 'approved', '2024-02-03 14:00:00'),
+            (15, 5, NULL, 'CSS Lover', 'css@example.com', 'Grid and Flexbox examples are so clear!', 'approved', '2024-02-06 10:00:00'),
+            (16, 6, NULL, 'Concurrent Go', 'concurrent@example.com', 'The channel patterns section was eye-opening.', 'approved', '2024-02-11 09:00:00'),
+            (17, 6, NULL, 'Gopher', 'gopher@example.com', 'Best explanation of Go concurrency I''ve read.', 'approved', '2024-02-12 14:00:00'),
+            (18, 6, 17, 'John Smith', 'john.smith@blog.com', 'Thank you! Concurrency is my favorite Go topic.', 'approved', '2024-02-12 16:00:00'),
+            (19, 7, NULL, 'Data Analyst', 'analyst@example.com', 'Seaborn section was particularly helpful for my work.', 'approved', '2024-02-16 11:00:00'),
+            (20, 8, NULL, 'Container Fan', 'container@example.com', 'Reduced my image size by 80% following these tips!', 'approved', '2024-02-21 08:00:00'),
+            (21, 8, 20, 'Bob Wilson', 'bob.wilson@blog.com', 'That''s amazing! Multi-stage builds make a huge difference.', 'approved', '2024-02-21 10:00:00'),
+            (22, 9, NULL, 'React Dev', 'react@example.com', 'useReducer examples cleared up my confusion. Thanks!', 'approved', '2024-02-26 13:00:00'),
+            (23, 11, NULL, 'Error Handler', 'errors@example.com', 'Error wrapping with %w is a game changer.', 'approved', '2024-03-06 09:00:00'),
+            (24, 12, NULL, 'Pandas User', 'pandas@example.com', 'The merge and join section saved me hours of debugging.', 'approved', '2024-03-11 10:00:00'),
+            (25, 13, NULL, 'CI/CD Guy', 'cicd@example.com', 'Implementing this pipeline today. Excellent guide!', 'approved', '2024-03-16 14:00:00'),
+            (26, 1, NULL, 'Spammer', 'spam@spam.com', 'Buy cheap stuff at spam.com!', 'spam', '2024-01-19 03:00:00'),
+            (27, 2, NULL, 'Pending Review', 'pending@example.com', 'Interesting article, needs fact checking though.', 'pending', '2024-01-23 10:00:00'),
+            (28, 14, NULL, 'TS Fan', 'typescript@example.com', 'Strict mode really helped catch bugs in our codebase.', 'approved', '2024-03-21 11:00:00'),
+            (29, 15, NULL, 'CLI Builder', 'cli@example.com', 'Built my first CLI tool following this. Works great!', 'approved', '2024-03-26 09:00:00'),
+            (30, 15, 29, 'John Smith', 'john.smith@blog.com', 'Awesome! Feel free to share what you built.', 'approved', '2024-03-26 11:00:00')
+
+      - type: response
+        status_code: 201
+        template: '{"success": true, "message": "Blog database initialized with seed data"}'
+
+  # ============================================================================
+  # AUTHORS
+  # ============================================================================
+
+  # GET /api/authors - List all authors
+  - name: "list_authors"
+    triggers:
+      - type: http
+        path: "/api/authors"
+        method: GET
+        cache:
+          enabled: true
+          key: "authors:all"
+          ttl_sec: 300
+    steps:
+      - name: fetch
+        type: query
+        database: "main"
+        sql: |
+          SELECT a.*,
+                 (SELECT COUNT(*) FROM posts WHERE author_id = a.id AND status = 'published') as post_count
+          FROM authors a
+          ORDER BY a.display_name
+      - type: response
+        template: |
+          {
+            "authors": {{json .steps.fetch.data}},
+            "count": {{.steps.fetch.count}}
+          }
+
+  # GET /api/authors/{id} - Get single author with posts
+  - name: "get_author"
+    triggers:
+      - type: http
+        path: "/api/authors/{id}"
+        method: GET
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    conditions:
+      found: "steps.author.count > 0"
+    steps:
+      - name: author
+        type: query
+        database: "main"
+        sql: "SELECT * FROM authors WHERE id = @id"
+      - name: posts
+        type: query
+        database: "main"
+        condition: "found"
+        sql: |
+          SELECT id, title, slug, excerpt, status, view_count, published_at
+          FROM posts
+          WHERE author_id = @id AND status = 'published'
+          ORDER BY published_at DESC
+          LIMIT 10
+      - type: response
+        condition: "found"
+        template: |
+          {
+            "author": {{json (index .steps.author.data 0)}},
+            "recent_posts": {{json .steps.posts.data}},
+            "post_count": {{.steps.posts.count}}
+          }
+      - type: response
+        condition: "!found"
+        status_code: 404
+        template: '{"error": "Author not found", "id": {{.trigger.params.id}}}'
+
+  # ============================================================================
+  # TAGS
+  # ============================================================================
+
+  # GET /api/tags - List all tags with post counts
+  - name: "list_tags"
+    triggers:
+      - type: http
+        path: "/api/tags"
+        method: GET
+        cache:
+          enabled: true
+          key: "tags:all"
+          ttl_sec: 300
+    steps:
+      - name: fetch
+        type: query
+        database: "main"
+        sql: |
+          SELECT t.*,
+                 COUNT(pt.post_id) as post_count
+          FROM tags t
+          LEFT JOIN post_tags pt ON t.id = pt.tag_id
+          LEFT JOIN posts p ON pt.post_id = p.id AND p.status = 'published'
+          GROUP BY t.id
+          ORDER BY post_count DESC, t.name
+      - type: response
+        template: |
+          {
+            "tags": {{json .steps.fetch.data}},
+            "count": {{.steps.fetch.count}}
+          }
+
+  # GET /api/tags/{slug} - Get tag with posts
+  - name: "get_tag"
+    triggers:
+      - type: http
+        path: "/api/tags/{slug}"
+        method: GET
+        parameters:
+          - name: "slug"
+            type: "string"
+            required: true
+          - name: "limit"
+            type: "int"
+            required: false
+            default: "10"
+          - name: "offset"
+            type: "int"
+            required: false
+            default: "0"
+    conditions:
+      found: "steps.tag.count > 0"
+    steps:
+      - name: tag
+        type: query
+        database: "main"
+        sql: "SELECT * FROM tags WHERE slug = @slug"
+      - name: posts
+        type: query
+        database: "main"
+        condition: "found"
+        sql: |
+          SELECT p.id, p.title, p.slug, p.excerpt, p.view_count, p.published_at,
+                 a.display_name as author_name
+          FROM posts p
+          JOIN post_tags pt ON p.id = pt.post_id
+          JOIN tags t ON pt.tag_id = t.id
+          JOIN authors a ON p.author_id = a.id
+          WHERE t.slug = @slug AND p.status = 'published'
+          ORDER BY p.published_at DESC
+          LIMIT @limit OFFSET @offset
+      - name: total
+        type: query
+        database: "main"
+        condition: "found"
+        sql: |
+          SELECT COUNT(*) as count
+          FROM posts p
+          JOIN post_tags pt ON p.id = pt.post_id
+          JOIN tags t ON pt.tag_id = t.id
+          WHERE t.slug = @slug AND p.status = 'published'
+      - type: response
+        condition: "found"
+        template: |
+          {
+            "tag": {{json (index .steps.tag.data 0)}},
+            "posts": {{json .steps.posts.data}},
+            "count": {{.steps.posts.count}},
+            "total": {{index .steps.total.data 0 "count"}},
+            "limit": {{.trigger.params.limit}},
+            "offset": {{.trigger.params.offset}}
+          }
+      - type: response
+        condition: "!found"
+        status_code: 404
+        template: '{"error": "Tag not found", "slug": "{{.trigger.params.slug}}"}'
+
+  # ============================================================================
+  # POSTS
+  # ============================================================================
+
+  # GET /api/posts - List posts with filtering and pagination
+  # NOTE: Search uses SQL LIKE patterns. Wildcard chars (% and _) in search input
+  # are not escaped, so users can use them for pattern matching. For production,
+  # consider escaping wildcards or using SQLite FTS5 for proper full-text search.
+  - name: "list_posts"
+    triggers:
+      - type: http
+        path: "/api/posts"
+        method: GET
+        parameters:
+          - name: "status"
+            type: "string"
+            required: false
+            default: "published"
+          - name: "author_id"
+            type: "int"
+            required: false
+            default: "0"
+          - name: "search"
+            type: "string"
+            required: false
+            default: ""
+          - name: "limit"
+            type: "int"
+            required: false
+            default: "10"
+          - name: "offset"
+            type: "int"
+            required: false
+            default: "0"
+    steps:
+      - name: fetch
+        type: query
+        database: "main"
+        sql: |
+          SELECT p.id, p.title, p.slug, p.excerpt, p.status, p.view_count,
+                 p.published_at, p.created_at,
+                 a.id as author_id, a.display_name as author_name
+          FROM posts p
+          JOIN authors a ON p.author_id = a.id
+          WHERE (@status = '' OR p.status = @status)
+            AND (@author_id = 0 OR p.author_id = @author_id)
+            AND (@search = '' OR p.title LIKE '%' || @search || '%' OR p.content LIKE '%' || @search || '%')
+          ORDER BY COALESCE(p.published_at, p.created_at) DESC
+          LIMIT @limit OFFSET @offset
+      - name: total
+        type: query
+        database: "main"
+        sql: |
+          SELECT COUNT(*) as count
+          FROM posts p
+          WHERE (@status = '' OR p.status = @status)
+            AND (@author_id = 0 OR p.author_id = @author_id)
+            AND (@search = '' OR p.title LIKE '%' || @search || '%' OR p.content LIKE '%' || @search || '%')
+      - type: response
+        template: |
+          {
+            "posts": {{json .steps.fetch.data}},
+            "count": {{.steps.fetch.count}},
+            "total": {{index .steps.total.data 0 "count"}},
+            "limit": {{.trigger.params.limit}},
+            "offset": {{.trigger.params.offset}}
+          }
+
+  # GET /api/posts/{slug} - Get single post by slug
+  # NOTE: Trigger-level caching disabled because increment_views step must run on every request.
+  # With caching enabled, cached responses skip the entire workflow, so views aren't counted.
+  # If caching is needed, use step-level caching on the 'post' query instead.
+  - name: "get_post"
+    triggers:
+      - type: http
+        path: "/api/posts/{slug}"
+        method: GET
+        parameters:
+          - name: "slug"
+            type: "string"
+            required: true
+    conditions:
+      found: "steps.post.count > 0"
+    steps:
+      - name: post
+        type: query
+        database: "main"
+        sql: |
+          SELECT p.*, a.display_name as author_name, a.bio as author_bio, a.avatar_url as author_avatar
+          FROM posts p
+          JOIN authors a ON p.author_id = a.id
+          WHERE p.slug = @slug
+      - name: tags
+        type: query
+        database: "main"
+        condition: "found"
+        sql: |
+          SELECT t.id, t.name, t.slug
+          FROM tags t
+          JOIN post_tags pt ON t.id = pt.tag_id
+          JOIN posts p ON pt.post_id = p.id
+          WHERE p.slug = @slug
+      - name: increment_views
+        type: query
+        database: "main"
+        condition: "found"
+        sql: "UPDATE posts SET view_count = view_count + 1 WHERE slug = @slug"
+      - type: response
+        condition: "found"
+        template: |
+          {
+            "post": {{json (index .steps.post.data 0)}},
+            "tags": {{json .steps.tags.data}}
+          }
+      - type: response
+        condition: "!found"
+        status_code: 404
+        template: '{"error": "Post not found", "slug": "{{.trigger.params.slug}}"}'
+
+  # POST /api/posts - Create new post
+  - name: "create_post"
+    triggers:
+      - type: http
+        path: "/api/posts"
+        method: POST
+        parameters:
+          - name: "author_id"
+            type: "int"
+            required: true
+          - name: "title"
+            type: "string"
+            required: true
+          - name: "slug"
+            type: "string"
+            required: true
+          - name: "content"
+            type: "string"
+            required: true
+          - name: "excerpt"
+            type: "string"
+            required: false
+            default: ""
+    conditions:
+      author_exists: "steps.check_author.count > 0"
+      slug_unique: "steps.check_slug.count == 0"
+    steps:
+      - name: check_author
+        type: query
+        database: "main"
+        sql: "SELECT id FROM authors WHERE id = @author_id"
+      - name: check_slug
+        type: query
+        database: "main"
+        sql: "SELECT id FROM posts WHERE slug = @slug"
+      # WORKAROUND: Compound condition aliases don't work, using inline expressions
+      - name: insert
+        type: query
+        database: "main"
+        condition: "steps.check_author.count > 0 && steps.check_slug.count == 0"
+        sql: |
+          INSERT INTO posts (author_id, title, slug, content, excerpt, status)
+          VALUES (@author_id, @title, @slug, @content, @excerpt, 'draft')
+      - name: get_id
+        type: query
+        database: "main"
+        condition: "steps.check_author.count > 0 && steps.check_slug.count == 0"
+        sql: "SELECT last_insert_rowid() AS id"
+      - type: response
+        condition: "steps.check_author.count > 0 && steps.check_slug.count == 0"
+        status_code: 201
+        template: |
+          {
+            "success": true,
+            "id": {{index .steps.get_id.data 0 "id"}},
+            "slug": "{{.trigger.params.slug}}",
+            "status": "draft"
+          }
+      - type: response
+        condition: "!author_exists"
+        status_code: 400
+        template: '{"error": "Author not found", "author_id": {{.trigger.params.author_id}}}'
+      - type: response
+        condition: "steps.check_author.count > 0 && steps.check_slug.count > 0"
+        status_code: 409
+        template: '{"error": "Slug already exists", "slug": "{{.trigger.params.slug}}"}'
+
+  # PUT /api/posts/{slug} - Update post
+  - name: "update_post"
+    triggers:
+      - type: http
+        path: "/api/posts/{slug}"
+        method: PUT
+        parameters:
+          - name: "slug"
+            type: "string"
+            required: true
+          - name: "title"
+            type: "string"
+            required: false
+            default: ""
+          - name: "content"
+            type: "string"
+            required: false
+            default: ""
+          - name: "excerpt"
+            type: "string"
+            required: false
+            default: ""
+    conditions:
+      found: "steps.post.count > 0"
+    steps:
+      - name: post
+        type: query
+        database: "main"
+        sql: "SELECT * FROM posts WHERE slug = @slug"
+      - name: update
+        type: query
+        database: "main"
+        condition: "found"
+        sql: |
+          UPDATE posts SET
+            title = CASE WHEN @title = '' THEN title ELSE @title END,
+            content = CASE WHEN @content = '' THEN content ELSE @content END,
+            excerpt = CASE WHEN @excerpt = '' THEN excerpt ELSE @excerpt END,
+            updated_at = datetime('now')
+          WHERE slug = @slug
+      - type: response
+        condition: "found"
+        template: |
+          {
+            "success": true,
+            "slug": "{{.trigger.params.slug}}",
+            "updated": true
+          }
+      - type: response
+        condition: "!found"
+        status_code: 404
+        template: '{"error": "Post not found", "slug": "{{.trigger.params.slug}}"}'
+
+  # POST /api/posts/{slug}/publish - Publish a draft post
+  - name: "publish_post"
+    triggers:
+      - type: http
+        path: "/api/posts/{slug}/publish"
+        method: POST
+        parameters:
+          - name: "slug"
+            type: "string"
+            required: true
+    conditions:
+      found: "steps.post.count > 0"
+      is_draft: "steps.draft_check.count > 0"
+    steps:
+      - name: post
+        type: query
+        database: "main"
+        sql: "SELECT * FROM posts WHERE slug = @slug"
+      - name: draft_check
+        type: query
+        database: "main"
+        condition: "found"
+        sql: "SELECT id FROM posts WHERE slug = @slug AND status = 'draft'"
+      # WORKAROUND: Compound condition aliases don't work, using inline expressions
+      - name: publish
+        type: query
+        database: "main"
+        condition: "steps.post.count > 0 && steps.draft_check.count > 0"
+        sql: |
+          UPDATE posts SET
+            status = 'published',
+            published_at = datetime('now'),
+            updated_at = datetime('now')
+          WHERE slug = @slug
+      - type: response
+        condition: "steps.post.count > 0 && steps.draft_check.count > 0"
+        template: |
+          {
+            "success": true,
+            "slug": "{{.trigger.params.slug}}",
+            "status": "published"
+          }
+      - type: response
+        condition: "!found"
+        status_code: 404
+        template: '{"error": "Post not found", "slug": "{{.trigger.params.slug}}"}'
+      - type: response
+        condition: "steps.post.count > 0 && steps.draft_check.count == 0"
+        status_code: 400
+        template: '{"error": "Post is not a draft", "slug": "{{.trigger.params.slug}}"}'
+
+  # POST /api/posts/{slug}/archive - Archive a post
+  - name: "archive_post"
+    triggers:
+      - type: http
+        path: "/api/posts/{slug}/archive"
+        method: POST
+        parameters:
+          - name: "slug"
+            type: "string"
+            required: true
+    conditions:
+      found: "steps.post.count > 0"
+      can_archive: "steps.archivable.count > 0"
+    steps:
+      - name: post
+        type: query
+        database: "main"
+        sql: "SELECT * FROM posts WHERE slug = @slug"
+      - name: archivable
+        type: query
+        database: "main"
+        condition: "found"
+        sql: "SELECT id FROM posts WHERE slug = @slug AND status != 'archived'"
+      # WORKAROUND: Compound condition aliases don't work, using inline expressions
+      - name: archive
+        type: query
+        database: "main"
+        condition: "steps.post.count > 0 && steps.archivable.count > 0"
+        sql: |
+          UPDATE posts SET
+            status = 'archived',
+            updated_at = datetime('now')
+          WHERE slug = @slug
+      - type: response
+        condition: "steps.post.count > 0 && steps.archivable.count > 0"
+        template: |
+          {
+            "success": true,
+            "slug": "{{.trigger.params.slug}}",
+            "status": "archived"
+          }
+      - type: response
+        condition: "!found"
+        status_code: 404
+        template: '{"error": "Post not found", "slug": "{{.trigger.params.slug}}"}'
+      - type: response
+        condition: "steps.post.count > 0 && steps.archivable.count == 0"
+        status_code: 400
+        template: '{"error": "Post is already archived", "slug": "{{.trigger.params.slug}}"}'
+
+  # DELETE /api/posts/{slug} - Delete post
+  # NOTE: No auth check - any user can delete any post. Production usage should
+  # add api_key parameter and SQL-based auth check (see crmapp.yaml for pattern).
+  - name: "delete_post"
+    triggers:
+      - type: http
+        path: "/api/posts/{slug}"
+        method: DELETE
+        parameters:
+          - name: "slug"
+            type: "string"
+            required: true
+    conditions:
+      found: "steps.post.count > 0"
+    steps:
+      - name: post
+        type: query
+        database: "main"
+        sql: "SELECT id FROM posts WHERE slug = @slug"
+      - name: delete_tags
+        type: query
+        database: "main"
+        condition: "found"
+        sql: "DELETE FROM post_tags WHERE post_id = (SELECT id FROM posts WHERE slug = @slug)"
+      - name: delete_comments
+        type: query
+        database: "main"
+        condition: "found"
+        sql: "DELETE FROM comments WHERE post_id = (SELECT id FROM posts WHERE slug = @slug)"
+      - name: delete_post
+        type: query
+        database: "main"
+        condition: "found"
+        sql: "DELETE FROM posts WHERE slug = @slug"
+      - type: response
+        condition: "found"
+        template: |
+          {
+            "success": true,
+            "deleted": true,
+            "slug": "{{.trigger.params.slug}}"
+          }
+      - type: response
+        condition: "!found"
+        status_code: 404
+        template: '{"error": "Post not found", "slug": "{{.trigger.params.slug}}"}'
+
+  # ============================================================================
+  # COMMENTS
+  # ============================================================================
+
+  # GET /api/posts/{slug}/comments - Get comments for a post
+  # Only returns approved comments. An admin endpoint would be needed to see pending/spam.
+  - name: "list_comments"
+    triggers:
+      - type: http
+        path: "/api/posts/{slug}/comments"
+        method: GET
+        parameters:
+          - name: "slug"
+            type: "string"
+            required: true
+    conditions:
+      post_found: "steps.post.count > 0"
+    steps:
+      - name: post
+        type: query
+        database: "main"
+        sql: "SELECT id FROM posts WHERE slug = @slug"
+      - name: comments
+        type: query
+        database: "main"
+        condition: "post_found"
+        sql: |
+          SELECT c.*
+          FROM comments c
+          JOIN posts p ON c.post_id = p.id
+          WHERE p.slug = @slug AND c.status = 'approved'
+          ORDER BY c.created_at
+      - type: response
+        condition: "post_found"
+        template: |
+          {
+            "comments": {{json .steps.comments.data}},
+            "count": {{.steps.comments.count}}
+          }
+      - type: response
+        condition: "!post_found"
+        status_code: 404
+        template: '{"error": "Post not found", "slug": "{{.trigger.params.slug}}"}'
+
+  # POST /api/posts/{slug}/comments - Add comment to post
+  - name: "add_comment"
+    triggers:
+      - type: http
+        path: "/api/posts/{slug}/comments"
+        method: POST
+        parameters:
+          - name: "slug"
+            type: "string"
+            required: true
+          - name: "author_name"
+            type: "string"
+            required: true
+          - name: "author_email"
+            type: "string"
+            required: true
+          - name: "content"
+            type: "string"
+            required: true
+          - name: "parent_id"
+            type: "int"
+            required: false
+            default: "0"
+        rate_limit:
+          - pool: "comments"
+    conditions:
+      post_found: "steps.post.count > 0"
+      parent_valid: "steps.parent_check.count > 0"
+    steps:
+      - name: post
+        type: query
+        database: "main"
+        sql: "SELECT id FROM posts WHERE slug = @slug AND status = 'published'"
+      - name: parent_check
+        type: query
+        database: "main"
+        condition: "post_found"
+        # If parent_id is 0, count should be 1 (no parent needed)
+        # If parent_id > 0, check parent exists on same post
+        sql: |
+          SELECT 1 as valid WHERE @parent_id = 0
+          UNION ALL
+          SELECT 1 FROM comments c
+          JOIN posts p ON c.post_id = p.id
+          WHERE p.slug = @slug AND c.id = @parent_id
+      # WORKAROUND: Compound condition aliases don't work, using inline expressions
+      - name: insert
+        type: query
+        database: "main"
+        condition: "steps.post.count > 0 && steps.parent_check.count > 0"
+        sql: |
+          INSERT INTO comments (post_id, parent_id, author_name, author_email, content, status)
+          SELECT p.id,
+                 CASE WHEN @parent_id = 0 THEN NULL ELSE @parent_id END,
+                 @author_name, @author_email, @content, 'pending'
+          FROM posts p WHERE p.slug = @slug
+      - name: get_id
+        type: query
+        database: "main"
+        condition: "steps.post.count > 0 && steps.parent_check.count > 0"
+        sql: "SELECT last_insert_rowid() AS id"
+      - type: response
+        condition: "steps.post.count > 0 && steps.parent_check.count > 0"
+        status_code: 201
+        template: |
+          {
+            "success": true,
+            "id": {{index .steps.get_id.data 0 "id"}},
+            "status": "pending",
+            "message": "Comment submitted for moderation"
+          }
+      - type: response
+        condition: "!post_found"
+        status_code: 404
+        template: '{"error": "Post not found or not published", "slug": "{{.trigger.params.slug}}"}'
+      - type: response
+        condition: "steps.post.count > 0 && steps.parent_check.count == 0"
+        status_code: 400
+        template: '{"error": "Invalid parent comment", "parent_id": {{.trigger.params.parent_id}}}'
+
+  # PUT /api/comments/{id}/approve - Approve a comment
+  - name: "approve_comment"
+    triggers:
+      - type: http
+        path: "/api/comments/{id}/approve"
+        method: PUT
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    conditions:
+      found: "steps.comment.count > 0"
+    steps:
+      - name: comment
+        type: query
+        database: "main"
+        sql: "SELECT * FROM comments WHERE id = @id"
+      - name: approve
+        type: query
+        database: "main"
+        condition: "found"
+        sql: "UPDATE comments SET status = 'approved' WHERE id = @id"
+      - type: response
+        condition: "found"
+        template: |
+          {
+            "success": true,
+            "id": {{.trigger.params.id}},
+            "status": "approved"
+          }
+      - type: response
+        condition: "!found"
+        status_code: 404
+        template: '{"error": "Comment not found"}'
+
+  # PUT /api/comments/{id}/spam - Mark comment as spam
+  - name: "spam_comment"
+    triggers:
+      - type: http
+        path: "/api/comments/{id}/spam"
+        method: PUT
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    conditions:
+      found: "steps.comment.count > 0"
+    steps:
+      - name: comment
+        type: query
+        database: "main"
+        sql: "SELECT * FROM comments WHERE id = @id"
+      - name: mark_spam
+        type: query
+        database: "main"
+        condition: "found"
+        sql: "UPDATE comments SET status = 'spam' WHERE id = @id"
+      - type: response
+        condition: "found"
+        template: |
+          {
+            "success": true,
+            "id": {{.trigger.params.id}},
+            "status": "spam"
+          }
+      - type: response
+        condition: "!found"
+        status_code: 404
+        template: '{"error": "Comment not found"}'
+
+  # DELETE /api/comments/{id} - Delete comment
+  # NOTE: No auth check - any user can delete any comment. Production usage should
+  # add api_key parameter and SQL-based auth check (see crmapp.yaml for pattern).
+  - name: "delete_comment"
+    triggers:
+      - type: http
+        path: "/api/comments/{id}"
+        method: DELETE
+        parameters:
+          - name: "id"
+            type: "int"
+            required: true
+    conditions:
+      found: "steps.comment.count > 0"
+    steps:
+      - name: comment
+        type: query
+        database: "main"
+        sql: "SELECT * FROM comments WHERE id = @id"
+      # Delete replies first (comments with this as parent)
+      - name: delete_replies
+        type: query
+        database: "main"
+        condition: "found"
+        sql: "DELETE FROM comments WHERE parent_id = @id"
+      - name: delete_comment
+        type: query
+        database: "main"
+        condition: "found"
+        sql: "DELETE FROM comments WHERE id = @id"
+      - type: response
+        condition: "found"
+        template: |
+          {
+            "success": true,
+            "deleted": true,
+            "id": {{.trigger.params.id}}
+          }
+      - type: response
+        condition: "!found"
+        status_code: 404
+        template: '{"error": "Comment not found"}'
+
+  # ============================================================================
+  # STATS
+  # ============================================================================
+
+  # GET /api/stats - Blog statistics
+  - name: "blog_stats"
+    triggers:
+      - type: http
+        path: "/api/stats"
+        method: GET
+    steps:
+      - name: post_stats
+        type: query
+        database: "main"
+        cache:
+          key: "stats:posts"
+          ttl_sec: 60
+        sql: |
+          SELECT
+            COUNT(*) as total_posts,
+            SUM(CASE WHEN status = 'published' THEN 1 ELSE 0 END) as published_posts,
+            SUM(CASE WHEN status = 'draft' THEN 1 ELSE 0 END) as draft_posts,
+            SUM(view_count) as total_views,
+            ROUND(AVG(CASE WHEN status = 'published' THEN view_count END), 1) as avg_views_per_post
+          FROM posts
+      - name: comment_stats
+        type: query
+        database: "main"
+        sql: |
+          SELECT
+            COUNT(*) as total_comments,
+            SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) as approved_comments,
+            SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_comments,
+            SUM(CASE WHEN status = 'spam' THEN 1 ELSE 0 END) as spam_comments
+          FROM comments
+      - name: top_posts
+        type: query
+        database: "main"
+        sql: |
+          SELECT p.title, p.slug, p.view_count, a.display_name as author
+          FROM posts p
+          JOIN authors a ON p.author_id = a.id
+          WHERE p.status = 'published'
+          ORDER BY p.view_count DESC
+          LIMIT 5
+      - name: top_tags
+        type: query
+        database: "main"
+        sql: |
+          SELECT t.name, t.slug, COUNT(pt.post_id) as post_count
+          FROM tags t
+          JOIN post_tags pt ON t.id = pt.tag_id
+          JOIN posts p ON pt.post_id = p.id AND p.status = 'published'
+          GROUP BY t.id
+          ORDER BY post_count DESC
+          LIMIT 5
+      - type: response
+        template: |
+          {
+            "posts": {{json (index .steps.post_stats.data 0)}},
+            "comments": {{json (index .steps.comment_stats.data 0)}},
+            "top_posts": {{json .steps.top_posts.data}},
+            "top_tags": {{json .steps.top_tags.data}},
+            "post_stats_cached": {{.steps.post_stats.cache_hit}}
+          }
+
+  # GET /api/search - Search posts
+  - name: "search_posts"
+    triggers:
+      - type: http
+        path: "/api/search"
+        method: GET
+        parameters:
+          - name: "q"
+            type: "string"
+            required: true
+          - name: "limit"
+            type: "int"
+            required: false
+            default: "10"
+    steps:
+      - name: search
+        type: query
+        database: "main"
+        # [LEARNING] Simple LIKE search. Real apps would use SQLite FTS5.
+        sql: |
+          SELECT p.id, p.title, p.slug, p.excerpt, p.view_count, p.published_at,
+                 a.display_name as author_name
+          FROM posts p
+          JOIN authors a ON p.author_id = a.id
+          WHERE p.status = 'published'
+            AND (p.title LIKE '%' || @q || '%' OR p.content LIKE '%' || @q || '%')
+          ORDER BY p.view_count DESC
+          LIMIT @limit
+      - type: response
+        template: |
+          {
+            "query": "{{.trigger.params.q}}",
+            "results": {{json .steps.search.data}},
+            "count": {{.steps.search.count}}
+          }
+
+  # ----------------------------------------------------------------------------
+  # Test Endpoints
+  # ----------------------------------------------------------------------------
+
+  # Short TTL endpoint for testing cache expiry
+  - name: "cache_expiry_test"
+    triggers:
+      - type: http
+        path: "/api/test/cache-expiry"
+        method: GET
+        cache:
+          enabled: true
+          key: "test:expiry"
+          ttl_sec: 1
+    steps:
+      - name: timestamp
+        type: query
+        database: "main"
+        sql: "SELECT datetime('now', 'subsec') as ts"
+      - type: response
+        template: |
+          {"timestamp": "{{index .steps.timestamp.data 0 "ts"}}"}

@@ -79,7 +79,6 @@ func Validate(cfg *WorkflowConfig, ctx *ValidationContext) *ValidationResult {
 
 	stepNames := make(map[string]int) // name -> index (for forward-reference checking)
 	hasResponseStep := false
-	responseConditions := []string{}
 
 	for i, step := range cfg.Steps {
 		stepName := step.Name
@@ -101,9 +100,6 @@ func Validate(cfg *WorkflowConfig, ctx *ValidationContext) *ValidationResult {
 		// Track response steps
 		if step.IsResponse() {
 			hasResponseStep = true
-			if step.Condition != "" {
-				responseConditions = append(responseConditions, step.Condition)
-			}
 		}
 	}
 
@@ -117,13 +113,21 @@ func Validate(cfg *WorkflowConfig, ctx *ValidationContext) *ValidationResult {
 
 	// Check for multiple unconditional response steps
 	unconditionalResponses := 0
+	conditionalResponses := 0
 	for _, step := range cfg.Steps {
-		if step.IsResponse() && step.Condition == "" {
-			unconditionalResponses++
+		if step.IsResponse() {
+			if step.Condition == "" {
+				unconditionalResponses++
+			} else {
+				conditionalResponses++
+			}
 		}
 	}
 	if unconditionalResponses > 1 {
 		r.addError("%s: multiple unconditional response steps - only one will execute", prefix)
+	}
+	if hasHTTPTrigger && conditionalResponses > 0 && unconditionalResponses == 0 {
+		r.addWarning("%s: all response steps have conditions - requests may return default response if no condition matches", prefix)
 	}
 
 	// Auto-naming: require names for multi-step workflows
