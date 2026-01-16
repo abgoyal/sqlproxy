@@ -1,8 +1,13 @@
 sql-proxy
 sql-proxy.exe
+sql-proxy-*
 build/
 .claude
-coverage/
-coverage.out
 dev_notes/
 CLAUDE.md
+
+# Coverage files (can appear in root from manual go test commands or IDEs)
+coverage/
+*.out
+covcounters.*
+covmeta.*

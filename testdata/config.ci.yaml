@@ -297,7 +297,7 @@ workflows:
         template: |
           {"success": true, "patched": {{json (index .steps.patch.data 0)}}}
 
-  # HEAD workflow (no body response)
+  # HEAD workflow (no body response, uses headers only)
   - name: "workflow_head"
     triggers:
       - type: http
@@ -313,7 +313,9 @@ workflows:
         database: "primary"
         sql: "SELECT 1 AS exists WHERE @id > 0"
       - type: response
-        template: ""
+        headers:
+          X-Exists: "{{if gt .steps.check.count 0}}true{{else}}false{{end}}"
+        template: "{}"
 
   # OPTIONS workflow
   - name: "workflow_options"
@@ -475,7 +477,9 @@ workflows:
           - name: process
             type: query
             database: "primary"
-            sql: "SELECT '{{.item.name}}' AS processed_name"
+            sql: "SELECT 'processed' AS status, @item_id AS item_id"
+            params:
+              item_id: "{{.item.id}}"
       - type: response
         template: |
           {"total": {{.steps.fetch_items.count}}, "processed": {{.steps.process_items.success_count}}}
@@ -884,11 +888,13 @@ workflows:
         cache:
           key: "step:user:{{.Param.user_id}}"
           ttl_sec: 300
-      # Cache key uses result from previous step
+      # Cache key uses result from previous step via params
       - name: org
         type: query
         database: "primary"
-        sql: "SELECT {{index .steps.user.data 0 \"org_id\"}} AS org_id, 'Org' AS name"
+        sql: "SELECT @org_id AS org_id, 'Org' AS name"
+        params:
+          org_id: "{{index .steps.user.data 0 \"org_id\"}}"
         cache:
           key: "step:org:{{index .steps.user.data 0 \"org_id\"}}"
           ttl_sec: 600

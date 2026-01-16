@@ -122,9 +122,9 @@ test-unit:
 test-integration:
 	$(GOTEST) -v -run "Integration" ./internal/...
 
-# Run end-to-end tests (starts actual binary)
+# Run end-to-end tests (shell script, human-friendly output)
 test-e2e:
-	$(GOTEST) -v ./e2e/...
+	./e2e/taskapp_test.sh
 
 # Run benchmarks
 test-bench:
@@ -188,15 +188,19 @@ test-bench-compare-new:
 # Unit tests output text format (-coverprofile), e2e outputs binary format (GOCOVERDIR).
 # These are fundamentally different Go coverage mechanisms with no built-in merger,
 # so we convert e2e to text and merge using a script.
+#
+# E2E tests use the shell script (e2e/taskapp_test.sh --cover) which:
+# - Builds the binary with -cover flag
+# - Runs the server with GOCOVERDIR to collect coverage
+# - Tests all API endpoints comprehensively
 test-cover:
 	@rm -rf $(COVERAGE_DIR)/e2e
-	@mkdir -p $(COVERAGE_DIR)/e2e
 	@echo "=== Running unit tests with coverage ==="
 	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/unit.out ./internal/...
 	@grep -v "internal/testutil" $(COVERAGE_DIR)/unit.out > $(COVERAGE_DIR)/unit.tmp && mv $(COVERAGE_DIR)/unit.tmp $(COVERAGE_DIR)/unit.out
 	@echo ""
 	@echo "=== Running e2e tests with coverage ==="
-	@E2E_COVERAGE_DIR=$(COVERAGE_DIR)/e2e $(GOTEST) -count=1 ./e2e/...
+	@./e2e/taskapp_test.sh --cover
 	@echo ""
 	@echo "=== Merging coverage data ==="
 	@if [ -d "$(COVERAGE_DIR)/e2e" ] && [ "$$(ls -A $(COVERAGE_DIR)/e2e 2>/dev/null)" ]; then \
@@ -343,7 +347,7 @@ help:
 	@echo "Testing by type:"
 	@echo "  make test-unit        Run unit tests (internal packages)"
 	@echo "  make test-integration Run integration tests (httptest-based)"
-	@echo "  make test-e2e         Run end-to-end tests (starts binary)"
+	@echo "  make test-e2e         Run end-to-end tests (shell script)"
 	@echo ""
 	@echo "Benchmarks:"
 	@echo "  make test-bench            Run all benchmarks"

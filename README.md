@@ -2365,13 +2365,13 @@ The project includes comprehensive tests at multiple levels:
 ### Running Tests
 
 ```bash
-# Run all tests (unit + integration + e2e)
+# Run all tests (unit + integration)
 make test
 
 # Run by test type
 make test-unit         # Unit tests only (internal packages)
 make test-integration  # Integration tests (httptest-based)
-make test-e2e          # End-to-end tests (starts actual binary)
+make test-e2e          # End-to-end tests (shell script, human-friendly output)
 
 # Run by package
 make test-db
@@ -2379,13 +2379,29 @@ make test-server
 make test-config
 make test-workflow
 
-# Run with coverage
+# Run with coverage (unit + e2e)
 make test-cover
-make test-cover-html
 
 # Run benchmarks
 make test-bench
 ```
+
+### End-to-End Tests
+
+The E2E test suite is a shell script that provides human-friendly colored output:
+
+```bash
+# Run without coverage (fast)
+./e2e/taskapp_test.sh
+
+# Run with coverage
+./e2e/taskapp_test.sh --cover
+
+# Run with custom coverage directory
+E2E_COVERAGE_DIR=my-coverage ./e2e/taskapp_test.sh --cover
+```
+
+The script tests all API endpoints including CRUD operations, caching, rate limiting, batch operations, and template functions.
 
 ### Test Documentation
 
@@ -2403,7 +2419,7 @@ make test-docs
 |------|----------|-------------|
 | Unit tests | `internal/*/` | Test individual functions and methods |
 | Integration tests | `internal/server/` | Test component interactions via `httptest` |
-| End-to-end tests | `e2e/` | Start binary, make real HTTP requests |
+| End-to-end tests | `e2e/taskapp_test.sh` | Shell script, starts binary, makes real HTTP requests |
 | Benchmarks | `internal/*/benchmark_test.go` | Performance tests |
 
 All unit and integration tests use SQLite in-memory databases (`:memory:`) to avoid external dependencies.
