@@ -26,9 +26,17 @@
 # - Batch array parameters: int[] type works but requires JSON array in request body,
 #   not comma-separated query param. Less ergonomic than hoped.
 
+# Variables for configuration values
+# ${VAR:default} syntax is ONLY valid here - imports env vars
+# Use {{.vars.X}} everywhere else to reference these values
+variables:
+  values:
+    PORT: "${PORT:8080}"
+    DB_PATH: "${DB_PATH::memory:}"
+
 server:
   host: "127.0.0.1"
-  port: ${PORT}
+  port: {{.vars.PORT}}
   default_timeout_sec: 30
   max_timeout_sec: 300
   cache:
@@ -39,19 +47,19 @@ server:
 databases:
   - name: "main"
     type: "sqlite"
-    path: "${DB_PATH}"
+    path: "{{.vars.DB_PATH}}"
     readonly: false
 
 rate_limits:
   - name: "default"
     requests_per_second: 50
     burst: 100
-    key: "shop_{{.ClientIP}}"
+    key: "shop_{{.trigger.client_ip}}"
 
   - name: "orders"
     requests_per_second: 10
     burst: 20
-    key: "orders_{{.ClientIP}}"
+    key: "orders_{{.trigger.client_ip}}"
 
 logging:
   level: "debug"
@@ -459,7 +467,7 @@ workflows:
             required: true
         cache:
           enabled: true
-          key: "product:{{.Param.id}}"
+          key: "product:{{.trigger.params.id}}"
           ttl_sec: 120
     conditions:
       found: "steps.product.count > 0"

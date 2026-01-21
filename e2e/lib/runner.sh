@@ -42,7 +42,9 @@ fi
 
 # These are set by setup_test_env
 SCRIPT_DIR=""
-PROJECT_ROOT=""
+# PROJECT_ROOT defaults to "." for manual runs; setup_test_env sets proper value
+# This prevents empty PROJECT_ROOT causing paths like "/coverage" instead of "./coverage"
+PROJECT_ROOT="${PROJECT_ROOT:-.}"
 TEMP_DIR=""
 BINARY=""
 CONFIG_FILE=""
@@ -227,23 +229,33 @@ create_config() {
 start_server() {
     info "Starting server on port $PORT..."
 
+    # Export PORT for config expansion (${PORT:default} syntax in variables.values)
+    # This is needed for the validation command below which runs without env
+    export PORT
+
+    # Build env vars for server process (only vars not already exported)
+    local env_vars=()
+
+    # Add DB path variables if defined
+    if declare -p DB_VARS &>/dev/null 2>&1; then
+        for var in "${!DB_VARS[@]}"; do
+            export "$var=${DB_VARS[$var]}"
+        done
+    fi
+
     if ! "$BINARY" -validate -config "$CONFIG_FILE" > /dev/null 2>&1; then
         fail "Configuration validation failed"
         "$BINARY" -validate -config "$CONFIG_FILE"
         exit 1
     fi
 
-    local env_vars=()
     if [ "$COVERAGE_ENABLED" = true ]; then
         env_vars+=("GOCOVERDIR=$COVERAGE_DIR")
         info "Coverage output: $COVERAGE_DIR"
     fi
 
-    if [ ${#env_vars[@]} -gt 0 ]; then
-        env "${env_vars[@]}" "$BINARY" -config "$CONFIG_FILE" > "$LOG_FILE" 2>&1 &
-    else
-        "$BINARY" -config "$CONFIG_FILE" > "$LOG_FILE" 2>&1 &
-    fi
+    # Run server (env_vars may contain GOCOVERDIR when coverage is enabled)
+    env "${env_vars[@]}" "$BINARY" -config "$CONFIG_FILE" > "$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
 
     info "Waiting for server to start..."

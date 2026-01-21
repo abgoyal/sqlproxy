@@ -93,9 +93,10 @@ var sqlParamRegex = regexp.MustCompile(`@([a-zA-Z_][a-zA-Z0-9_]*)`)
 // extractSQLParams extracts parameter values from template data for SQL execution.
 // It looks for @param references in SQL and extracts corresponding values.
 // Search order (deterministic):
-// 1. trigger.params (HTTP parameters)
-// 2. Flattened iteration variable fields (for block iteration over objects) - sorted alphabetically
-// 3. Direct data keys (for simple iteration values)
+// 1. params (step-level computed params)
+// 2. trigger.params (HTTP parameters)
+// 3. Flattened iteration variable fields (for block iteration over objects) - sorted alphabetically
+// 4. Direct data keys (for simple iteration values)
 func extractSQLParams(sql string, data map[string]any) map[string]any {
 	params := make(map[string]any)
 
@@ -103,7 +104,15 @@ func extractSQLParams(sql string, data map[string]any) map[string]any {
 	for _, match := range matches {
 		paramName := match[1]
 
-		// Look for param in trigger.params first
+		// Look for param in step-level computed params first
+		if stepParams, ok := data["params"].(map[string]any); ok {
+			if val, ok := stepParams[paramName]; ok {
+				params[paramName] = val
+				continue
+			}
+		}
+
+		// Look for param in trigger.params
 		if trigger, ok := data["trigger"].(map[string]any); ok {
 			if trigParams, ok := trigger["params"].(map[string]any); ok {
 				if val, ok := trigParams[paramName]; ok {

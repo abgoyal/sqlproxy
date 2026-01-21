@@ -1,14 +1,17 @@
 package workflow
 
 import (
-	"encoding/json"
 	"fmt"
-	"reflect"
+	"math"
+	"regexp"
 	"strings"
+	"sync/atomic"
 	"text/template"
 
 	"github.com/expr-lang/expr"
 	"github.com/expr-lang/expr/vm"
+
+	"sql-proxy/internal/tmpl"
 )
 
 // CompiledCondition holds a condition alias with its source expression and compiled program.
@@ -46,6 +49,9 @@ type CompiledStep struct {
 
 	// Cache key template (for query and httpcall steps)
 	CacheKeyTmpl *template.Template
+
+	// Computed params templates (available for all step types)
+	ParamTmpls map[string]*template.Template
 
 	// Query step templates
 	SQLTmpl *template.Template
@@ -92,65 +98,82 @@ func getMapValue(m any, key string) (string, bool) {
 	return "", false
 }
 
+// templateEncoder holds the encoder for publicID/privateID functions.
+// Uses atomic.Value for thread-safe access in case of future config reload.
+// Currently set once at startup, but atomic ensures safe concurrent reads.
+var templateEncoder atomic.Value
+
+// PublicIDEncoder provides public ID encoding/decoding for templates.
+type PublicIDEncoder interface {
+	Encode(namespace string, id int64) (string, error)
+	Decode(namespace, publicID string) (int64, error)
+}
+
+// encoderWrapper wraps an encoder to allow storing nil via atomic.Value.
+// atomic.Value doesn't support storing nil directly.
+type encoderWrapper struct {
+	enc PublicIDEncoder
+}
+
+// SetTemplateEncoder sets the encoder for publicID/privateID template functions.
+// Thread-safe via atomic.Value. Pass nil to clear the encoder.
+func SetTemplateEncoder(enc PublicIDEncoder) {
+	templateEncoder.Store(encoderWrapper{enc: enc})
+}
+
+// getTemplateEncoder returns the current encoder, or nil if not set.
+func getTemplateEncoder() PublicIDEncoder {
+	v := templateEncoder.Load()
+	if v == nil {
+		return nil
+	}
+	return v.(encoderWrapper).enc
+}
+
+// toInt64 converts various numeric types to int64.
+func toInt64(v any) (int64, error) {
+	switch n := v.(type) {
+	case int:
+		return int64(n), nil
+	case int32:
+		return int64(n), nil
+	case int64:
+		return n, nil
+	case uint:
+		return int64(n), nil
+	case uint32:
+		return int64(n), nil
+	case uint64:
+		// Check for overflow - uint64 values > MaxInt64 cannot be represented
+		if n > math.MaxInt64 {
+			return 0, fmt.Errorf("uint64 value %d exceeds int64 max", n)
+		}
+		return int64(n), nil
+	case float64:
+		return int64(n), nil
+	default:
+		return 0, fmt.Errorf("invalid numeric type %T", v)
+	}
+}
+
 // TemplateFuncs provides template functions for workflow templates.
-// Note: Error handling in these functions returns error strings rather than Go errors
-// because text/template FuncMap functions cannot propagate errors cleanly.
-var TemplateFuncs = template.FuncMap{
-	// JSON functions
-	"json": func(v any) string {
-		b, err := json.Marshal(v)
-		if err != nil {
-			return fmt.Sprintf("[json error: %v]", err)
-		}
-		return string(b)
-	},
-	"jsonIndent": func(v any) string {
-		b, err := json.MarshalIndent(v, "", "  ")
-		if err != nil {
-			return fmt.Sprintf("[json error: %v]", err)
-		}
-		return string(b)
-	},
+// Built from tmpl.BaseFuncMap() with workflow-specific overrides for map[string]any handling.
+// Note: publicID/privateID require an encoder to be set via SetTemplateEncoder.
+var TemplateFuncs template.FuncMap
 
-	// String functions
-	"upper":     strings.ToUpper,
-	"lower":     strings.ToLower,
-	"trim":      strings.TrimSpace,
-	"replace":   strings.ReplaceAll,
-	"contains":  strings.Contains,
-	"hasPrefix": strings.HasPrefix,
-	"hasSuffix": strings.HasSuffix,
+func init() {
+	// Start with all functions from tmpl.BaseFuncMap()
+	TemplateFuncs = tmpl.BaseFuncMap()
 
-	// Default value functions
-	"default": func(def, val any) any {
-		if val == nil {
-			return def
-		}
-		// Use reflect for comprehensive zero-value checking
-		rv := reflect.ValueOf(val)
-		if rv.IsZero() {
-			return def
-		}
-		return val
-	},
-	"coalesce": func(vals ...string) string {
-		for _, v := range vals {
-			if v != "" {
-				return v
-			}
-		}
-		return ""
-	},
-	"getOr": func(m any, key string, fallback string) string {
+	// Override functions that need to handle map[string]any (workflow context uses any types)
+	TemplateFuncs["getOr"] = func(m any, key string, fallback string) string {
 		val, found := getMapValue(m, key)
 		if !found || val == "" {
 			return fallback
 		}
 		return val
-	},
-
-	// Map/array access functions
-	"require": func(m any, key string) (string, error) {
+	}
+	TemplateFuncs["require"] = func(m any, key string) (string, error) {
 		if m == nil {
 			return "", fmt.Errorf("required key %q: nil map", key)
 		}
@@ -162,27 +185,49 @@ var TemplateFuncs = template.FuncMap{
 			return "", fmt.Errorf("required key %q is empty", key)
 		}
 		return val, nil
-	},
-	"has": func(m any, key string) bool {
+	}
+	TemplateFuncs["has"] = func(m any, key string) bool {
 		val, found := getMapValue(m, key)
 		return found && val != ""
-	},
+	}
 
-	// Math functions
-	"add": func(a, b int) int { return a + b },
-	"sub": func(a, b int) int { return a - b },
-	"mul": func(a, b int) int { return a * b },
-	"div": func(a, b int) (int, error) {
-		if b == 0 {
-			return 0, fmt.Errorf("division by zero")
+	// Add encoder functions (require SetTemplateEncoder to be called)
+	TemplateFuncs["publicID"] = func(namespace string, id any) (string, error) {
+		enc := getTemplateEncoder()
+		if enc == nil {
+			return "", fmt.Errorf("publicID: encoder not configured")
 		}
-		return a / b, nil
-	},
-	"mod": func(a, b int) (int, error) {
-		if b == 0 {
-			return 0, fmt.Errorf("modulo by zero")
+		idVal, err := toInt64(id)
+		if err != nil {
+			return "", fmt.Errorf("publicID: %w", err)
 		}
-		return a % b, nil
+		return enc.Encode(namespace, idVal)
+	}
+	TemplateFuncs["privateID"] = func(namespace string, publicID string) (int64, error) {
+		enc := getTemplateEncoder()
+		if enc == nil {
+			return 0, fmt.Errorf("privateID: encoder not configured")
+		}
+		return enc.Decode(namespace, publicID)
+	}
+}
+
+// exprFuncs contains custom functions for expr evaluation in conditions.
+// Defined once at package level, merged into expression environments.
+var exprFuncs = map[string]any{
+	// isValidPublicID checks if a public ID is valid for the given namespace.
+	// Usage in conditions: isValidPublicID("task", trigger.params.public_id)
+	"isValidPublicID": func(namespace string, publicID any) bool {
+		enc := getTemplateEncoder()
+		if enc == nil {
+			return false
+		}
+		pidStr, ok := publicID.(string)
+		if !ok {
+			return false
+		}
+		_, err := enc.Decode(namespace, pidStr)
+		return err == nil
 	},
 }
 
@@ -282,6 +327,18 @@ func compileStep(cfg *StepConfig, index int, aliases map[string]*CompiledConditi
 		cs.CacheKeyTmpl = tmpl
 	}
 
+	// Compile params templates if present (available for all step types)
+	if len(cfg.Params) > 0 {
+		cs.ParamTmpls = make(map[string]*template.Template)
+		for name, val := range cfg.Params {
+			tmpl, err := template.New("param_" + name).Funcs(TemplateFuncs).Parse(val)
+			if err != nil {
+				return nil, fmt.Errorf("params[%s] template: %w", name, err)
+			}
+			cs.ParamTmpls[name] = tmpl
+		}
+	}
+
 	// Compile type-specific templates
 	switch cfg.StepType() {
 	case "query":
@@ -373,24 +430,59 @@ func compileStep(cfg *StepConfig, index int, aliases map[string]*CompiledConditi
 // Supports:
 // - Direct alias reference: "found" -> uses pre-compiled alias
 // - Negated alias: "!found" -> wraps alias expression in !()
+// - Compound expressions: "valid_id && found" -> expands aliases inline
 // - Direct expression: "steps.x.count > 0" -> compiles directly
 func resolveCondition(cond string, aliases map[string]*CompiledCondition) (*vm.Program, error) {
-	// Check for direct alias reference
+	// Check for direct alias reference (optimization: reuse pre-compiled program)
 	if cc, ok := aliases[cond]; ok {
 		return cc.Prog, nil
 	}
 
-	// Check for negated alias (e.g., "!found")
+	// Check for simple negated alias (e.g., "!found")
 	if strings.HasPrefix(cond, "!") {
 		aliasName := strings.TrimPrefix(cond, "!")
 		if cc, ok := aliases[aliasName]; ok {
-			// Wrap the source expression in !() and compile
 			return compileCondition("!(" + cc.Source + ")")
 		}
 	}
 
-	// Fall back to compiling as a direct expression
-	return compileCondition(cond)
+	// Expand all alias references in compound expressions
+	expanded := expandAliases(cond, aliases)
+
+	return compileCondition(expanded)
+}
+
+// expandAliases replaces alias references in an expression with their source expressions.
+// Handles word boundaries to avoid replacing property access (e.g., "found" won't match "steps.found").
+func expandAliases(expr string, aliases map[string]*CompiledCondition) string {
+	if len(aliases) == 0 {
+		return expr
+	}
+
+	result := expr
+	for name, cc := range aliases {
+		// Build regex to match alias as a standalone identifier (not part of a dotted path)
+		// Must NOT be preceded by a dot (property access) or alphanumeric
+		// Can be preceded by: start, space, operators (&&, ||, !), parentheses
+		// Examples matched: "found", "!found", "x && found", "(found)", "found || y"
+		// Examples NOT matched: "steps.found", "not_found"
+		pattern := regexp.MustCompile(`(^|[^a-zA-Z0-9_.])` + regexp.QuoteMeta(name) + `([^a-zA-Z0-9_]|$)`)
+		result = pattern.ReplaceAllStringFunc(result, func(match string) string {
+			// Preserve the boundary characters and wrap the source in parentheses
+			prefix := ""
+			suffix := ""
+			if len(match) > len(name) {
+				if match[0] != name[0] {
+					prefix = string(match[0])
+				}
+				if match[len(match)-1] != name[len(name)-1] {
+					suffix = string(match[len(match)-1])
+				}
+			}
+			return prefix + "(" + cc.Source + ")" + suffix
+		})
+	}
+	return result
 }
 
 func compileCondition(exprStr string) (*vm.Program, error) {

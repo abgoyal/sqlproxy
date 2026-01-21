@@ -15,6 +15,7 @@ type Context struct {
 	RequestID string
 	StartTime time.Time
 	Logger    Logger
+	Variables map[string]string // Global variables from config
 
 	mu  sync.RWMutex
 	ctx context.Context
@@ -35,6 +36,7 @@ type TriggerData struct {
 	// HTTP trigger data
 	Params   map[string]any // Query/body parameters
 	Headers  http.Header
+	Cookies  map[string]string // Parsed cookies
 	ClientIP string
 	Method   string
 	Path     string
@@ -81,7 +83,7 @@ type IterationResult struct {
 }
 
 // NewContext creates a new workflow execution context.
-func NewContext(ctx context.Context, wf *CompiledWorkflow, trigger *TriggerData, requestID string, logger Logger) *Context {
+func NewContext(ctx context.Context, wf *CompiledWorkflow, trigger *TriggerData, requestID string, logger Logger, variables map[string]string) *Context {
 	return &Context{
 		Workflow:  wf,
 		Trigger:   trigger,
@@ -89,6 +91,7 @@ func NewContext(ctx context.Context, wf *CompiledWorkflow, trigger *TriggerData,
 		RequestID: requestID,
 		StartTime: time.Now(),
 		Logger:    logger,
+		Variables: variables,
 		ctx:       ctx,
 	}
 }
@@ -133,6 +136,7 @@ func (c *Context) BuildExprEnv() map[string]any {
 	trigger["params"] = c.Trigger.Params
 	if c.Trigger.Type == "http" {
 		trigger["headers"] = headerToMap(c.Trigger.Headers)
+		trigger["cookies"] = c.Trigger.Cookies
 		trigger["client_ip"] = c.Trigger.ClientIP
 		trigger["method"] = c.Trigger.Method
 		trigger["path"] = c.Trigger.Path
@@ -149,16 +153,44 @@ func (c *Context) BuildExprEnv() map[string]any {
 	workflow["request_id"] = c.RequestID
 	env["workflow"] = workflow
 
-	// Add Param as shortcut for trigger.params (for cache key templates)
-	env["Param"] = c.Trigger.Params
+	// Add global variables
+	if c.Variables != nil {
+		env["vars"] = c.Variables
+	} else {
+		env["vars"] = map[string]string{}
+	}
+
+	// Add expr functions (like isValidPublicID)
+	addExprFuncs(env)
 
 	return env
+}
+
+// addExprFuncs adds the shared expression functions to an environment map.
+func addExprFuncs(env map[string]any) {
+	for name, fn := range exprFuncs {
+		env[name] = fn
+	}
 }
 
 // BuildTemplateData builds the data map for Go text/template execution.
 // Uses the same structure as BuildExprEnv for consistency.
 func (c *Context) BuildTemplateData() map[string]any {
 	return c.BuildExprEnv()
+}
+
+// addConvenienceShortcuts adds row/found/empty/one/many shortcuts to a result map
+// based on Data and Count fields. Used for query and httpcall step results.
+func addConvenienceShortcuts(m map[string]any, data []map[string]any, count int) {
+	if len(data) > 0 {
+		m["row"] = data[0]
+	} else {
+		m["row"] = nil
+	}
+	m["found"] = count > 0
+	m["empty"] = count == 0
+	m["one"] = count == 1
+	m["many"] = count > 1
 }
 
 func stepResultToMap(r *StepResult) map[string]any {
@@ -183,6 +215,7 @@ func stepResultToMap(r *StepResult) map[string]any {
 		}
 		m["count"] = r.Count
 		m["rows_affected"] = r.RowsAffected
+		addConvenienceShortcuts(m, r.Data, r.Count)
 	}
 
 	// HTTPCall data
@@ -198,6 +231,7 @@ func stepResultToMap(r *StepResult) map[string]any {
 			m["data"] = []map[string]any{} // Ensure data is never nil
 		}
 		m["count"] = r.Count
+		addConvenienceShortcuts(m, r.Data, r.Count)
 	}
 
 	// Block data
@@ -305,9 +339,11 @@ func (b *BlockContext) BuildExprEnv(iterateAs string) map[string]any {
 	env["_index"] = b.CurrentIndex
 	env["_count"] = b.TotalCount
 
-	// Forward trigger and workflow from parent
+	// Forward trigger, workflow, vars, and expr functions from parent
 	env["trigger"] = parent["trigger"]
 	env["workflow"] = parent["workflow"]
+	env["vars"] = parent["vars"]
+	addExprFuncs(env)
 
 	return env
 }

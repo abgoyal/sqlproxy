@@ -25,22 +25,22 @@ func TestNew(t *testing.T) {
 		{
 			name: "valid single pool",
 			pools: []config.RateLimitPoolConfig{
-				{Name: "default", RequestsPerSecond: 10, Burst: 20, Key: "{{.ClientIP}}"},
+				{Name: "default", RequestsPerSecond: 10, Burst: 20, Key: "{{.trigger.client_ip}}"},
 			},
 			wantErr: false,
 		},
 		{
 			name: "valid multiple pools",
 			pools: []config.RateLimitPoolConfig{
-				{Name: "default", RequestsPerSecond: 10, Burst: 20, Key: "{{.ClientIP}}"},
-				{Name: "api", RequestsPerSecond: 100, Burst: 200, Key: "{{.ClientIP}}"},
+				{Name: "default", RequestsPerSecond: 10, Burst: 20, Key: "{{.trigger.client_ip}}"},
+				{Name: "api", RequestsPerSecond: 100, Burst: 200, Key: "{{.trigger.client_ip}}"},
 			},
 			wantErr: false,
 		},
 		{
 			name: "missing name",
 			pools: []config.RateLimitPoolConfig{
-				{RequestsPerSecond: 10, Burst: 20, Key: "{{.ClientIP}}"},
+				{RequestsPerSecond: 10, Burst: 20, Key: "{{.trigger.client_ip}}"},
 			},
 			wantErr: true,
 			errMsg:  "missing name",
@@ -48,8 +48,8 @@ func TestNew(t *testing.T) {
 		{
 			name: "duplicate name",
 			pools: []config.RateLimitPoolConfig{
-				{Name: "default", RequestsPerSecond: 10, Burst: 20, Key: "{{.ClientIP}}"},
-				{Name: "default", RequestsPerSecond: 20, Burst: 40, Key: "{{.ClientIP}}"},
+				{Name: "default", RequestsPerSecond: 10, Burst: 20, Key: "{{.trigger.client_ip}}"},
+				{Name: "default", RequestsPerSecond: 20, Burst: 40, Key: "{{.trigger.client_ip}}"},
 			},
 			wantErr: true,
 			errMsg:  "duplicate",
@@ -57,7 +57,7 @@ func TestNew(t *testing.T) {
 		{
 			name: "zero requests_per_second",
 			pools: []config.RateLimitPoolConfig{
-				{Name: "default", RequestsPerSecond: 0, Burst: 20, Key: "{{.ClientIP}}"},
+				{Name: "default", RequestsPerSecond: 0, Burst: 20, Key: "{{.trigger.client_ip}}"},
 			},
 			wantErr: true,
 			errMsg:  "requests_per_second must be positive",
@@ -65,7 +65,7 @@ func TestNew(t *testing.T) {
 		{
 			name: "zero burst",
 			pools: []config.RateLimitPoolConfig{
-				{Name: "default", RequestsPerSecond: 10, Burst: 0, Key: "{{.ClientIP}}"},
+				{Name: "default", RequestsPerSecond: 10, Burst: 0, Key: "{{.trigger.client_ip}}"},
 			},
 			wantErr: true,
 			errMsg:  "burst must be positive",
@@ -117,7 +117,7 @@ func TestAllow_NoLimits(t *testing.T) {
 		t.Fatalf("failed to create limiter: %v", err)
 	}
 
-	ctx := &tmpl.Context{ClientIP: "192.168.1.1"}
+	ctx := &tmpl.Context{Trigger: &tmpl.TriggerContext{ClientIP: "192.168.1.1"}}
 
 	allowed, _, err := l.Allow(nil, ctx)
 	if err != nil {
@@ -139,14 +139,14 @@ func TestAllow_NoLimits(t *testing.T) {
 func TestAllow_NamedPool(t *testing.T) {
 	engine := tmpl.New()
 	pools := []config.RateLimitPoolConfig{
-		{Name: "strict", RequestsPerSecond: 1, Burst: 2, Key: "{{.ClientIP}}"},
+		{Name: "strict", RequestsPerSecond: 1, Burst: 2, Key: "{{.trigger.client_ip}}"},
 	}
 	l, err := New(pools, engine)
 	if err != nil {
 		t.Fatalf("failed to create limiter: %v", err)
 	}
 
-	ctx := &tmpl.Context{ClientIP: "192.168.1.1"}
+	ctx := &tmpl.Context{Trigger: &tmpl.TriggerContext{ClientIP: "192.168.1.1"}}
 	limits := []config.RateLimitConfig{
 		{Pool: "strict"},
 	}
@@ -182,9 +182,9 @@ func TestAllow_InlineConfig(t *testing.T) {
 		t.Fatalf("failed to create limiter: %v", err)
 	}
 
-	ctx := &tmpl.Context{ClientIP: "192.168.1.1"}
+	ctx := &tmpl.Context{Trigger: &tmpl.TriggerContext{ClientIP: "192.168.1.1"}}
 	limits := []config.RateLimitConfig{
-		{RequestsPerSecond: 1, Burst: 1, Key: "{{.ClientIP}}"},
+		{RequestsPerSecond: 1, Burst: 1, Key: "{{.trigger.client_ip}}"},
 	}
 
 	// First request allowed
@@ -209,15 +209,15 @@ func TestAllow_InlineConfig(t *testing.T) {
 func TestAllow_MultiplePools(t *testing.T) {
 	engine := tmpl.New()
 	pools := []config.RateLimitPoolConfig{
-		{Name: "pool1", RequestsPerSecond: 10, Burst: 10, Key: "{{.ClientIP}}"},
-		{Name: "pool2", RequestsPerSecond: 1, Burst: 1, Key: "{{.ClientIP}}"},
+		{Name: "pool1", RequestsPerSecond: 10, Burst: 10, Key: "{{.trigger.client_ip}}"},
+		{Name: "pool2", RequestsPerSecond: 1, Burst: 1, Key: "{{.trigger.client_ip}}"},
 	}
 	l, err := New(pools, engine)
 	if err != nil {
 		t.Fatalf("failed to create limiter: %v", err)
 	}
 
-	ctx := &tmpl.Context{ClientIP: "192.168.1.1"}
+	ctx := &tmpl.Context{Trigger: &tmpl.TriggerContext{ClientIP: "192.168.1.1"}}
 
 	// Both pools must pass
 	limits := []config.RateLimitConfig{
@@ -247,7 +247,7 @@ func TestAllow_MultiplePools(t *testing.T) {
 func TestAllow_DifferentClients(t *testing.T) {
 	engine := tmpl.New()
 	pools := []config.RateLimitPoolConfig{
-		{Name: "default", RequestsPerSecond: 1, Burst: 1, Key: "{{.ClientIP}}"},
+		{Name: "default", RequestsPerSecond: 1, Burst: 1, Key: "{{.trigger.client_ip}}"},
 	}
 	l, err := New(pools, engine)
 	if err != nil {
@@ -259,7 +259,7 @@ func TestAllow_DifferentClients(t *testing.T) {
 	}
 
 	// Client 1 makes a request
-	ctx1 := &tmpl.Context{ClientIP: "192.168.1.1"}
+	ctx1 := &tmpl.Context{Trigger: &tmpl.TriggerContext{ClientIP: "192.168.1.1"}}
 	allowed, _, err := l.Allow(limits, ctx1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -278,7 +278,7 @@ func TestAllow_DifferentClients(t *testing.T) {
 	}
 
 	// Client 2 should still be allowed (separate bucket)
-	ctx2 := &tmpl.Context{ClientIP: "192.168.1.2"}
+	ctx2 := &tmpl.Context{Trigger: &tmpl.TriggerContext{ClientIP: "192.168.1.2"}}
 	allowed, _, err = l.Allow(limits, ctx2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -292,7 +292,7 @@ func TestAllow_HeaderBasedKey(t *testing.T) {
 	engine := tmpl.New()
 	// Use index function for headers with dashes
 	pools := []config.RateLimitPoolConfig{
-		{Name: "api", RequestsPerSecond: 1, Burst: 1, Key: `{{index .Header "X-Api-Key"}}`},
+		{Name: "api", RequestsPerSecond: 1, Burst: 1, Key: `{{index .trigger.headers "X-Api-Key"}}`},
 	}
 	l, err := New(pools, engine)
 	if err != nil {
@@ -305,8 +305,10 @@ func TestAllow_HeaderBasedKey(t *testing.T) {
 
 	// API key "key1"
 	ctx1 := &tmpl.Context{
-		ClientIP: "192.168.1.1",
-		Header:   map[string]string{"X-Api-Key": "key1"},
+		Trigger: &tmpl.TriggerContext{
+			ClientIP: "192.168.1.1",
+			Headers:  map[string]string{"X-Api-Key": "key1"},
+		},
 	}
 	allowed, _, err := l.Allow(limits, ctx1)
 	if err != nil {
@@ -327,8 +329,10 @@ func TestAllow_HeaderBasedKey(t *testing.T) {
 
 	// Different API key has separate bucket
 	ctx2 := &tmpl.Context{
-		ClientIP: "192.168.1.1", // Same IP but different API key
-		Header:   map[string]string{"X-Api-Key": "key2"},
+		Trigger: &tmpl.TriggerContext{
+			ClientIP: "192.168.1.1", // Same IP but different API key
+			Headers:  map[string]string{"X-Api-Key": "key2"},
+		},
 	}
 	allowed, _, err = l.Allow(limits, ctx2)
 	if err != nil {
@@ -343,7 +347,7 @@ func TestAllow_MissingTemplateData(t *testing.T) {
 	engine := tmpl.New()
 	// Use require function to enforce strict key checking
 	pools := []config.RateLimitPoolConfig{
-		{Name: "api", RequestsPerSecond: 10, Burst: 10, Key: `{{require .Header "X-Api-Key"}}`},
+		{Name: "api", RequestsPerSecond: 10, Burst: 10, Key: `{{require .trigger.headers "X-Api-Key"}}`},
 	}
 	l, err := New(pools, engine)
 	if err != nil {
@@ -356,8 +360,10 @@ func TestAllow_MissingTemplateData(t *testing.T) {
 
 	// Missing header should cause error (not silently fallback)
 	ctx := &tmpl.Context{
-		ClientIP: "192.168.1.1",
-		Header:   map[string]string{}, // No X-Api-Key
+		Trigger: &tmpl.TriggerContext{
+			ClientIP: "192.168.1.1",
+			Headers:  map[string]string{}, // No X-Api-Key
+		},
 	}
 	_, _, err = l.Allow(limits, ctx)
 	if err == nil {
@@ -372,7 +378,7 @@ func TestAllow_NonexistentPool(t *testing.T) {
 		t.Fatalf("failed to create limiter: %v", err)
 	}
 
-	ctx := &tmpl.Context{ClientIP: "192.168.1.1"}
+	ctx := &tmpl.Context{Trigger: &tmpl.TriggerContext{ClientIP: "192.168.1.1"}}
 	limits := []config.RateLimitConfig{
 		{Pool: "nonexistent"},
 	}
@@ -386,14 +392,14 @@ func TestAllow_NonexistentPool(t *testing.T) {
 func TestMetrics(t *testing.T) {
 	engine := tmpl.New()
 	pools := []config.RateLimitPoolConfig{
-		{Name: "default", RequestsPerSecond: 1, Burst: 2, Key: "{{.ClientIP}}"},
+		{Name: "default", RequestsPerSecond: 1, Burst: 2, Key: "{{.trigger.client_ip}}"},
 	}
 	l, err := New(pools, engine)
 	if err != nil {
 		t.Fatalf("failed to create limiter: %v", err)
 	}
 
-	ctx := &tmpl.Context{ClientIP: "192.168.1.1"}
+	ctx := &tmpl.Context{Trigger: &tmpl.TriggerContext{ClientIP: "192.168.1.1"}}
 	limits := []config.RateLimitConfig{
 		{Pool: "default"},
 	}
@@ -435,10 +441,10 @@ func TestMetrics_InlinePool(t *testing.T) {
 		t.Fatalf("failed to create limiter: %v", err)
 	}
 
-	ctx := &tmpl.Context{ClientIP: "192.168.1.1"}
+	ctx := &tmpl.Context{Trigger: &tmpl.TriggerContext{ClientIP: "192.168.1.1"}}
 	// Inline rate limit config
 	limits := []config.RateLimitConfig{
-		{RequestsPerSecond: 1, Burst: 2, Key: "{{.ClientIP}}"},
+		{RequestsPerSecond: 1, Burst: 2, Key: "{{.trigger.client_ip}}"},
 	}
 
 	// Make 3 requests: 2 allowed, 1 denied
@@ -477,8 +483,8 @@ func TestMetrics_InlinePool(t *testing.T) {
 func TestPoolNames(t *testing.T) {
 	engine := tmpl.New()
 	pools := []config.RateLimitPoolConfig{
-		{Name: "pool1", RequestsPerSecond: 10, Burst: 10, Key: "{{.ClientIP}}"},
-		{Name: "pool2", RequestsPerSecond: 10, Burst: 10, Key: "{{.ClientIP}}"},
+		{Name: "pool1", RequestsPerSecond: 10, Burst: 10, Key: "{{.trigger.client_ip}}"},
+		{Name: "pool2", RequestsPerSecond: 10, Burst: 10, Key: "{{.trigger.client_ip}}"},
 	}
 	l, err := New(pools, engine)
 	if err != nil {
@@ -502,7 +508,7 @@ func TestPoolNames(t *testing.T) {
 func TestGetPool(t *testing.T) {
 	engine := tmpl.New()
 	pools := []config.RateLimitPoolConfig{
-		{Name: "default", RequestsPerSecond: 10, Burst: 20, Key: "{{.ClientIP}}"},
+		{Name: "default", RequestsPerSecond: 10, Burst: 20, Key: "{{.trigger.client_ip}}"},
 	}
 	l, err := New(pools, engine)
 	if err != nil {
@@ -524,7 +530,7 @@ func TestBucketCleanup(t *testing.T) {
 	// This test verifies the cleanup logic by directly manipulating the pool
 	engine := tmpl.New()
 	pools := []config.RateLimitPoolConfig{
-		{Name: "default", RequestsPerSecond: 10, Burst: 10, Key: "{{.ClientIP}}"},
+		{Name: "default", RequestsPerSecond: 10, Burst: 10, Key: "{{.trigger.client_ip}}"},
 	}
 	l, err := New(pools, engine)
 	if err != nil {
@@ -534,7 +540,7 @@ func TestBucketCleanup(t *testing.T) {
 	pool := l.GetPool("default")
 	pool.cleanEvery = 1 * time.Millisecond // Speed up for test
 
-	ctx := &tmpl.Context{ClientIP: "192.168.1.1"}
+	ctx := &tmpl.Context{Trigger: &tmpl.TriggerContext{ClientIP: "192.168.1.1"}}
 	limits := []config.RateLimitConfig{{Pool: "default"}}
 
 	// Create a bucket

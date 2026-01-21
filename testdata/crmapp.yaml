@@ -28,9 +28,17 @@
 # - Dynamic response templates by role - wanted admin/sales/viewer to see different
 #   fields, but conditions can't access steps.auth.data[0].role
 
+# Variables for configuration values
+# ${VAR:default} syntax is ONLY valid here - imports env vars
+# Use {{.vars.X}} everywhere else to reference these values
+variables:
+  values:
+    PORT: "${PORT:8080}"
+    DB_PATH: "${DB_PATH::memory:}"
+
 server:
   host: "127.0.0.1"
-  port: ${PORT}
+  port: {{.vars.PORT}}
   default_timeout_sec: 30
   max_timeout_sec: 300
   cache:
@@ -41,7 +49,7 @@ server:
 databases:
   - name: "main"
     type: "sqlite"
-    path: "${DB_PATH}"
+    path: "{{.vars.DB_PATH}}"
     readonly: false
 
 rate_limits:
@@ -49,25 +57,25 @@ rate_limits:
   - name: "admin_limit"
     requests_per_second: 100
     burst: 200
-    key: "admin_{{.ClientIP}}"
+    key: "admin_{{.trigger.client_ip}}"
 
-  # Medium limit for sales users
+  # Medium limit for sales users (low values for testability)
   - name: "sales_limit"
-    requests_per_second: 20
-    burst: 40
-    key: "sales_{{.ClientIP}}"
+    requests_per_second: 2
+    burst: 5
+    key: "sales_{{.trigger.client_ip}}"
 
   # Low limit for viewers
   - name: "viewer_limit"
     requests_per_second: 10
     burst: 20
-    key: "viewer_{{.ClientIP}}"
+    key: "viewer_{{.trigger.client_ip}}"
 
   # Public endpoint limit (no auth)
   - name: "public_limit"
     requests_per_second: 5
     burst: 10
-    key: "public_{{.ClientIP}}"
+    key: "public_{{.trigger.client_ip}}"
 
 logging:
   level: "debug"
@@ -592,7 +600,7 @@ workflows:
             required: true
         cache:
           enabled: true
-          key: "customer:{{.Param.id}}"
+          key: "customer:{{.trigger.params.id}}"
           ttl_sec: 120
     conditions:
       authenticated: "steps.auth.count > 0"

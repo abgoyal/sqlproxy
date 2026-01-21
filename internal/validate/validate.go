@@ -3,11 +3,13 @@ package validate
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"sql-proxy/internal/config"
 	"sql-proxy/internal/db"
+	"sql-proxy/internal/publicid"
 	"sql-proxy/internal/tmpl"
 	"sql-proxy/internal/workflow"
 )
@@ -38,6 +40,7 @@ func Run(cfg *config.Config) *Result {
 	validateLogging(cfg, r)
 	validateDebug(cfg, r)
 	validateRateLimits(cfg, r)
+	validatePublicIDs(cfg, r)
 
 	// Validate workflows
 	if len(cfg.Workflows) == 0 {
@@ -330,5 +333,170 @@ func validateWorkflows(cfg *config.Config, r *Result) {
 		for _, warning := range result.Warnings {
 			r.addWarning("workflows[%d]: %s", i, warning)
 		}
+	}
+}
+
+// publicIDUsage tracks where a public ID function is used
+type publicIDUsage struct {
+	workflow string
+	function string
+}
+
+// publicIDFuncPattern matches publicID, privateID, or isValidPublicID function calls in templates
+var publicIDFuncPattern = regexp.MustCompile(`\b(publicID|privateID|isValidPublicID)\b`)
+
+// findPublicIDUsages scans all workflow templates for public ID function usage
+func findPublicIDUsages(workflows []workflow.WorkflowConfig) []publicIDUsage {
+	var usages []publicIDUsage
+
+	for _, wf := range workflows {
+		templates := collectWorkflowTemplates(&wf)
+		for _, tmplStr := range templates {
+			if matches := publicIDFuncPattern.FindAllString(tmplStr, -1); len(matches) > 0 {
+				// Deduplicate function names for this workflow
+				seen := make(map[string]bool)
+				for _, fn := range matches {
+					if !seen[fn] {
+						seen[fn] = true
+						usages = append(usages, publicIDUsage{workflow: wf.Name, function: fn})
+					}
+				}
+			}
+		}
+	}
+
+	return usages
+}
+
+// collectWorkflowTemplates returns all template strings from a workflow
+func collectWorkflowTemplates(wf *workflow.WorkflowConfig) []string {
+	var templates []string
+
+	// Trigger-level templates
+	for _, t := range wf.Triggers {
+		if t.Cache != nil && t.Cache.Key != "" {
+			templates = append(templates, t.Cache.Key)
+		}
+		for _, rl := range t.RateLimit {
+			if rl.Key != "" {
+				templates = append(templates, rl.Key)
+			}
+		}
+	}
+
+	// Workflow conditions
+	for _, cond := range wf.Conditions {
+		templates = append(templates, cond)
+	}
+
+	// Step templates (recursive for blocks)
+	templates = append(templates, collectStepTemplates(wf.Steps)...)
+
+	return templates
+}
+
+// collectStepTemplates recursively collects templates from steps
+func collectStepTemplates(steps []workflow.StepConfig) []string {
+	var templates []string
+
+	for _, s := range steps {
+		// Common step templates
+		if s.Condition != "" {
+			templates = append(templates, s.Condition)
+		}
+		for _, v := range s.Params {
+			templates = append(templates, v)
+		}
+		if s.Cache != nil && s.Cache.Key != "" {
+			templates = append(templates, s.Cache.Key)
+		}
+
+		// HTTPCall templates
+		if s.URL != "" {
+			templates = append(templates, s.URL)
+		}
+		if s.Body != "" {
+			templates = append(templates, s.Body)
+		}
+		for _, v := range s.Headers {
+			templates = append(templates, v)
+		}
+
+		// Response template
+		if s.Template != "" {
+			templates = append(templates, s.Template)
+		}
+
+		// Block inputs/outputs
+		for _, v := range s.Inputs {
+			templates = append(templates, v)
+		}
+		for _, v := range s.Outputs {
+			templates = append(templates, v)
+		}
+
+		// Recurse into nested steps
+		if len(s.Steps) > 0 {
+			templates = append(templates, collectStepTemplates(s.Steps)...)
+		}
+	}
+
+	return templates
+}
+
+func validatePublicIDs(cfg *config.Config, r *Result) {
+	// Check if any workflow uses public ID functions
+	usages := findPublicIDUsages(cfg.Workflows)
+
+	if cfg.PublicIDs == nil {
+		// No config but workflows use public ID functions - that's an error
+		for _, usage := range usages {
+			r.addError("workflow %q uses %s function but public_ids is not configured", usage.workflow, usage.function)
+		}
+		return
+	}
+
+	// Validate secret key length
+	if cfg.PublicIDs.SecretKey == "" {
+		r.addError("public_ids.secret_key is required when public_ids is configured")
+		return
+	}
+	if len(cfg.PublicIDs.SecretKey) < 32 {
+		r.addError("public_ids.secret_key must be at least 32 characters, got %d", len(cfg.PublicIDs.SecretKey))
+		return // Don't continue validation - NewEncoder will fail anyway
+	}
+
+	// Validate namespaces
+	if len(cfg.PublicIDs.Namespaces) == 0 {
+		r.addError("public_ids.namespaces must have at least one namespace")
+		return
+	}
+
+	// Check for duplicate namespace names
+	seenNames := make(map[string]bool)
+	seenPrefixes := make(map[string]bool)
+	for i, ns := range cfg.PublicIDs.Namespaces {
+		if ns.Name == "" {
+			r.addError("public_ids.namespaces[%d]: name is required", i)
+			continue
+		}
+		if seenNames[ns.Name] {
+			r.addError("public_ids.namespaces[%d]: duplicate namespace name %q", i, ns.Name)
+		}
+		seenNames[ns.Name] = true
+
+		// Check for duplicate prefixes (if prefixes are used)
+		if ns.Prefix != "" {
+			if seenPrefixes[ns.Prefix] {
+				r.addError("public_ids.namespaces[%d]: duplicate prefix %q", i, ns.Prefix)
+			}
+			seenPrefixes[ns.Prefix] = true
+		}
+	}
+
+	// Test encoder creation to catch any other issues
+	_, err := publicid.NewEncoder(cfg.PublicIDs.SecretKey, cfg.PublicIDs.Namespaces)
+	if err != nil {
+		r.addError("public_ids: %v", err)
 	}
 }

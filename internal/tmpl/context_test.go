@@ -27,6 +27,8 @@ func TestContextBuilder_Build(t *testing.T) {
 	req := httptest.NewRequest("GET", "/api/users?status=active&limit=10", nil)
 	req.Header.Set("Authorization", "Bearer token123")
 	req.Header.Set("X-Custom", "custom-value")
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: "abc123"})
+	req.AddCookie(&http.Cookie{Name: "theme", Value: "dark"})
 	req.RemoteAddr = "192.168.1.100:54321"
 
 	params := map[string]any{
@@ -36,15 +38,15 @@ func TestContextBuilder_Build(t *testing.T) {
 
 	ctx := b.Build(req, params)
 
-	// Check basic fields
-	if ctx.ClientIP != "192.168.1.100" {
-		t.Errorf("expected ClientIP '192.168.1.100', got %q", ctx.ClientIP)
+	// Check trigger fields
+	if ctx.Trigger.ClientIP != "192.168.1.100" {
+		t.Errorf("expected ClientIP '192.168.1.100', got %q", ctx.Trigger.ClientIP)
 	}
-	if ctx.Method != "GET" {
-		t.Errorf("expected Method 'GET', got %q", ctx.Method)
+	if ctx.Trigger.Method != "GET" {
+		t.Errorf("expected Method 'GET', got %q", ctx.Trigger.Method)
 	}
-	if ctx.Path != "/api/users" {
-		t.Errorf("expected Path '/api/users', got %q", ctx.Path)
+	if ctx.Trigger.Path != "/api/users" {
+		t.Errorf("expected Path '/api/users', got %q", ctx.Trigger.Path)
 	}
 	if ctx.Version != "test" {
 		t.Errorf("expected Version 'test', got %q", ctx.Version)
@@ -54,27 +56,35 @@ func TestContextBuilder_Build(t *testing.T) {
 	}
 
 	// Check headers
-	if ctx.Header["Authorization"] != "Bearer token123" {
-		t.Errorf("expected Authorization header, got %q", ctx.Header["Authorization"])
+	if ctx.Trigger.Headers["Authorization"] != "Bearer token123" {
+		t.Errorf("expected Authorization header, got %q", ctx.Trigger.Headers["Authorization"])
 	}
-	if ctx.Header["X-Custom"] != "custom-value" {
-		t.Errorf("expected X-Custom header, got %q", ctx.Header["X-Custom"])
+	if ctx.Trigger.Headers["X-Custom"] != "custom-value" {
+		t.Errorf("expected X-Custom header, got %q", ctx.Trigger.Headers["X-Custom"])
 	}
 
 	// Check query params
-	if ctx.Query["status"] != "active" {
-		t.Errorf("expected query status 'active', got %q", ctx.Query["status"])
+	if ctx.Trigger.Query["status"] != "active" {
+		t.Errorf("expected query status 'active', got %q", ctx.Trigger.Query["status"])
 	}
-	if ctx.Query["limit"] != "10" {
-		t.Errorf("expected query limit '10', got %q", ctx.Query["limit"])
+	if ctx.Trigger.Query["limit"] != "10" {
+		t.Errorf("expected query limit '10', got %q", ctx.Trigger.Query["limit"])
 	}
 
 	// Check params
-	if ctx.Param["status"] != "active" {
-		t.Errorf("expected param status 'active', got %v", ctx.Param["status"])
+	if ctx.Trigger.Params["status"] != "active" {
+		t.Errorf("expected param status 'active', got %v", ctx.Trigger.Params["status"])
 	}
-	if ctx.Param["limit"] != 10 {
-		t.Errorf("expected param limit 10, got %v", ctx.Param["limit"])
+	if ctx.Trigger.Params["limit"] != 10 {
+		t.Errorf("expected param limit 10, got %v", ctx.Trigger.Params["limit"])
+	}
+
+	// Check cookies
+	if ctx.Trigger.Cookies["session_id"] != "abc123" {
+		t.Errorf("expected cookie session_id 'abc123', got %q", ctx.Trigger.Cookies["session_id"])
+	}
+	if ctx.Trigger.Cookies["theme"] != "dark" {
+		t.Errorf("expected cookie theme 'dark', got %q", ctx.Trigger.Cookies["theme"])
 	}
 }
 
@@ -85,8 +95,8 @@ func TestContextBuilder_Build_NilParams(t *testing.T) {
 
 	ctx := b.Build(req, nil)
 
-	if ctx.Param == nil {
-		t.Error("expected Param map to be initialized even with nil input")
+	if ctx.Trigger.Params == nil {
+		t.Error("expected Params map to be initialized even with nil input")
 	}
 }
 
@@ -112,8 +122,8 @@ func TestContextBuilder_ResolveClientIP_NoProxy(t *testing.T) {
 
 			ctx := b.Build(req, nil)
 
-			if ctx.ClientIP != tt.wantIP {
-				t.Errorf("expected IP %q, got %q", tt.wantIP, ctx.ClientIP)
+			if ctx.Trigger.ClientIP != tt.wantIP {
+				t.Errorf("expected IP %q, got %q", tt.wantIP, ctx.Trigger.ClientIP)
 			}
 		})
 	}
@@ -181,8 +191,8 @@ func TestContextBuilder_ResolveClientIP_WithProxy(t *testing.T) {
 
 			ctx := b.Build(req, nil)
 
-			if ctx.ClientIP != tt.wantIP {
-				t.Errorf("expected IP %q, got %q", tt.wantIP, ctx.ClientIP)
+			if ctx.Trigger.ClientIP != tt.wantIP {
+				t.Errorf("expected IP %q, got %q", tt.wantIP, ctx.Trigger.ClientIP)
 			}
 		})
 	}
@@ -245,7 +255,9 @@ func TestContextBuilder_GetRequestID(t *testing.T) {
 // TestContext_WithResult tests adding result to context
 func TestContext_WithResult(t *testing.T) {
 	ctx := &Context{
-		ClientIP: "10.0.0.1",
+		Trigger: &TriggerContext{
+			ClientIP: "10.0.0.1",
+		},
 	}
 
 	result := &Result{
@@ -269,25 +281,31 @@ func TestContext_WithResult(t *testing.T) {
 // TestContext_ToMap tests context conversion to map
 func TestContext_ToMap(t *testing.T) {
 	ctx := &Context{
-		ClientIP:  "192.168.1.1",
-		Method:    "POST",
-		Path:      "/api/test",
+		Trigger: &TriggerContext{
+			ClientIP: "192.168.1.1",
+			Method:   "POST",
+			Path:     "/api/test",
+			Headers:  map[string]string{"Auth": "token"},
+			Query:    map[string]string{"q": "search"},
+			Params:   map[string]any{"id": 42},
+		},
 		RequestID: "req-123",
 		Timestamp: "2024-01-15T10:30:00Z",
 		Version:   "1.0.0",
-		Header:    map[string]string{"Auth": "token"},
-		Query:     map[string]string{"q": "search"},
-		Param:     map[string]any{"id": 42},
 	}
 
 	// Test pre-query (no Result)
 	m := ctx.toMap(UsagePreQuery)
 
-	if m["ClientIP"] != "192.168.1.1" {
-		t.Error("expected ClientIP in map")
+	trigger, ok := m["trigger"].(map[string]any)
+	if !ok {
+		t.Fatal("expected trigger to be map[string]any")
 	}
-	if m["Method"] != "POST" {
-		t.Error("expected Method in map")
+	if trigger["client_ip"] != "192.168.1.1" {
+		t.Error("expected client_ip in trigger map")
+	}
+	if trigger["method"] != "POST" {
+		t.Error("expected method in trigger map")
 	}
 	if _, ok := m["Result"]; ok {
 		t.Error("pre-query should not include Result")
@@ -326,37 +344,37 @@ func TestExtractParamRefs(t *testing.T) {
 	}{
 		{
 			name: "single param",
-			tmpl: "{{.Param.status}}",
+			tmpl: "{{.trigger.params.status}}",
 			want: []string{"status"},
 		},
 		{
 			name: "multiple params",
-			tmpl: "{{.Param.foo}}-{{.Param.bar}}",
+			tmpl: "{{.trigger.params.foo}}-{{.trigger.params.bar}}",
 			want: []string{"foo", "bar"},
 		},
 		{
 			name: "param with pipe",
-			tmpl: "{{.Param.status | upper}}",
+			tmpl: "{{.trigger.params.status | upper}}",
 			want: []string{"status"},
 		},
 		{
 			name: "no params",
-			tmpl: "{{.ClientIP}}",
+			tmpl: "{{.trigger.client_ip}}",
 			want: []string{},
 		},
 		{
 			name: "duplicate params",
-			tmpl: "{{.Param.id}}-{{.Param.id}}",
+			tmpl: "{{.trigger.params.id}}-{{.trigger.params.id}}",
 			want: []string{"id"},
 		},
 		{
 			name: "underscore in name",
-			tmpl: "{{.Param.user_id}}",
+			tmpl: "{{.trigger.params.user_id}}",
 			want: []string{"user_id"},
 		},
 		{
 			name: "complex template",
-			tmpl: `{{if .Param.enabled}}{{.Param.value | default "none"}}{{end}}`,
+			tmpl: `{{if .trigger.params.enabled}}{{.trigger.params.value | default "none"}}{{end}}`,
 			want: []string{"enabled", "value"},
 		},
 	}
@@ -388,32 +406,32 @@ func TestExtractHeaderRefs(t *testing.T) {
 	}{
 		{
 			name: "dot notation",
-			tmpl: "{{.Header.Authorization}}",
+			tmpl: "{{.trigger.headers.Authorization}}",
 			want: []string{"Authorization"},
 		},
 		{
 			name: "require function",
-			tmpl: `{{require .Header "X-API-Key"}}`,
+			tmpl: `{{require .trigger.headers "X-API-Key"}}`,
 			want: []string{"X-API-Key"},
 		},
 		{
 			name: "getOr function",
-			tmpl: `{{getOr .Header "X-Tenant" "default"}}`,
+			tmpl: `{{getOr .trigger.headers "X-Tenant" "default"}}`,
 			want: []string{"X-Tenant"},
 		},
 		{
 			name: "multiple headers",
-			tmpl: `{{.Header.Authorization}}-{{require .Header "X-API-Key"}}`,
+			tmpl: `{{.trigger.headers.Authorization}}-{{require .trigger.headers "X-API-Key"}}`,
 			want: []string{"Authorization", "X-API-Key"},
 		},
 		{
 			name: "no headers",
-			tmpl: "{{.ClientIP}}",
+			tmpl: "{{.trigger.client_ip}}",
 			want: []string{},
 		},
 		{
 			name: "hyphenated header",
-			tmpl: "{{.Header.X-Custom-Header}}",
+			tmpl: "{{.trigger.headers.X-Custom-Header}}",
 			want: []string{"X-Custom-Header"},
 		},
 	}
@@ -453,32 +471,32 @@ func TestExtractQueryRefs(t *testing.T) {
 	}{
 		{
 			name: "dot notation",
-			tmpl: "{{.Query.status}}",
+			tmpl: "{{.trigger.query.status}}",
 			want: []string{"status"},
 		},
 		{
 			name: "require function",
-			tmpl: `{{require .Query "search"}}`,
+			tmpl: `{{require .trigger.query "search"}}`,
 			want: []string{"search"},
 		},
 		{
 			name: "getOr function",
-			tmpl: `{{getOr .Query "page" "1"}}`,
+			tmpl: `{{getOr .trigger.query "page" "1"}}`,
 			want: []string{"page"},
 		},
 		{
 			name: "multiple queries",
-			tmpl: `{{.Query.status}}-{{getOr .Query "limit" "10"}}`,
+			tmpl: `{{.trigger.query.status}}-{{getOr .trigger.query "limit" "10"}}`,
 			want: []string{"status", "limit"},
 		},
 		{
 			name: "no queries",
-			tmpl: "{{.ClientIP}}",
+			tmpl: "{{.trigger.client_ip}}",
 			want: []string{},
 		},
 		{
 			name: "underscore in name",
-			tmpl: "{{.Query.page_size}}",
+			tmpl: "{{.trigger.query.page_size}}",
 			want: []string{"page_size"},
 		},
 	}
@@ -516,12 +534,12 @@ func TestContext_Integration(t *testing.T) {
 	engine := New()
 
 	// Register templates
-	err := engine.Register("rate_limit_key", "{{.ClientIP}}:{{getOr .Header \"X-Tenant\" \"default\"}}", UsagePreQuery)
+	err := engine.Register("rate_limit_key", "{{.trigger.client_ip}}:{{getOr .trigger.headers \"X-Tenant\" \"default\"}}", UsagePreQuery)
 	if err != nil {
 		t.Fatalf("register failed: %v", err)
 	}
 
-	err = engine.Register("cache_key", "users:{{.Param.status}}", UsagePreQuery)
+	err = engine.Register("cache_key", "users:{{.trigger.params.status}}", UsagePreQuery)
 	if err != nil {
 		t.Fatalf("register failed: %v", err)
 	}
@@ -605,7 +623,7 @@ func BenchmarkContextBuilder_Build(b *testing.B) {
 
 // BenchmarkExtractParamRefs benchmarks param extraction
 func BenchmarkExtractParamRefs(b *testing.B) {
-	tmpl := `{{.Param.status}}:{{.Param.limit | default "10"}}:{{.Param.offset}}`
+	tmpl := `{{.trigger.params.status}}:{{.trigger.params.limit | default "10"}}:{{.trigger.params.offset}}`
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

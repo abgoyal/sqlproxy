@@ -17,7 +17,7 @@ func TestNewHTTPHandler(t *testing.T) {
 	wf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "test"}}
 	trigger := &CompiledTrigger{Config: &TriggerConfig{Method: "GET"}}
 
-	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "1.0.0", "2024-01-15")
+	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "1.0.0", "2024-01-15", nil)
 
 	if handler.executor != exec {
 		t.Error("executor not set")
@@ -43,7 +43,7 @@ func TestHTTPHandler_ServeHTTP_MethodNotAllowed(t *testing.T) {
 	wf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "test"}}
 	trigger := &CompiledTrigger{Config: &TriggerConfig{Method: "POST"}}
 
-	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "")
+	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "", nil)
 
 	req := httptest.NewRequest("GET", "/test", nil)
 	rec := httptest.NewRecorder()
@@ -64,7 +64,7 @@ func TestHTTPHandler_ServeHTTP_Success(t *testing.T) {
 	}
 	exec := NewExecutor(db, &mockHTTPClient{}, nil, logger)
 
-	wf := mustCompile(t,&WorkflowConfig{
+	wf := mustCompile(t, &WorkflowConfig{
 		Name: "test",
 		Steps: []StepConfig{
 			{
@@ -83,7 +83,7 @@ func TestHTTPHandler_ServeHTTP_Success(t *testing.T) {
 	})
 	trigger := &CompiledTrigger{Config: &TriggerConfig{Method: "GET"}}
 
-	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "1.0.0", "")
+	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "1.0.0", "", nil)
 
 	req := httptest.NewRequest("GET", "/test", nil)
 	rec := httptest.NewRecorder()
@@ -110,7 +110,7 @@ func TestHTTPHandler_ServeHTTP_VersionWithBuildTime(t *testing.T) {
 	logger := &testLogger{}
 	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
 
-	wf := mustCompile(t,&WorkflowConfig{
+	wf := mustCompile(t, &WorkflowConfig{
 		Name: "test",
 		Steps: []StepConfig{
 			{
@@ -123,7 +123,7 @@ func TestHTTPHandler_ServeHTTP_VersionWithBuildTime(t *testing.T) {
 	})
 	trigger := &CompiledTrigger{Config: &TriggerConfig{Method: "GET"}}
 
-	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "1.0.0", "2024-01-15")
+	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "1.0.0", "2024-01-15", nil)
 
 	req := httptest.NewRequest("GET", "/test", nil)
 	rec := httptest.NewRecorder()
@@ -140,14 +140,14 @@ func TestHTTPHandler_ServeHTTP_RequestID_FromHeader(t *testing.T) {
 	logger := &testLogger{}
 	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
 
-	wf := mustCompile(t,&WorkflowConfig{
+	wf := mustCompile(t, &WorkflowConfig{
 		Name: "test",
 		Steps: []StepConfig{
 			{Name: "respond", Type: "response", Template: `{}`},
 		},
 	})
 	trigger := &CompiledTrigger{Config: &TriggerConfig{Method: "GET"}}
-	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "")
+	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "", nil)
 
 	req := httptest.NewRequest("GET", "/test", nil)
 	req.Header.Set("X-Request-ID", "my-request-id")
@@ -164,14 +164,14 @@ func TestHTTPHandler_ServeHTTP_CorrelationID(t *testing.T) {
 	logger := &testLogger{}
 	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
 
-	wf := mustCompile(t,&WorkflowConfig{
+	wf := mustCompile(t, &WorkflowConfig{
 		Name: "test",
 		Steps: []StepConfig{
 			{Name: "respond", Type: "response", Template: `{}`},
 		},
 	})
 	trigger := &CompiledTrigger{Config: &TriggerConfig{Method: "GET"}}
-	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "")
+	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "", nil)
 
 	req := httptest.NewRequest("GET", "/test", nil)
 	req.Header.Set("X-Correlation-ID", "correlation-123")
@@ -188,7 +188,7 @@ func TestHTTPHandler_ParseParameters_QueryString(t *testing.T) {
 	logger := &testLogger{}
 	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
 
-	wf := mustCompile(t,&WorkflowConfig{
+	wf := mustCompile(t, &WorkflowConfig{
 		Name: "test",
 		Steps: []StepConfig{
 			{Name: "respond", Type: "response", Template: `{}`},
@@ -203,7 +203,7 @@ func TestHTTPHandler_ParseParameters_QueryString(t *testing.T) {
 			},
 		},
 	}
-	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "")
+	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "", nil)
 
 	req := httptest.NewRequest("GET", "/test?status=active", nil)
 	rec := httptest.NewRecorder()
@@ -219,7 +219,7 @@ func TestHTTPHandler_ParseParameters_MissingRequired(t *testing.T) {
 	logger := &testLogger{}
 	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
 
-	wf := mustCompile(t,&WorkflowConfig{
+	wf := mustCompile(t, &WorkflowConfig{
 		Name: "test",
 		Steps: []StepConfig{
 			{Name: "respond", Type: "response", Template: `{}`},
@@ -233,7 +233,7 @@ func TestHTTPHandler_ParseParameters_MissingRequired(t *testing.T) {
 			},
 		},
 	}
-	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "")
+	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "", nil)
 
 	req := httptest.NewRequest("GET", "/test", nil) // No parameters
 	rec := httptest.NewRecorder()
@@ -258,7 +258,7 @@ func TestHTTPHandler_ParseParameters_JSONBody(t *testing.T) {
 	}
 	exec := NewExecutor(db, &mockHTTPClient{}, nil, logger)
 
-	wf := mustCompile(t,&WorkflowConfig{
+	wf := mustCompile(t, &WorkflowConfig{
 		Name: "test",
 		Steps: []StepConfig{
 			{Name: "respond", Type: "response", Template: `{}`},
@@ -273,7 +273,7 @@ func TestHTTPHandler_ParseParameters_JSONBody(t *testing.T) {
 			},
 		},
 	}
-	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "")
+	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "", nil)
 
 	body := `{"name": "test", "count": 42}`
 	req := httptest.NewRequest("POST", "/test", strings.NewReader(body))
@@ -291,14 +291,14 @@ func TestHTTPHandler_ParseParameters_InvalidJSON(t *testing.T) {
 	logger := &testLogger{}
 	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
 
-	wf := mustCompile(t,&WorkflowConfig{
+	wf := mustCompile(t, &WorkflowConfig{
 		Name:  "test",
 		Steps: []StepConfig{},
 	})
 	trigger := &CompiledTrigger{
 		Config: &TriggerConfig{Method: "POST"},
 	}
-	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "")
+	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "", nil)
 
 	body := `{invalid json`
 	req := httptest.NewRequest("POST", "/test", strings.NewReader(body))
@@ -316,7 +316,7 @@ func TestHTTPHandler_ParseParameters_TypeConversion(t *testing.T) {
 	logger := &testLogger{}
 	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
 
-	wf := mustCompile(t,&WorkflowConfig{
+	wf := mustCompile(t, &WorkflowConfig{
 		Name: "test",
 		Steps: []StepConfig{
 			{Name: "respond", Type: "response", Template: `{}`},
@@ -330,7 +330,7 @@ func TestHTTPHandler_ParseParameters_TypeConversion(t *testing.T) {
 			},
 		},
 	}
-	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "")
+	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "", nil)
 
 	req := httptest.NewRequest("GET", "/test?count=notanumber", nil)
 	rec := httptest.NewRecorder()
@@ -351,7 +351,7 @@ func TestHTTPHandler_WorkflowError_DefaultResponse(t *testing.T) {
 	}
 	exec := NewExecutor(db, &mockHTTPClient{}, nil, logger)
 
-	wf := mustCompile(t,&WorkflowConfig{
+	wf := mustCompile(t, &WorkflowConfig{
 		Name: "test",
 		Steps: []StepConfig{
 			{Name: "query1", Type: "query", Database: "db", SQL: "SELECT 1"},
@@ -359,7 +359,7 @@ func TestHTTPHandler_WorkflowError_DefaultResponse(t *testing.T) {
 		},
 	})
 	trigger := &CompiledTrigger{Config: &TriggerConfig{Method: "GET"}}
-	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "")
+	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "", nil)
 
 	req := httptest.NewRequest("GET", "/test", nil)
 	rec := httptest.NewRecorder()
@@ -375,12 +375,12 @@ func TestHTTPHandler_NoResponse_EmptySuccess(t *testing.T) {
 	logger := &testLogger{}
 	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
 
-	wf := mustCompile(t,&WorkflowConfig{
+	wf := mustCompile(t, &WorkflowConfig{
 		Name:  "test",
 		Steps: []StepConfig{}, // No steps at all
 	})
 	trigger := &CompiledTrigger{Config: &TriggerConfig{Method: "GET"}}
-	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "")
+	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "", nil)
 
 	req := httptest.NewRequest("GET", "/test", nil)
 	rec := httptest.NewRecorder()
@@ -673,7 +673,7 @@ func TestHTTPHandler_ParseParameters_NestedObject(t *testing.T) {
 	logger := &testLogger{}
 	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
 
-	wf := mustCompile(t,&WorkflowConfig{
+	wf := mustCompile(t, &WorkflowConfig{
 		Name:  "test",
 		Steps: []StepConfig{},
 	})
@@ -685,7 +685,7 @@ func TestHTTPHandler_ParseParameters_NestedObject(t *testing.T) {
 			},
 		},
 	}
-	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "")
+	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "", nil)
 
 	body := `{"data": {"nested": "object"}}`
 	req := httptest.NewRequest("POST", "/test", strings.NewReader(body))
@@ -704,7 +704,7 @@ func TestHTTPHandler_ParseParameters_JSONType(t *testing.T) {
 	logger := &testLogger{}
 	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
 
-	wf := mustCompile(t,&WorkflowConfig{
+	wf := mustCompile(t, &WorkflowConfig{
 		Name: "test",
 		Steps: []StepConfig{
 			{Name: "respond", Type: "response", Template: `{}`},
@@ -718,7 +718,7 @@ func TestHTTPHandler_ParseParameters_JSONType(t *testing.T) {
 			},
 		},
 	}
-	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "")
+	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "", nil)
 
 	body := `{"data": {"nested": "object"}}`
 	req := httptest.NewRequest("POST", "/test", strings.NewReader(body))
@@ -736,7 +736,7 @@ func TestHTTPHandler_ParseParameters_ArrayType(t *testing.T) {
 	logger := &testLogger{}
 	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
 
-	wf := mustCompile(t,&WorkflowConfig{
+	wf := mustCompile(t, &WorkflowConfig{
 		Name: "test",
 		Steps: []StepConfig{
 			{Name: "respond", Type: "response", Template: `{}`},
@@ -750,7 +750,7 @@ func TestHTTPHandler_ParseParameters_ArrayType(t *testing.T) {
 			},
 		},
 	}
-	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "")
+	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "", nil)
 
 	body := `{"ids": [1, 2, 3]}`
 	req := httptest.NewRequest("POST", "/test", strings.NewReader(body))
@@ -809,7 +809,7 @@ func TestHTTPHandler_TriggerCache_Hit(t *testing.T) {
 	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
 
 	// Create trigger with cache key template
-	cacheKeyTmpl := template.Must(template.New("cache_key").Parse("response:user:{{.Param.id}}"))
+	cacheKeyTmpl := template.Must(template.New("cache_key").Parse("response:user:{{.trigger.params.id}}"))
 	wf := &CompiledWorkflow{
 		Config: &WorkflowConfig{Name: "test_workflow"},
 	}
@@ -819,12 +819,12 @@ func TestHTTPHandler_TriggerCache_Hit(t *testing.T) {
 			Parameters: []ParamConfig{
 				{Name: "id", Type: "int", Required: true},
 			},
-			Cache: &CacheConfig{Enabled: true, Key: "response:user:{{.Param.id}}", TTLSec: 300},
+			Cache: &CacheConfig{Enabled: true, Key: "response:user:{{.trigger.params.id}}", TTLSec: 300},
 		},
 		CacheKey: cacheKeyTmpl,
 	}
 
-	handler := NewHTTPHandler(exec, wf, trigger, nil, cache, false, "", "")
+	handler := NewHTTPHandler(exec, wf, trigger, nil, cache, false, "", "", nil)
 
 	req := httptest.NewRequest("GET", "/test?id=42", nil)
 	rec := httptest.NewRecorder()
@@ -856,7 +856,7 @@ func TestHTTPHandler_TriggerCache_Miss(t *testing.T) {
 	exec := NewExecutor(db, &mockHTTPClient{}, nil, logger)
 
 	// Create trigger with cache key template
-	cacheKeyTmpl := template.Must(template.New("cache_key").Parse("response:user:{{.Param.id}}"))
+	cacheKeyTmpl := template.Must(template.New("cache_key").Parse("response:user:{{.trigger.params.id}}"))
 	sqlTmpl := template.Must(template.New("sql").Parse("SELECT * FROM users"))
 	responseTmpl := template.Must(template.New("response").Funcs(TemplateFuncs).Parse(`{"success":true,"data":{{json .steps.query.data}}}`))
 
@@ -879,12 +879,12 @@ func TestHTTPHandler_TriggerCache_Miss(t *testing.T) {
 			Parameters: []ParamConfig{
 				{Name: "id", Type: "int", Required: true},
 			},
-			Cache: &CacheConfig{Enabled: true, Key: "response:user:{{.Param.id}}", TTLSec: 300},
+			Cache: &CacheConfig{Enabled: true, Key: "response:user:{{.trigger.params.id}}", TTLSec: 300},
 		},
 		CacheKey: cacheKeyTmpl,
 	}
 
-	handler := NewHTTPHandler(exec, wf, trigger, nil, cache, false, "", "")
+	handler := NewHTTPHandler(exec, wf, trigger, nil, cache, false, "", "", nil)
 
 	req := httptest.NewRequest("GET", "/test?id=42", nil)
 	rec := httptest.NewRecorder()
@@ -922,7 +922,7 @@ func TestHTTPHandler_TriggerCache_NilCache(t *testing.T) {
 	exec := NewExecutor(db, &mockHTTPClient{}, nil, logger)
 
 	// Trigger with cache key but no cache provided
-	cacheKeyTmpl := template.Must(template.New("cache_key").Parse("response:user:{{.Param.id}}"))
+	cacheKeyTmpl := template.Must(template.New("cache_key").Parse("response:user:{{.trigger.params.id}}"))
 	sqlTmpl := template.Must(template.New("sql").Parse("SELECT * FROM users"))
 	responseTmpl := template.Must(template.New("response").Parse(`{"success":true}`))
 
@@ -945,13 +945,13 @@ func TestHTTPHandler_TriggerCache_NilCache(t *testing.T) {
 			Parameters: []ParamConfig{
 				{Name: "id", Type: "int", Required: true},
 			},
-			Cache: &CacheConfig{Enabled: true, Key: "response:user:{{.Param.id}}"},
+			Cache: &CacheConfig{Enabled: true, Key: "response:user:{{.trigger.params.id}}"},
 		},
 		CacheKey: cacheKeyTmpl,
 	}
 
 	// Pass nil for cache
-	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "")
+	handler := NewHTTPHandler(exec, wf, trigger, nil, nil, false, "", "", nil)
 
 	req := httptest.NewRequest("GET", "/test?id=42", nil)
 	rec := httptest.NewRecorder()
@@ -966,6 +966,140 @@ func TestHTTPHandler_TriggerCache_NilCache(t *testing.T) {
 	if rec.Header().Get("X-Cache") != "" {
 		t.Errorf("X-Cache = %q, want empty", rec.Header().Get("X-Cache"))
 	}
+}
+
+func TestFlattenHeaders(t *testing.T) {
+	h := http.Header{
+		"Content-Type":  []string{"application/json"},
+		"Accept":        []string{"text/html", "application/json"},
+		"Authorization": []string{"Bearer token"},
+	}
+
+	flat := flattenHeaders(h)
+
+	if flat["Content-Type"] != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", flat["Content-Type"])
+	}
+	// Multi-value headers return first value
+	if flat["Accept"] != "text/html" {
+		t.Errorf("Accept = %q, want text/html", flat["Accept"])
+	}
+	if flat["Authorization"] != "Bearer token" {
+		t.Errorf("Authorization = %q, want Bearer token", flat["Authorization"])
+	}
+}
+
+func TestFlattenQuery(t *testing.T) {
+	q := map[string][]string{
+		"id":     []string{"123"},
+		"filter": []string{"active", "archived"},
+	}
+
+	flat := flattenQuery(q)
+
+	if flat["id"] != "123" {
+		t.Errorf("id = %q, want 123", flat["id"])
+	}
+	// Multi-value query params return first value
+	if flat["filter"] != "active" {
+		t.Errorf("filter = %q, want active", flat["filter"])
+	}
+}
+
+func TestEvaluateCacheKey_ExpandedContext(t *testing.T) {
+	logger := &testLogger{}
+	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
+
+	wf := mustCompile(t, &WorkflowConfig{
+		Name: "test",
+		Steps: []StepConfig{
+			{Name: "respond", Type: "response", Template: `{}`},
+		},
+	})
+
+	// Create cache key template that uses multiple context fields
+	cacheKeyTmpl, err := template.New("cache").Parse("{{.trigger.method}}:{{.trigger.path}}:{{.trigger.client_ip}}:{{.trigger.params.id}}:{{.trigger.headers.Authorization}}:{{.trigger.cookies.session}}")
+	if err != nil {
+		t.Fatalf("Failed to parse cache key template: %v", err)
+	}
+
+	trigger := &CompiledTrigger{
+		Config:   &TriggerConfig{Method: "GET"},
+		CacheKey: cacheKeyTmpl,
+	}
+
+	handler := NewHTTPHandler(exec, wf, trigger, nil, newMockTriggerCache(), false, "", "", nil)
+
+	// Create request with various context values
+	req := httptest.NewRequest("GET", "/api/users?id=123", nil)
+	req.Header.Set("Authorization", "Bearer abc")
+	req.AddCookie(&http.Cookie{Name: "session", Value: "xyz789"})
+
+	params := map[string]any{"id": "123"}
+	clientIP := "192.168.1.1"
+	cookies := parseCookies(req)
+	requestID := "req-test"
+
+	key, err := handler.evaluateCacheKey(cacheKeyTmpl, req, params, clientIP, cookies, requestID)
+	if err != nil {
+		t.Fatalf("evaluateCacheKey failed: %v", err)
+	}
+
+	expected := "GET:/api/users:192.168.1.1:123:Bearer abc:xyz789"
+	if key != expected {
+		t.Errorf("cache key = %q, want %q", key, expected)
+	}
+}
+
+func TestParseCookies(t *testing.T) {
+	t.Run("single cookie", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.AddCookie(&http.Cookie{Name: "session", Value: "abc123"})
+
+		cookies := parseCookies(req)
+		if cookies["session"] != "abc123" {
+			t.Errorf("session = %q, want abc123", cookies["session"])
+		}
+	})
+
+	t.Run("multiple cookies", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.AddCookie(&http.Cookie{Name: "session", Value: "abc123"})
+		req.AddCookie(&http.Cookie{Name: "user", Value: "john"})
+		req.AddCookie(&http.Cookie{Name: "theme", Value: "dark"})
+
+		cookies := parseCookies(req)
+		if cookies["session"] != "abc123" {
+			t.Errorf("session = %q, want abc123", cookies["session"])
+		}
+		if cookies["user"] != "john" {
+			t.Errorf("user = %q, want john", cookies["user"])
+		}
+		if cookies["theme"] != "dark" {
+			t.Errorf("theme = %q, want dark", cookies["theme"])
+		}
+	})
+
+	t.Run("no cookies", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/", nil)
+
+		cookies := parseCookies(req)
+		if len(cookies) != 0 {
+			t.Errorf("len(cookies) = %d, want 0", len(cookies))
+		}
+	})
+
+	t.Run("duplicate cookie names - last wins", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.AddCookie(&http.Cookie{Name: "session", Value: "first"})
+		req.AddCookie(&http.Cookie{Name: "session", Value: "second"})
+
+		cookies := parseCookies(req)
+		// Go's http.Request.Cookies() returns cookies in order; our loop takes the last value for duplicates
+		if cookies["session"] != "second" {
+			t.Errorf("duplicate cookie: session = %q, want 'second' (last wins)", cookies["session"])
+		}
+	})
 }
 
 // mustCompile compiles a workflow config and fails the test if compilation fails.

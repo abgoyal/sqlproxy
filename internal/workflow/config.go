@@ -76,6 +76,11 @@ type StepConfig struct {
 	// Caching for query and httpcall steps
 	Cache *StepCacheConfig `yaml:"cache,omitempty"`
 
+	// Computed parameters (available for all step types)
+	// Templates are evaluated before step execution and results added to trigger.params
+	// Example: internal_id: '{{privateID "task" .trigger.params.public_id}}'
+	Params map[string]string `yaml:"params,omitempty"`
+
 	// Query step fields
 	Database         string   `yaml:"database,omitempty"`
 	SQL              string   `yaml:"sql,omitempty"`
@@ -107,7 +112,7 @@ type StepConfig struct {
 // StepCacheConfig defines caching for query and httpcall steps.
 // Cache key can reference request params and previous step results.
 type StepCacheConfig struct {
-	Key    string `yaml:"key"`               // Template for cache key (e.g., "user:{{.Param.id}}" or "query:{{.steps.auth.data.user_id}}")
+	Key    string `yaml:"key"`               // Template for cache key (e.g., "user:{{.trigger.params.id}}" or "query:{{.steps.auth.data.user_id}}")
 	TTLSec int    `yaml:"ttl_sec,omitempty"` // TTL in seconds (0 = use server default)
 }
 

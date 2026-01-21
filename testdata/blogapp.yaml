@@ -29,9 +29,17 @@
 #   posts, but query param auth is awkward and conditions can't access step data
 #   for role-based filtering
 
+# Variables for configuration values
+# ${VAR:default} syntax is ONLY valid here - imports env vars
+# Use {{.vars.X}} everywhere else to reference these values
+variables:
+  values:
+    PORT: "${PORT:8080}"
+    DB_PATH: "${DB_PATH::memory:}"
+
 server:
   host: "127.0.0.1"
-  port: ${PORT}
+  port: {{.vars.PORT}}
   default_timeout_sec: 30
   max_timeout_sec: 300
   cache:
@@ -42,19 +50,19 @@ server:
 databases:
   - name: "main"
     type: "sqlite"
-    path: "${DB_PATH}"
+    path: "{{.vars.DB_PATH}}"
     readonly: false
 
 rate_limits:
   - name: "default"
     requests_per_second: 50
     burst: 100
-    key: "blog_{{.ClientIP}}"
+    key: "blog_{{.trigger.client_ip}}"
 
   - name: "comments"
     requests_per_second: 5
     burst: 10
-    key: "comments_{{.ClientIP}}"
+    key: "comments_{{.trigger.client_ip}}"
 
 logging:
   level: "debug"

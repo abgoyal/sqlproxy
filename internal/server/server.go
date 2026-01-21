@@ -25,6 +25,7 @@ import (
 	"sql-proxy/internal/logging"
 	"sql-proxy/internal/metrics"
 	"sql-proxy/internal/openapi"
+	"sql-proxy/internal/publicid"
 	"sql-proxy/internal/ratelimit"
 	"sql-proxy/internal/tmpl"
 	"sql-proxy/internal/workflow"
@@ -192,6 +193,22 @@ func New(cfg *config.Config, interactive bool) (*Server, error) {
 	// Initialize template engine and context builder (for rate limiting, webhooks, etc.)
 	tmplEngine := tmpl.New()
 	s.ctxBuilder = tmpl.NewContextBuilder(cfg.Server.TrustProxyHeaders, cfg.Server.Version)
+
+	// Initialize public ID encoder if configured
+	if cfg.PublicIDs != nil && cfg.PublicIDs.SecretKey != "" {
+		enc, err := publicid.NewEncoder(cfg.PublicIDs.SecretKey, cfg.PublicIDs.Namespaces)
+		if err != nil {
+			logging.Error("public_id_encoder_init_failed", map[string]any{
+				"error": err.Error(),
+			})
+			return nil, fmt.Errorf("failed to initialize public ID encoder: %w", err)
+		}
+		tmplEngine.SetPublicIDEncoder(enc)
+		workflow.SetTemplateEncoder(enc)
+		logging.Info("public_id_encoder_initialized", map[string]any{
+			"namespaces": len(cfg.PublicIDs.Namespaces),
+		})
+	}
 
 	// Initialize rate limiter if pools are configured
 	if len(cfg.RateLimits) > 0 {
@@ -441,6 +458,7 @@ func (s *Server) setupRoutes(mux *http.ServeMux) {
 				s.config.Server.TrustProxyHeaders,
 				s.config.Server.Version,
 				s.config.Server.BuildTime,
+				s.config.Variables.Values,
 			)
 			// Register with method prefix for Go 1.22+ routing (e.g., "GET /api/items")
 			pattern := trigger.Config.Method + " " + trigger.Config.Path
@@ -1006,7 +1024,7 @@ func (s *Server) executeWorkflowCron(wf *workflow.CompiledWorkflow, trigger *wor
 	}
 
 	// Execute workflow (no HTTP response writer for cron)
-	result := s.workflowExecutor.Execute(ctx, wf, triggerData, requestID, nil)
+	result := s.workflowExecutor.Execute(ctx, wf, triggerData, requestID, nil, s.config.Variables.Values)
 
 	if result.Error != nil {
 		logging.Error("workflow_cron_failed", map[string]any{
@@ -1288,7 +1306,7 @@ type workflowRateLimiterAdapter struct {
 }
 
 // CheckTriggerLimits implements workflow.RateLimiter.
-func (a *workflowRateLimiterAdapter) CheckTriggerLimits(limits []*workflow.CompiledRateLimit, clientIP string, params map[string]any) (bool, int, error) {
+func (a *workflowRateLimiterAdapter) CheckTriggerLimits(limits []*workflow.CompiledRateLimit, rlCtx *workflow.RateLimitContext) (bool, int, error) {
 	if a.limiter == nil || len(limits) == 0 {
 		return true, 0, nil
 	}
@@ -1306,7 +1324,13 @@ func (a *workflowRateLimiterAdapter) CheckTriggerLimits(limits []*workflow.Compi
 	}
 
 	// Build tmpl.Context for key template evaluation
-	ctx := a.ctxBuilder.BuildForRateLimit(clientIP, params)
+	ctx := a.ctxBuilder.BuildForRateLimit(&tmpl.RateLimitData{
+		ClientIP: rlCtx.ClientIP,
+		Params:   rlCtx.Params,
+		Headers:  rlCtx.Headers,
+		Query:    rlCtx.Query,
+		Cookies:  rlCtx.Cookies,
+	})
 
 	allowed, retryAfter, err := a.limiter.Allow(rateLimitConfigs, ctx)
 	if err != nil {

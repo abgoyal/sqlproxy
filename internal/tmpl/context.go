@@ -8,23 +8,32 @@ import (
 	"time"
 )
 
-// Context is the unified data available to all templates
+// Context is the unified data available to all templates.
+// All request data is accessed via the Trigger namespace for consistency
+// with workflow templates: {{.trigger.client_ip}}, {{.trigger.params.X}}, etc.
 type Context struct {
-	// Request metadata (always available)
-	ClientIP  string
-	Method    string
-	Path      string
+	// Unified trigger namespace (matches workflow context structure)
+	Trigger *TriggerContext
+
+	// Metadata (not request-specific)
 	RequestID string
 	Timestamp string
 	Version   string
 
-	// Request data as maps (for strict missing key handling)
-	Header map[string]string // Flattened headers
-	Query  map[string]string // Flattened query params
-	Param  map[string]any    // Typed parameters from handler
-
 	// Query result (only for UsagePostQuery)
 	Result *Result
+}
+
+// TriggerContext provides unified access to request data.
+// Field names use snake_case to match workflow context conventions.
+type TriggerContext struct {
+	Params   map[string]any    `json:"params"`
+	ClientIP string            `json:"client_ip"`
+	Method   string            `json:"method"`
+	Path     string            `json:"path"`
+	Headers  map[string]string `json:"headers"`
+	Query    map[string]string `json:"query"`
+	Cookies  map[string]string `json:"cookies"`
 }
 
 // Result contains query execution results for post-query templates
@@ -53,52 +62,80 @@ func NewContextBuilder(trustProxy bool, version string) *ContextBuilder {
 
 // Build creates a Context from an HTTP request and parsed parameters
 func (b *ContextBuilder) Build(r *http.Request, params map[string]any) *Context {
-	ctx := &Context{
-		ClientIP:  b.resolveClientIP(r),
-		Method:    r.Method,
-		Path:      r.URL.Path,
+	if params == nil {
+		params = make(map[string]any)
+	}
+
+	headers := make(map[string]string)
+	for name := range r.Header {
+		headers[name] = r.Header.Get(name)
+	}
+
+	query := make(map[string]string)
+	for name := range r.URL.Query() {
+		query[name] = r.URL.Query().Get(name)
+	}
+
+	cookies := make(map[string]string)
+	for _, c := range r.Cookies() {
+		cookies[c.Name] = c.Value
+	}
+
+	return &Context{
+		Trigger: &TriggerContext{
+			Params:   params,
+			ClientIP: b.resolveClientIP(r),
+			Method:   r.Method,
+			Path:     r.URL.Path,
+			Headers:  headers,
+			Query:    query,
+			Cookies:  cookies,
+		},
 		RequestID: b.getRequestID(r),
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 		Version:   b.version,
-		Header:    make(map[string]string),
-		Query:     make(map[string]string),
-		Param:     params,
 	}
+}
 
-	if ctx.Param == nil {
-		ctx.Param = make(map[string]any)
-	}
-
-	// Flatten headers (use canonical names)
-	for name := range r.Header {
-		ctx.Header[name] = r.Header.Get(name)
-	}
-
-	// Flatten query params
-	for name := range r.URL.Query() {
-		ctx.Query[name] = r.URL.Query().Get(name)
-	}
-
-	return ctx
+// RateLimitData contains pre-parsed request data for rate limit evaluation.
+type RateLimitData struct {
+	ClientIP string
+	Params   map[string]any
+	Headers  map[string]string
+	Query    map[string]string
+	Cookies  map[string]string
 }
 
 // BuildForRateLimit creates a Context for rate limit key evaluation.
-// Used when we already have parsed clientIP and params (e.g., from workflow handler).
-func (b *ContextBuilder) BuildForRateLimit(clientIP string, params map[string]any) *Context {
-	ctx := &Context{
-		ClientIP:  clientIP,
+func (b *ContextBuilder) BuildForRateLimit(data *RateLimitData) *Context {
+	params := data.Params
+	if params == nil {
+		params = make(map[string]any)
+	}
+	headers := data.Headers
+	if headers == nil {
+		headers = make(map[string]string)
+	}
+	query := data.Query
+	if query == nil {
+		query = make(map[string]string)
+	}
+	cookies := data.Cookies
+	if cookies == nil {
+		cookies = make(map[string]string)
+	}
+
+	return &Context{
+		Trigger: &TriggerContext{
+			Params:   params,
+			ClientIP: data.ClientIP,
+			Headers:  headers,
+			Query:    query,
+			Cookies:  cookies,
+		},
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 		Version:   b.version,
-		Header:    make(map[string]string),
-		Query:     make(map[string]string),
-		Param:     params,
 	}
-
-	if ctx.Param == nil {
-		ctx.Param = make(map[string]any)
-	}
-
-	return ctx
 }
 
 // WithResult adds query result to context (for post-query templates)
@@ -107,18 +144,27 @@ func (c *Context) WithResult(r *Result) *Context {
 	return c
 }
 
-// toMap converts Context to map for template execution
+// toMap converts Context to map for template execution.
+// All request data is under the "trigger" namespace for consistency with workflow templates.
 func (c *Context) toMap(usage Usage) map[string]any {
+	trigger := map[string]any{}
+	if c.Trigger != nil {
+		trigger = map[string]any{
+			"params":    c.Trigger.Params,
+			"client_ip": c.Trigger.ClientIP,
+			"method":    c.Trigger.Method,
+			"path":      c.Trigger.Path,
+			"headers":   c.Trigger.Headers,
+			"query":     c.Trigger.Query,
+			"cookies":   c.Trigger.Cookies,
+		}
+	}
+
 	m := map[string]any{
-		"ClientIP":  c.ClientIP,
-		"Method":    c.Method,
-		"Path":      c.Path,
+		"trigger":   trigger,
 		"RequestID": c.RequestID,
 		"Timestamp": c.Timestamp,
 		"Version":   c.Version,
-		"Header":    c.Header,
-		"Query":     c.Query,
-		"Param":     c.Param,
 	}
 
 	if usage == UsagePostQuery && c.Result != nil {
@@ -167,9 +213,9 @@ func (b *ContextBuilder) getRequestID(r *http.Request) string {
 	return "" // Handler generates if empty
 }
 
-// ExtractParamRefs extracts {{.Param.xyz}} references from a template string
+// ExtractParamRefs extracts {{.trigger.params.xyz}} references from a template string
 func ExtractParamRefs(tmpl string) []string {
-	re := regexp.MustCompile(`\{\{[^}]*\.Param\.([a-zA-Z_][a-zA-Z0-9_]*)[^}]*\}\}`)
+	re := regexp.MustCompile(`\{\{[^}]*\.trigger\.params\.([a-zA-Z_][a-zA-Z0-9_]*)[^}]*\}\}`)
 	matches := re.FindAllStringSubmatch(tmpl, -1)
 
 	refs := make([]string, 0, len(matches))
@@ -183,12 +229,12 @@ func ExtractParamRefs(tmpl string) []string {
 	return refs
 }
 
-// ExtractHeaderRefs extracts {{.Header.xyz}} or {{require .Header "xyz"}} references
+// ExtractHeaderRefs extracts {{.trigger.headers.xyz}} or {{require .trigger.headers "xyz"}} references
 func ExtractHeaderRefs(tmpl string) []string {
-	// Match both .Header.Name and .Header "Name" patterns
+	// Match both .trigger.headers.Name and .trigger.headers "Name" patterns
 	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`\.Header\.([A-Za-z0-9-]+)`),
-		regexp.MustCompile(`\.Header\s+"([^"]+)"`),
+		regexp.MustCompile(`\.trigger\.headers\.([A-Za-z0-9-]+)`),
+		regexp.MustCompile(`\.trigger\.headers\s+"([^"]+)"`),
 	}
 
 	refs := make([]string, 0)
@@ -206,11 +252,11 @@ func ExtractHeaderRefs(tmpl string) []string {
 	return refs
 }
 
-// ExtractQueryRefs extracts {{.Query.xyz}} or {{require .Query "xyz"}} references
+// ExtractQueryRefs extracts {{.trigger.query.xyz}} or {{require .trigger.query "xyz"}} references
 func ExtractQueryRefs(tmpl string) []string {
 	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`\.Query\.([a-zA-Z_][a-zA-Z0-9_]*)`),
-		regexp.MustCompile(`\.Query\s+"([^"]+)"`),
+		regexp.MustCompile(`\.trigger\.query\.([a-zA-Z_][a-zA-Z0-9_]*)`),
+		regexp.MustCompile(`\.trigger\.query\s+"([^"]+)"`),
 	}
 
 	refs := make([]string, 0)

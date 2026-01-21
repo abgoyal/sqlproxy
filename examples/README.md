@@ -61,7 +61,6 @@ Available variables in response templates (Go text/template syntax):
 - `.workflow.request_id` - Request ID
 - `.workflow.name` - Workflow name
 - `.workflow.start_time` - Workflow start time
-- `.Param.<name>` - Shortcut for trigger.params
 
 **Accessing Data:**
 - Use `index` to access specific row/field: `{{index .steps.fetch.data 0 "name"}}`
@@ -70,18 +69,17 @@ Available variables in response templates (Go text/template syntax):
 ### Cache Key Templates
 
 Trigger-level cache keys:
-- `.Param.<name>` - Parameter values
+- `.trigger.params.<name>` - Parameter values
 
 Step-level cache keys (can reference previous step results):
-- `.Param.<name>` - Parameter values
+- `.trigger.params.<name>` - Parameter values
 - `.steps.<name>.data` - Previous step results
 
 ### Rate Limit Key Templates
 
-- `.ClientIP` - Client IP address
-- `.Query.<name>` - Query parameter
-- `.Param.<name>` - Any parameter
-- `.Header.<name>` - HTTP header value
+- `.trigger.client_ip` - Client IP address
+- `.trigger.params.<name>` - Any parameter
+- `.trigger.headers.<name>` - HTTP header value
 
 ### HTTPCall URL and Body Templates
 
@@ -112,37 +110,146 @@ Inside a block step (iterate over data), additional variables are available:
 **String Functions**
 | Function | Description | Example |
 |----------|-------------|---------|
-| `upper` | Convert to uppercase | `{{upper .Param.name}}` |
-| `lower` | Convert to lowercase | `{{lower .Param.name}}` |
-| `trim` | Trim whitespace | `{{trim .Param.value}}` |
-| `replace` | Replace all occurrences | `{{replace .Param.text "old" "new"}}` |
-| `contains` | Check substring | `{{if contains .Param.text "search"}}` |
-| `hasPrefix` | Check prefix | `{{if hasPrefix .Param.path "/"}}` |
-| `hasSuffix` | Check suffix | `{{if hasSuffix .Param.file ".json"}}` |
+| `upper` | Convert to uppercase | `{{upper .trigger.params.name}}` |
+| `lower` | Convert to lowercase | `{{lower .trigger.params.name}}` |
+| `trim` | Trim whitespace | `{{trim .trigger.params.value}}` |
+| `replace` | Replace all occurrences | `{{replace .trigger.params.text "old" "new"}}` |
+| `contains` | Check substring | `{{if contains .trigger.params.text "search"}}` |
+| `hasPrefix` | Check prefix | `{{if hasPrefix .trigger.params.path "/"}}` |
+| `hasSuffix` | Check suffix | `{{if hasSuffix .trigger.params.file ".json"}}` |
 
 **Default Value Functions**
 | Function | Description | Example |
 |----------|-------------|---------|
-| `default` | Default if empty | `{{.Param.status \| default "active"}}` |
-| `coalesce` | First non-empty value | `{{coalesce .Param.a .Param.b "default"}}` |
-| `getOr` | Map access with fallback | `{{getOr .Header "X-Custom" "default"}}` |
+| `default` | Default if empty | `{{.trigger.params.status \| default "active"}}` |
+| `coalesce` | First non-empty value | `{{coalesce .trigger.params.a .trigger.params.b "default"}}` |
+| `getOr` | Map access with fallback | `{{getOr .trigger.headers "X-Custom" "default"}}` |
 
 **Map/Array Access Functions**
 | Function | Description | Example |
 |----------|-------------|---------|
 | `index` | Access array/map element | `{{index .steps.fetch.data 0 "name"}}` |
 | `len` | Length of array/map | `{{len .steps.fetch.data}}` |
-| `require` | Error if key missing | `{{require .Header "Authorization"}}` |
-| `has` | Check if key exists | `{{if has .Header "X-Custom"}}` |
+| `require` | Error if key missing | `{{require .trigger.headers "Authorization"}}` |
+| `has` | Check if key exists | `{{if has .trigger.headers "X-Custom"}}` |
 
 **Math Functions**
 | Function | Description | Example |
 |----------|-------------|---------|
-| `add` | Addition | `{{add .Param.offset 10}}` |
-| `sub` | Subtraction | `{{sub .Param.total 1}}` |
-| `mul` | Multiplication | `{{mul .Param.quantity .Param.price}}` |
-| `div` | Integer division | `{{div .Param.total .Param.count}}` |
-| `mod` | Modulo | `{{mod .Param.index 2}}` |
+| `add` | Addition | `{{add .trigger.params.offset 10}}` |
+| `sub` | Subtraction | `{{sub .trigger.params.total 1}}` |
+| `mul` | Multiplication | `{{mul .trigger.params.quantity .trigger.params.price}}` |
+| `div` | Division | `{{div .trigger.params.total .trigger.params.count}}` |
+| `divOr` | Division with fallback | `{{divOr .a .b 0}}` |
+| `mod` | Modulo | `{{mod .trigger.params.index 2}}` |
+| `modOr` | Modulo with fallback | `{{modOr .a .b 0}}` |
+| `min`, `max` | Minimum/maximum | `{{min .a .b}}` |
+| `round`, `floor`, `ceil`, `trunc`, `abs` | Numeric operations | `{{round .value}}` |
+
+**Type Conversions**
+| Function | Description | Example |
+|----------|-------------|---------|
+| `int64` | Convert to integer | `{{int64 .trigger.query.page}}` |
+| `float` | Convert to float | `{{float .trigger.query.price}}` |
+| `string` | Convert to string | `{{string .steps.fetch.row.id}}` |
+| `bool` | Convert to boolean | `{{bool .trigger.query.active}}` |
+
+**Numeric Formatting**
+| Function | Description | Example |
+|----------|-------------|---------|
+| `formatNumber` | Thousand separators | `{{formatNumber 1234567}}` |
+| `formatPercent` | Format percentage | `{{formatPercent 0.1234}}` |
+| `formatBytes` | Human-readable bytes | `{{formatBytes 1572864}}` |
+| `zeropad` | Zero-pad integer | `{{zeropad 42 5}}` |
+| `pad` | Pad with character | `{{pad 42 5 "0"}}` |
+
+**ID Generation**
+| Function | Description | Example |
+|----------|-------------|---------|
+| `uuid` | UUID v4 | `{{uuid}}` |
+| `uuidShort` | UUID without hyphens | `{{uuidShort}}` |
+| `shortID` | Base62 random ID | `{{shortID 12}}` |
+| `nanoid` | NanoID-style ID | `{{nanoid 21}}` |
+| `publicID` | Encrypted public ID | `{{publicID "user" .id}}` |
+| `privateID` | Decode public ID | `{{privateID "user" .public_id}}` |
+
+**Validation Helpers**
+| Function | Description | Example |
+|----------|-------------|---------|
+| `isEmail` | Validate email | `{{if isEmail .trigger.params.email}}` |
+| `isUUID` | Validate UUID | `{{if isUUID .trigger.params.id}}` |
+| `isURL` | Validate URL | `{{if isURL .trigger.params.link}}` |
+| `isIP`, `isIPv4`, `isIPv6` | Validate IP address | `{{if isIP .trigger.params.addr}}` |
+| `isNumeric` | Check numeric string | `{{if isNumeric .trigger.params.id}}` |
+| `matches` | Regex match | `{{if matches "^[A-Z]{3}$" .trigger.params.code}}` |
+
+**IP Functions**
+| Function | Description | Example |
+|----------|-------------|---------|
+| `ipNetwork` | Get network address | `{{ipNetwork .trigger.client_ip 24}}` |
+| `ipPrefix` | Get IP with prefix | `{{ipPrefix .trigger.client_ip 24}}` |
+| `normalizeIP` | Normalize IP format | `{{normalizeIP .trigger.client_ip}}` |
+
+**Encoding/Hashing**
+| Function | Description | Example |
+|----------|-------------|---------|
+| `urlEncode` | URL encode | `{{urlEncode .trigger.params.query}}` |
+| `urlDecode`, `urlDecodeOr` | URL decode | `{{urlDecodeOr .encoded "fallback"}}` |
+| `base64Encode` | Base64 encode | `{{base64Encode .data}}` |
+| `base64Decode`, `base64DecodeOr` | Base64 decode | `{{base64DecodeOr .encoded "fallback"}}` |
+| `sha256`, `md5` | Hash functions | `{{sha256 .data}}` |
+| `hmacSHA256` | HMAC-SHA256 | `{{hmacSHA256 "secret" .data}}` |
+
+**Date/Time Functions**
+| Function | Description | Example |
+|----------|-------------|---------|
+| `now` | Current timestamp | `{{now}}` or `{{now "2006-01-02"}}` |
+| `formatTime` | Format timestamp | `{{formatTime .timestamp "2006-01-02"}}` |
+| `parseTime`, `parseTimeOr` | Parse to unix | `{{parseTimeOr "2024-01-15" 0 "2006-01-02"}}` |
+| `unixTime` | Current unix timestamp | `{{unixTime}}` |
+
+**Extended String Functions**
+| Function | Description | Example |
+|----------|-------------|---------|
+| `truncate` | Truncate with suffix | `{{truncate .text 100 "..."}}` |
+| `split` | Split string | `{{split "," .list}}` |
+| `join` | Join array | `{{join ", " .items}}` |
+| `substr` | Substring | `{{substr .text 0 10}}` |
+| `quote` | Quote string | `{{quote .value}}` |
+| `sprintf` | Format string | `{{sprintf "%s: %d" .name .count}}` |
+| `repeat` | Repeat string | `{{repeat "=" 10}}` |
+
+**Extended Array/Map Functions**
+| Function | Description | Example |
+|----------|-------------|---------|
+| `first`, `last` | First/last element | `{{first .steps.fetch.data}}` |
+| `pluck` | Extract field from array | `{{pluck .steps.fetch.data "id"}}` |
+| `isEmpty` | Check if empty | `{{if isEmpty .steps.fetch.data}}` |
+| `pick` | Select map keys | `{{pick .row "id" "name"}}` |
+| `omit` | Remove map keys | `{{omit .row "password"}}` |
+| `merge` | Merge maps | `{{merge .defaults .overrides}}` |
+| `dig` | Safe nested access | `{{dig .data "user" "profile" "name"}}` |
+| `keys`, `values` | Map keys/values | `{{keys .data}}` |
+| `typeOf` | Get type name | `{{typeOf .value}}` |
+
+**Header/Cookie Access**
+| Function | Description | Example |
+|----------|-------------|---------|
+| `header` | Get header with default | `{{header .trigger.headers "X-Custom" "default"}}` |
+| `cookie` | Get cookie with default | `{{cookie .trigger.cookies "session" ""}}` |
+
+**Conditional Functions**
+| Function | Description | Example |
+|----------|-------------|---------|
+| `ternary` | Conditional value | `{{ternary .active "yes" "no"}}` |
+| `when` | Value if true, else empty | `{{when .premium "PRO "}}{{.name}}` |
+
+**Comparison/Boolean**
+| Function | Description | Example |
+|----------|-------------|---------|
+| `eq`, `ne` | Equal/not equal | `{{if eq .status "active"}}` |
+| `lt`, `le`, `gt`, `ge` | Numeric comparison | `{{if gt .count 0}}` |
+| `and`, `or`, `not` | Boolean operators | `{{if and .a .b}}` |
 
 ## Path Parameters
 

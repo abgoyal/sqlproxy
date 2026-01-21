@@ -321,7 +321,23 @@ metrics:
 #   - name: "default"
 #     requests_per_second: 100
 #     burst: 200
-#     key: "{{.ClientIP}}"
+#     key: "{{.trigger.client_ip}}"
+
+# Optional: Template variables (available as {{.vars.name}} in templates)
+# variables:
+#   env_file: ".env"              # Load from env file (relative to config)
+#   values:
+#     api_version: "v1"
+#     max_page_size: "${MAX_PAGE:100}"  # Supports ${VAR:default} syntax
+
+# Optional: Encrypted public IDs (prevents PK enumeration)
+# public_ids:
+#   secret_key: "${PUBLIC_ID_SECRET}"  # Required: 32+ character secret
+#   namespaces:
+#     - name: "user"
+#       prefix: "usr"                   # Output: usr_Xk9mPqR3vL2n
+#     - name: "order"
+#       prefix: "ord"
 
 workflows:
   - name: "list_machines"
@@ -1322,7 +1338,7 @@ workflows:
         method: GET
         cache:
           enabled: true
-          key: "dashboard:{{.Param.period | default \"day\"}}"
+          key: "dashboard:{{.trigger.params.period | default \"day\"}}"
           ttl_sec: 60
           evict_cron: "0 0 * * *"  # Optional: evict at midnight
         parameters:
@@ -1334,6 +1350,19 @@ workflows:
 ```
 
 Response includes `X-Cache: HIT` or `X-Cache: MISS` header.
+
+Trigger cache keys have access to request context:
+
+| Template | Description |
+|----------|-------------|
+| `{{.trigger.params.name}}` | URL/query parameters |
+| `{{.trigger.client_ip}}` | Client IP address |
+| `{{.trigger.method}}` | HTTP method (GET, POST, etc.) |
+| `{{.trigger.path}}` | Request path |
+| `{{.trigger.headers.Authorization}}` | HTTP headers (flattened) |
+| `{{.trigger.query.page}}` | Query parameters (flattened) |
+| `{{.trigger.cookies.session}}` | Parsed cookies |
+| `{{.RequestID}}` | Request ID |
 
 **Step-Level Caching** - Cache individual step results (query or httpcall). The workflow still executes, but cached steps return their cached result instead of executing. Useful when multiple endpoints share common queries, or for expensive operations.
 
@@ -1355,7 +1384,7 @@ workflows:
         database: "primary"
         sql: "SELECT * FROM users WHERE id = @user_id"
         cache:
-          key: "user:{{.Param.user_id}}"
+          key: "user:{{.trigger.params.user_id}}"
           ttl_sec: 300
 
       # Stats cached for 1 minute (changes more often)
@@ -1364,7 +1393,7 @@ workflows:
         database: "primary"
         sql: "SELECT COUNT(*) as count FROM orders WHERE user_id = @user_id"
         cache:
-          key: "user_stats:{{.Param.user_id}}"
+          key: "user_stats:{{.trigger.params.user_id}}"
           ttl_sec: 60
 
       - type: response
@@ -1394,7 +1423,7 @@ workflows:
           - pool: "default"  # Reference named pool
           - requests_per_second: 10  # Or inline config
             burst: 20
-            key: "{{.ClientIP}}"
+            key: "{{.trigger.client_ip}}"
     steps:
       # ... steps
 ```
@@ -1422,7 +1451,7 @@ Steps with nested `steps:` are called **blocks**. Blocks provide a scoped namesp
   deadlock_priority: "low"      # Optional: deadlock priority
   json_columns: ["data"]        # Optional: parse JSON columns
   cache:                        # Optional: step-level caching
-    key: "item:{{.Param.id}}"   # Cache key (supports templates)
+    key: "item:{{.trigger.params.id}}"   # Cache key (supports templates)
     ttl_sec: 300                # Time to live in seconds
   on_error: fail                # Optional: fail (default) or continue
   disabled: false               # Optional: skip this step if true
@@ -1445,7 +1474,7 @@ Steps with nested `steps:` are called **blocks**. Blocks provide a scoped namesp
     initial_backoff_sec: 1
     max_backoff_sec: 30
   cache:                               # Optional: step-level caching
-    key: "api:{{.Param.id}}"           # Cache key (supports templates)
+    key: "api:{{.trigger.params.id}}"           # Cache key (supports templates)
     ttl_sec: 300                       # Time to live in seconds
 ```
 
@@ -1490,24 +1519,197 @@ Templates have access to:
 | `.trigger.type` | Trigger type ("http" or "cron") |
 | `.trigger.params` | Parameter values from request/schedule |
 | `.trigger.headers` | HTTP headers (HTTP trigger only) |
+| `.trigger.cookies` | Parsed cookies as map (HTTP trigger only) |
 | `.trigger.method` | HTTP method (HTTP trigger only) |
 | `.trigger.path` | Request path (HTTP trigger only) |
+| `.trigger.client_ip` | Client IP address |
 | `.steps.<name>.data` | Query results (array of rows) |
+| `.steps.<name>.row` | First row (shortcut for `index .data 0`) |
 | `.steps.<name>.count` | Row count |
+| `.steps.<name>.found` | True if count > 0 |
+| `.steps.<name>.empty` | True if count == 0 |
+| `.steps.<name>.one` | True if count == 1 |
+| `.steps.<name>.many` | True if count > 1 |
 | `.steps.<name>.error` | Error message if step failed |
 | `.steps.<name>.status_code` | HTTP status (httpcall only) |
 | `.item` | Current item in block iteration |
+| `.vars` | Global variables from config `variables:` section |
 | `.workflow.request_id` | Request ID |
 | `.workflow.name` | Workflow name |
 
 ### Template Functions
 
+#### JSON and Data Access
+
 | Function | Description | Example |
 |----------|-------------|---------|
 | `json` | JSON encode value | `{{json .steps.fetch.data}}` |
+| `jsonIndent` | JSON encode with indentation | `{{jsonIndent .steps.fetch.row}}` |
 | `index` | Array/map access | `{{index .steps.fetch.data 0 "name"}}` |
-| `default` | Default value if empty | `{{.param | default "all"}}` |
-| `len` | Length of array/string | `{{len .steps.fetch.data}}` |
+| `dig` | Safe nested access (nil-safe) | `{{dig .trigger.params "user" "profile" "name"}}` |
+| `pick` | Select keys from map | `{{pick .steps.user.row "id" "name"}}` |
+| `omit` | Remove keys from map | `{{omit .steps.user.row "password"}}` |
+| `merge` | Merge maps (later wins) | `{{merge .defaults .overrides}}` |
+
+#### Map Access
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `require` | Get value, error if missing | `{{require .trigger.headers "Authorization"}}` |
+| `getOr` | Get value with fallback | `{{getOr .trigger.query "page" "1"}}` |
+| `has` | Check if key exists and non-empty | `{{if has .trigger.headers "X-Api-Key"}}...{{end}}` |
+| `header` | Get header (canonical form) | `{{header .trigger.headers "Content-Type" "text/plain"}}` |
+| `cookie` | Get cookie value | `{{cookie .trigger.cookies "session" ""}}` |
+
+#### Arrays
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `first` | First element | `{{first .steps.fetch.data}}` |
+| `last` | Last element | `{{last .steps.fetch.data}}` |
+| `len` | Length | `{{len .steps.fetch.data}}` |
+| `pluck` | Extract field from array of maps | `{{pluck .steps.fetch.data "id"}}` |
+| `isEmpty` | Check if empty | `{{if isEmpty .steps.fetch.data}}...{{end}}` |
+
+#### Type Conversions
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `int64` | Convert to integer | `{{int64 .trigger.query.page}}` |
+| `float` | Convert to float | `{{float .trigger.query.price}}` |
+| `string` | Convert to string | `{{string .steps.fetch.row.id}}` |
+| `bool` | Convert to boolean | `{{bool .trigger.query.active}}` |
+
+#### Math
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `add`, `sub`, `mul`, `div`, `mod` | Arithmetic | `{{add .a .b}}` |
+| `round`, `floor`, `ceil`, `trunc` | Rounding | `{{round .price}}` |
+| `abs`, `min`, `max` | Comparisons | `{{max .a .b}}` |
+| `zeropad` | Zero-padded number | `{{zeropad .id 6}}` → `000042` |
+| `pad` | Custom padding | `{{pad .code 4 "0"}}` |
+
+#### Strings
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `upper`, `lower` | Case conversion | `{{upper .name}}` |
+| `trim` | Remove whitespace | `{{trim .input}}` |
+| `replace` | Replace all occurrences | `{{replace "_" "-" .slug}}` |
+| `contains`, `hasPrefix`, `hasSuffix` | String tests | `{{if hasPrefix .path "/api"}}...{{end}}` |
+| `truncate` | Truncate with suffix | `{{truncate .desc 100 "..."}}` |
+| `split` | Split string | `{{split "," .tags}}` |
+| `join` | Join array | `{{join ", " .items}}` |
+| `substr` | Substring | `{{substr .code 0 3}}` |
+| `quote` | Quote string | `{{quote .value}}` |
+| `sprintf` | Format string | `{{sprintf "%s-%d" .prefix .id}}` |
+| `repeat` | Repeat string | `{{repeat "*" 5}}` |
+
+#### Validation
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `isEmail` | Valid email format | `{{if isEmail .email}}...{{end}}` |
+| `isUUID` | Valid UUID format | `{{if isUUID .id}}...{{end}}` |
+| `isURL` | Valid URL with scheme | `{{if isURL .link}}...{{end}}` |
+| `isIP`, `isIPv4`, `isIPv6` | Valid IP address | `{{if isIP .addr}}...{{end}}` |
+| `isNumeric` | Numeric string | `{{if isNumeric .input}}...{{end}}` |
+| `matches` | Regex match | `{{if matches "^[A-Z]{2}$" .code}}...{{end}}` |
+
+#### IP Network (for rate limiting)
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `ipNetwork` | Network portion of IP | `{{ipNetwork .trigger.client_ip 24 64}}` -> `192.168.1.0` |
+| `ipPrefix` | Network in CIDR notation | `{{ipPrefix .trigger.client_ip 24}}` -> `192.168.1.0/24` |
+| `normalizeIP` | Normalize IP format | `{{normalizeIP .trigger.client_ip}}` |
+
+#### Encoding and Hashing
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `urlEncode`, `urlDecode` | URL encoding | `{{urlEncode .query}}` |
+| `base64Encode`, `base64Decode` | Base64 encoding | `{{base64Encode .data}}` |
+| `sha256`, `md5` | Hash functions | `{{sha256 .password}}` |
+| `hmacSHA256` | HMAC signature | `{{hmacSHA256 .secret .payload}}` |
+
+#### Date/Time
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `now` | Current time | `{{now "YYYY-MM-DD"}}` |
+| `formatTime` | Format timestamp | `{{formatTime .created_at "YYYY-MM-DD"}}` |
+| `parseTime` | Parse to Unix timestamp | `{{parseTime .date "YYYY-MM-DD"}}` |
+| `unixTime` | Current Unix timestamp | `{{unixTime}}` |
+
+#### ID Generation
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `uuid` / `uuid4` | UUID v4 | `{{uuid}}` → `550e8400-e29b-41d4-...` |
+| `uuidShort` | UUID without hyphens | `{{uuidShort}}` → `550e8400e29b41d4...` |
+| `shortID` | Base62 random ID | `{{shortID 12}}` → `AbC3d5fGh12x` |
+| `nanoid` | NanoID-style ID | `{{nanoid 21}}` → `V1StGXR8_Z5jdHi6B-myT` |
+| `publicID` | Encrypted public ID | `{{publicID "user" .id}}` → `usr_Xk9mPqR3vL2n` |
+| `privateID` | Decode public ID | `{{privateID "user" .public_id}}` → `123` |
+
+**Public ID Configuration:** The `publicID` and `privateID` functions require configuration in the `public_ids` section of your config file. This feature encrypts internal database IDs to prevent enumeration attacks and cross-entity ID reuse.
+
+```yaml
+public_ids:
+  secret_key: "${PUBLIC_ID_SECRET}"  # Required: 32+ char secret
+  namespaces:
+    - name: "user"
+      prefix: "usr"     # Output: usr_Xk9mPqR3vL2n
+    - name: "order"
+      prefix: "ord"     # Output: ord_7Kp2mNq8xL4v
+```
+
+**Secret Key Security:**
+- **Key rotation invalidates all IDs**: Changing `secret_key` will cause all previously generated public IDs to fail decoding. Plan migrations carefully.
+- **Use cryptographically random keys**: Generate with `openssl rand -base64 32` or similar. Never use predictable values (passwords, dictionary words, sequential strings).
+- **Store securely**: Use environment variables or secrets management. Never commit keys to version control.
+- **Minimum 32 characters**: Shorter keys reduce the security of the encryption.
+
+Use `isValidPublicID("namespace", id)` in conditions to validate IDs before decoding:
+
+```yaml
+conditions:
+  valid_id: 'isValidPublicID("user", trigger.params.id)'
+steps:
+  - name: fetch_user
+    type: query
+    params:
+      internal_id: '{{privateID "user" .trigger.params.id}}'
+    sql: "SELECT * FROM users WHERE id = @internal_id"
+    condition: valid_id
+```
+
+#### Conditionals
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `default` | Default if empty | `{{default "N/A" .value}}` or `{{.value \| default "N/A"}}` |
+| `coalesce` | First non-empty value | `{{coalesce .preferred .fallback "default"}}` |
+| `ternary` | Conditional value | `{{ternary .active "yes" "no"}}` |
+| `when` | Value if true, else empty | `{{when .premium "PRO "}}{{.name}}` |
+
+#### Debug
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `typeOf` | Get type name | `{{typeOf .value}}` → `string` |
+| `keys` | Get map keys | `{{keys .data}}` |
+| `values` | Get map values | `{{values .data}}` |
+
+#### Numeric Formatting
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `formatNumber` | With thousand separators | `{{formatNumber 1234567}}` → `1,234,567` |
+| `formatPercent` | As percentage | `{{formatPercent 0.156}}` → `15.6%` |
+| `formatBytes` | Human-readable bytes | `{{formatBytes 1572864}}` → `1.5 MB` |
 
 ### Condition Expressions
 
@@ -1522,6 +1724,34 @@ conditions:
 ```
 
 Available operators: `==`, `!=`, `<`, `>`, `<=`, `>=`, `&&`, `||`, `!`, `in`, `matches`
+
+**Using condition aliases in compound expressions:**
+
+Named condition aliases can be used in compound expressions with `&&`, `||`, and `!`:
+
+```yaml
+conditions:
+  valid_id: 'isValidPublicID("task", trigger.params.public_id)'
+  found: "steps.fetch.count > 0"
+  is_owner: "steps.fetch.row.owner_id == steps.auth.row.id"
+
+steps:
+  - type: response
+    condition: "!valid_id || !found"  # Aliases work in compound expressions
+    status_code: 404
+    template: '{"error": "Not found"}'
+  - type: response
+    condition: "found && is_owner"    # Multiple aliases combined
+    template: '{"data": {{json .steps.fetch.row}}}'
+```
+
+Aliases are expanded at compile time, so `"found && is_owner"` becomes `"(steps.fetch.count > 0) && (steps.fetch.row.owner_id == steps.auth.row.id)"`.
+
+**Available functions:**
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `isValidPublicID` | Check if public ID is valid | `isValidPublicID("user", trigger.params.id)` |
 
 ### Error Handling
 
@@ -1567,17 +1797,17 @@ rate_limits:
   - name: "global"
     requests_per_second: 100
     burst: 200
-    key: "{{.ClientIP}}"
+    key: "{{.trigger.client_ip}}"
 
   - name: "per_user"
     requests_per_second: 10
     burst: 20
-    key: "{{.Header.Authorization}}"
+    key: "{{.trigger.headers.Authorization}}"
 
   - name: "per_tenant"
     requests_per_second: 50
     burst: 100
-    key: "{{getOr .Header \"X-Tenant-ID\" \"default\"}}"
+    key: "{{getOr .trigger.headers \"X-Tenant-ID\" \"default\"}}"
 ```
 
 ### Per-Workflow Rate Limits
@@ -1610,7 +1840,7 @@ workflows:
         rate_limit:
           - requests_per_second: 5           # Inline rate limit
             burst: 10
-            key: "{{.ClientIP}}"
+            key: "{{.trigger.client_ip}}"
     steps:
       - name: fetch
         type: query
@@ -1626,13 +1856,13 @@ Keys determine how requests are grouped for rate limiting. Use Go template synta
 
 | Template | Description |
 |----------|-------------|
-| `{{.ClientIP}}` | Client IP address (handles proxies via X-Forwarded-For) |
-| `{{.Header.Authorization}}` | Authorization header value |
-| `{{.Header.X-API-Key}}` | Custom header value |
-| `{{.Query.tenant}}` | Query parameter value |
-| `{{.Param.user_id}}` | URL parameter value |
-| `{{getOr .Header "X-Tenant" "default"}}` | Header with fallback |
-| `{{.ClientIP}}:{{.Header.X-Tenant-ID}}` | Composite key |
+| `{{.trigger.client_ip}}` | Client IP address (handles proxies via X-Forwarded-For) |
+| `{{.trigger.headers.Authorization}}` | Authorization header value |
+| `{{.trigger.headers.X-API-Key}}` | Custom header value |
+| `{{.trigger.query.tenant}}` | Query parameter value |
+| `{{.trigger.params.user_id}}` | URL parameter value |
+| `{{getOr .trigger.headers "X-Tenant" "default"}}` | Header with fallback |
+| `{{.trigger.client_ip}}:{{.trigger.headers.X-Tenant-ID}}` | Composite key |
 
 ### Rate Limit Behavior
 

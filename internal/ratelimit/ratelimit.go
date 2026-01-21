@@ -140,7 +140,7 @@ func (l *Limiter) Allow(limits []config.RateLimitConfig, ctx *tmpl.Context) (boo
 func inlinePoolKey(limit config.RateLimitConfig) string {
 	key := limit.Key
 	if key == "" {
-		key = "{{.ClientIP}}"
+		key = "{{.trigger.client_ip}}"
 	}
 	return fmt.Sprintf("%d:%d:%s", limit.RequestsPerSecond, limit.Burst, key)
 }
@@ -166,7 +166,7 @@ func (l *Limiter) allowOne(limit config.RateLimitConfig, ctx *tmpl.Context) (boo
 		poolKey := inlinePoolKey(limit)
 		keyTemplate = limit.Key
 		if keyTemplate == "" {
-			keyTemplate = "{{.ClientIP}}"
+			keyTemplate = "{{.trigger.client_ip}}"
 		}
 
 		l.mu.RLock()

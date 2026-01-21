@@ -35,17 +35,27 @@ type HTTPHandler struct {
 	trustProxyHeaders bool
 	version           string
 	buildTime         string
+	variables         map[string]string
+}
+
+// RateLimitContext contains all data available for rate limit key evaluation.
+type RateLimitContext struct {
+	ClientIP string
+	Params   map[string]any
+	Headers  map[string]string
+	Query    map[string]string
+	Cookies  map[string]string
 }
 
 // RateLimiter checks rate limits for workflow triggers.
 type RateLimiter interface {
 	// CheckTriggerLimits checks rate limits for a workflow trigger.
 	// Returns (allowed, retryAfterSec, error).
-	CheckTriggerLimits(limits []*CompiledRateLimit, clientIP string, params map[string]any) (bool, int, error)
+	CheckTriggerLimits(limits []*CompiledRateLimit, ctx *RateLimitContext) (bool, int, error)
 }
 
 // NewHTTPHandler creates a handler for a workflow HTTP trigger.
-func NewHTTPHandler(executor *Executor, wf *CompiledWorkflow, trigger *CompiledTrigger, rateLimiter RateLimiter, cache TriggerCache, trustProxyHeaders bool, version, buildTime string) *HTTPHandler {
+func NewHTTPHandler(executor *Executor, wf *CompiledWorkflow, trigger *CompiledTrigger, rateLimiter RateLimiter, cache TriggerCache, trustProxyHeaders bool, version, buildTime string, variables map[string]string) *HTTPHandler {
 	return &HTTPHandler{
 		executor:          executor,
 		workflow:          wf,
@@ -55,6 +65,7 @@ func NewHTTPHandler(executor *Executor, wf *CompiledWorkflow, trigger *CompiledT
 		trustProxyHeaders: trustProxyHeaders,
 		version:           version,
 		buildTime:         buildTime,
+		variables:         variables,
 	}
 }
 
@@ -84,10 +95,20 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Parse cookies once for reuse in rate limits, cache key, and trigger data
+	cookies := parseCookies(r)
+
 	// Check rate limits
 	clientIP := resolveClientIP(r, h.trustProxyHeaders)
 	if h.rateLimiter != nil && len(h.trigger.RateLimits) > 0 {
-		allowed, retryAfterSec, err := h.rateLimiter.CheckTriggerLimits(h.trigger.RateLimits, clientIP, params)
+		rlCtx := &RateLimitContext{
+			ClientIP: clientIP,
+			Params:   params,
+			Headers:  flattenHeaders(r.Header),
+			Query:    flattenQuery(r.URL.Query()),
+			Cookies:  cookies,
+		}
+		allowed, retryAfterSec, err := h.rateLimiter.CheckTriggerLimits(h.trigger.RateLimits, rlCtx)
 		if err != nil {
 			h.writeError(w, http.StatusInternalServerError, "rate limit check failed", requestID)
 			return
@@ -103,7 +124,7 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cacheEnabled := h.cache != nil && h.trigger.CacheKey != nil
 	if cacheEnabled {
 		var err error
-		cacheKey, err = h.evaluateCacheKey(h.trigger.CacheKey, params)
+		cacheKey, err = h.evaluateCacheKey(h.trigger.CacheKey, r, params, clientIP, cookies, requestID)
 		if err != nil {
 			// Log warning and continue without caching
 			if h.executor != nil && h.executor.Logger() != nil {
@@ -131,6 +152,7 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Type:     "http",
 		Params:   params,
 		Headers:  r.Header,
+		Cookies:  cookies,
 		ClientIP: clientIP,
 		Method:   r.Method,
 		Path:     r.URL.Path,
@@ -145,7 +167,7 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Execute workflow
-	result := h.executor.Execute(r.Context(), h.workflow, triggerData, requestID, responseWriter)
+	result := h.executor.Execute(r.Context(), h.workflow, triggerData, requestID, responseWriter, h.variables)
 
 	// If workflow didn't send a response (no response step executed), send a default response
 	if !result.ResponseSent {
@@ -167,13 +189,61 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *HTTPHandler) evaluateCacheKey(tmpl *template.Template, params map[string]any) (string, error) {
-	data := map[string]any{"Param": params}
+func (h *HTTPHandler) evaluateCacheKey(tmpl *template.Template, r *http.Request, params map[string]any, clientIP string, cookies map[string]string, requestID string) (string, error) {
+	// Build trigger namespace matching response template context
+	trigger := map[string]any{
+		"params":    params,
+		"client_ip": clientIP,
+		"method":    r.Method,
+		"path":      r.URL.Path,
+		"headers":   flattenHeaders(r.Header),
+		"query":     flattenQuery(r.URL.Query()),
+		"cookies":   cookies,
+	}
+	data := map[string]any{
+		"trigger":   trigger,
+		"RequestID": requestID,
+	}
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return "", fmt.Errorf("evaluating trigger cache key: %w", err)
 	}
 	return buf.String(), nil
+}
+
+// flattenHeaders converts http.Header to a simple map, keeping only the first
+// value for each header name. This is a deliberate simplification for template
+// access in cache keys and rate limit contexts.
+//
+// Note: HTTP headers can have multiple values (e.g., multiple X-Forwarded-For
+// entries). This function only returns the first value. For security-sensitive
+// headers like X-Forwarded-For where all values matter for IP spoofing detection,
+// use resolveClientIP which properly parses X-Forwarded-For format.
+func flattenHeaders(h http.Header) map[string]string {
+	m := make(map[string]string, len(h))
+	for k, v := range h {
+		if len(v) > 0 {
+			m[k] = v[0]
+		}
+	}
+	return m
+}
+
+// flattenQuery converts url.Values to a simple map, keeping only the first
+// value for each query parameter. This is a deliberate simplification for
+// template access in cache keys and rate limit contexts.
+//
+// Note: Query parameters can appear multiple times (e.g., ?id=1&id=2). This
+// function only returns the first value. If you need all values for a
+// parameter, access r.URL.Query() directly.
+func flattenQuery(q map[string][]string) map[string]string {
+	m := make(map[string]string, len(q))
+	for k, v := range q {
+		if len(v) > 0 {
+			m[k] = v[0]
+		}
+	}
+	return m
 }
 
 // responseCapture wraps http.ResponseWriter to capture the response for caching.
@@ -386,6 +456,14 @@ func resolveClientIP(r *http.Request, trustProxyHeaders bool) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+func parseCookies(r *http.Request) map[string]string {
+	cookies := make(map[string]string)
+	for _, c := range r.Cookies() {
+		cookies[c.Name] = c.Value
+	}
+	return cookies
 }
 
 // DBManagerAdapter adapts db.Manager to step.DBManager interface.

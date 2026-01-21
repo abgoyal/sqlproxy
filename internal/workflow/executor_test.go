@@ -89,7 +89,7 @@ func TestExecutor_Execute_SimpleQuery(t *testing.T) {
 		Params: map[string]any{},
 	}
 
-	result := exec.Execute(context.Background(), wf, trigger, "req-123", nil)
+	result := exec.Execute(context.Background(), wf, trigger, "req-123", nil, nil)
 
 	if !result.Success {
 		t.Errorf("Success = false, want true")
@@ -131,7 +131,7 @@ func TestExecutor_Execute_DisabledStep(t *testing.T) {
 	}
 
 	trigger := &TriggerData{Type: "http"}
-	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil)
+	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil, nil)
 
 	if !result.Success {
 		t.Errorf("Success = false, want true")
@@ -168,7 +168,7 @@ func TestExecutor_Execute_ConditionalStep(t *testing.T) {
 	}
 
 	trigger := &TriggerData{Type: "http"}
-	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil)
+	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil, nil)
 
 	if queryCalled {
 		t.Error("Query should not be called when condition is false")
@@ -211,7 +211,7 @@ func TestExecutor_Execute_StepFailure_Abort(t *testing.T) {
 	}
 
 	trigger := &TriggerData{Type: "http"}
-	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil)
+	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil, nil)
 
 	if result.Success {
 		t.Error("Success = true, want false")
@@ -257,7 +257,7 @@ func TestExecutor_Execute_StepFailure_Continue(t *testing.T) {
 	}
 
 	trigger := &TriggerData{Type: "http"}
-	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil)
+	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil, nil)
 
 	if !result.Success {
 		t.Error("Success = false, want true (on_error: continue)")
@@ -284,7 +284,7 @@ func TestExecutor_Execute_ResponseStep(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	trigger := &TriggerData{Type: "http"}
-	result := exec.Execute(context.Background(), wf, trigger, "req-1", recorder)
+	result := exec.Execute(context.Background(), wf, trigger, "req-1", recorder, nil)
 
 	if !result.ResponseSent {
 		t.Error("ResponseSent = false, want true")
@@ -324,7 +324,7 @@ func TestExecutor_Execute_HTTPCallStep(t *testing.T) {
 	}
 
 	trigger := &TriggerData{Type: "http"}
-	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil)
+	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil, nil)
 
 	if !result.Success {
 		t.Errorf("Success = false, want true")
@@ -361,7 +361,7 @@ func TestExecutor_Execute_ContextCancellation(t *testing.T) {
 	cancel()
 
 	trigger := &TriggerData{Type: "http"}
-	result := exec.Execute(ctx, wf, trigger, "req-1", nil)
+	result := exec.Execute(ctx, wf, trigger, "req-1", nil, nil)
 
 	if result.Success {
 		t.Error("Success = true, want false for cancelled context")
@@ -385,7 +385,7 @@ func TestExecutor_Execute_WorkflowTimeout(t *testing.T) {
 	}
 
 	trigger := &TriggerData{Type: "http"}
-	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil)
+	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil, nil)
 
 	// Should still succeed since there are no steps
 	if !result.Success {
@@ -404,7 +404,7 @@ func TestExecutor_Execute_HTTPTriggerWithoutResponse(t *testing.T) {
 	}
 
 	trigger := &TriggerData{Type: "http"}
-	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil)
+	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil, nil)
 
 	// Should succeed but warn about no response
 	if !result.Success {
@@ -441,7 +441,7 @@ func TestExecutor_Execute_UnknownStepType(t *testing.T) {
 	}
 
 	trigger := &TriggerData{Type: "http"}
-	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil)
+	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil, nil)
 
 	// Should fail due to unknown step type
 	if result.Success {
@@ -505,7 +505,7 @@ func TestExecutor_Execute_BlockStep(t *testing.T) {
 		return &step.QueryResult{Rows: []map[string]any{}}, nil
 	}
 
-	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil)
+	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil, nil)
 
 	if !result.Success {
 		t.Errorf("Success = false, error = %v", result.Error)
@@ -569,7 +569,7 @@ func TestExecutor_Execute_BlockStep_IterationError_Abort(t *testing.T) {
 	}
 
 	trigger := &TriggerData{Type: "http"}
-	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil)
+	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil, nil)
 
 	// Block should fail
 	blockResult := result.Steps["process"]
@@ -615,7 +615,7 @@ func TestExecutor_Execute_BlockStep_WithoutIteration(t *testing.T) {
 	}
 
 	trigger := &TriggerData{Type: "http"}
-	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil)
+	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil, nil)
 
 	if !result.Success {
 		t.Errorf("Success = false, error = %v", result.Error)
@@ -646,7 +646,7 @@ func TestExecutor_Execute_StepNames_Auto(t *testing.T) {
 	}
 
 	trigger := &TriggerData{Type: "http"}
-	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil)
+	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil, nil)
 
 	if !result.Success {
 		t.Errorf("Success = false, want true")
@@ -677,7 +677,7 @@ func TestExecutor_Execute_LoggingCalls(t *testing.T) {
 	}
 
 	trigger := &TriggerData{Type: "http"}
-	exec.Execute(context.Background(), wf, trigger, "req-1", nil)
+	exec.Execute(context.Background(), wf, trigger, "req-1", nil, nil)
 
 	// Check workflow_started was logged
 	foundStarted := false
@@ -745,8 +745,8 @@ func TestExecutor_StepCache_Hit(t *testing.T) {
 	exec := NewExecutor(db, &mockHTTPClient{}, cache, logger)
 
 	// Create workflow with a cached query step
-	cacheKeyTmpl := template.Must(template.New("cache_key").Parse("user:{{.Param.id}}"))
-	sqlTmpl := template.Must(template.New("sql").Parse("SELECT * FROM users WHERE id = {{.Param.id}}"))
+	cacheKeyTmpl := template.Must(template.New("cache_key").Parse("user:{{.trigger.params.id}}"))
+	sqlTmpl := template.Must(template.New("sql").Parse("SELECT * FROM users WHERE id = {{.trigger.params.id}}"))
 	wf := &CompiledWorkflow{
 		Config: &WorkflowConfig{Name: "test_workflow"},
 		Steps: []*CompiledStep{
@@ -759,7 +759,7 @@ func TestExecutor_StepCache_Hit(t *testing.T) {
 	}
 
 	trigger := &TriggerData{Type: "http", Params: map[string]any{"id": 42}}
-	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil)
+	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil, nil)
 
 	// Should not have executed the query (cache hit)
 	if queryCount != 0 {
@@ -792,13 +792,13 @@ func TestExecutor_StepCache_Miss(t *testing.T) {
 	logger := &testLogger{}
 	exec := NewExecutor(db, &mockHTTPClient{}, cache, logger)
 
-	cacheKeyTmpl := template.Must(template.New("cache_key").Parse("user:{{.Param.id}}"))
-	sqlTmpl := template.Must(template.New("sql").Parse("SELECT * FROM users WHERE id = {{.Param.id}}"))
+	cacheKeyTmpl := template.Must(template.New("cache_key").Parse("user:{{.trigger.params.id}}"))
+	sqlTmpl := template.Must(template.New("sql").Parse("SELECT * FROM users WHERE id = {{.trigger.params.id}}"))
 	wf := &CompiledWorkflow{
 		Config: &WorkflowConfig{Name: "test_workflow"},
 		Steps: []*CompiledStep{
 			{
-				Config:       &StepConfig{Name: "fetch_user", Type: "query", Database: "testdb", Cache: &StepCacheConfig{Key: "user:{{.Param.id}}", TTLSec: 300}},
+				Config:       &StepConfig{Name: "fetch_user", Type: "query", Database: "testdb", Cache: &StepCacheConfig{Key: "user:{{.trigger.params.id}}", TTLSec: 300}},
 				SQLTmpl:      sqlTmpl,
 				CacheKeyTmpl: cacheKeyTmpl,
 			},
@@ -806,7 +806,7 @@ func TestExecutor_StepCache_Miss(t *testing.T) {
 	}
 
 	trigger := &TriggerData{Type: "http", Params: map[string]any{"id": 99}}
-	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil)
+	result := exec.Execute(context.Background(), wf, trigger, "req-1", nil, nil)
 
 	// Should have executed the query (cache miss)
 	if queryCount != 1 {
@@ -847,8 +847,8 @@ func TestExecutor_StepCache_NilCache(t *testing.T) {
 	// Pass nil cache
 	exec := NewExecutor(db, &mockHTTPClient{}, nil, logger)
 
-	cacheKeyTmpl := template.Must(template.New("cache_key").Parse("user:{{.Param.id}}"))
-	sqlTmpl := template.Must(template.New("sql").Parse("SELECT * FROM users WHERE id = {{.Param.id}}"))
+	cacheKeyTmpl := template.Must(template.New("cache_key").Parse("user:{{.trigger.params.id}}"))
+	sqlTmpl := template.Must(template.New("sql").Parse("SELECT * FROM users WHERE id = {{.trigger.params.id}}"))
 	wf := &CompiledWorkflow{
 		Config: &WorkflowConfig{Name: "test_workflow"},
 		Steps: []*CompiledStep{
@@ -861,7 +861,7 @@ func TestExecutor_StepCache_NilCache(t *testing.T) {
 	}
 
 	trigger := &TriggerData{Type: "http", Params: map[string]any{"id": 42}}
-	exec.Execute(context.Background(), wf, trigger, "req-1", nil)
+	exec.Execute(context.Background(), wf, trigger, "req-1", nil, nil)
 
 	// Should execute query even with cache key template (cache is nil)
 	if queryCount != 1 {
@@ -923,7 +923,7 @@ func TestExecutor_ConditionalResponse_NegatedAlias(t *testing.T) {
 	recorder := httptest.NewRecorder()
 
 	trigger := &TriggerData{Type: "http", Params: map[string]any{"id": 999}}
-	result := exec.Execute(context.Background(), wf, trigger, "req-1", recorder)
+	result := exec.Execute(context.Background(), wf, trigger, "req-1", recorder, nil)
 
 	// Check that the "not found" response was sent
 	if !result.ResponseSent {
@@ -1016,7 +1016,7 @@ func TestExecutor_ConditionalResponse_FromConfig(t *testing.T) {
 	// Create a recorder to capture response
 	recorder := httptest.NewRecorder()
 	trigger := &TriggerData{Type: "http", Params: map[string]any{"id": 999}}
-	result := exec.Execute(context.Background(), compiled, trigger, "req-1", recorder)
+	result := exec.Execute(context.Background(), compiled, trigger, "req-1", recorder, nil)
 
 	// Log what happened
 	t.Logf("ResponseSent: %v", result.ResponseSent)
@@ -1041,6 +1041,232 @@ func TestExecutor_ConditionalResponse_FromConfig(t *testing.T) {
 
 	if recorder.Code != 404 {
 		t.Errorf("Expected status 404, got %d", recorder.Code)
+	}
+}
+
+func TestEvaluateStepParams_Integer(t *testing.T) {
+	logger := &testLogger{}
+	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
+
+	// Create step with param that evaluates to an integer
+	paramTmpl := template.Must(template.New("param").Parse("42"))
+	cs := &CompiledStep{
+		Config:     &StepConfig{Name: "test_step"},
+		ParamTmpls: map[string]*template.Template{"user_id": paramTmpl},
+	}
+
+	data := map[string]any{
+		"trigger": map[string]any{"params": map[string]any{}},
+	}
+
+	err := exec.evaluateStepParams(cs, data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	params, ok := data["params"].(map[string]any)
+	if !ok {
+		t.Fatal("params not set in data")
+	}
+
+	userID, ok := params["user_id"]
+	if !ok {
+		t.Fatal("user_id not set in params")
+	}
+
+	// Should be parsed as int64
+	if userID != int64(42) {
+		t.Errorf("user_id = %v (%T), want int64(42)", userID, userID)
+	}
+}
+
+func TestEvaluateStepParams_String(t *testing.T) {
+	logger := &testLogger{}
+	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
+
+	// Create step with param that evaluates to a string (not a valid integer)
+	paramTmpl := template.Must(template.New("param").Parse("hello-world"))
+	cs := &CompiledStep{
+		Config:     &StepConfig{Name: "test_step"},
+		ParamTmpls: map[string]*template.Template{"name": paramTmpl},
+	}
+
+	data := map[string]any{
+		"trigger": map[string]any{"params": map[string]any{}},
+	}
+
+	err := exec.evaluateStepParams(cs, data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	params := data["params"].(map[string]any)
+	name := params["name"]
+
+	// Should remain as string
+	if name != "hello-world" {
+		t.Errorf("name = %v (%T), want \"hello-world\"", name, name)
+	}
+}
+
+func TestEvaluateStepParams_TemplateError(t *testing.T) {
+	logger := &testLogger{}
+	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
+
+	// Create step with param that references a non-existent field
+	// Use missingkey=error option to make template error on missing keys
+	paramTmpl := template.Must(template.New("param").Option("missingkey=error").Parse("{{.nonexistent.field}}"))
+	cs := &CompiledStep{
+		Config:     &StepConfig{Name: "test_step"},
+		ParamTmpls: map[string]*template.Template{"bad_param": paramTmpl},
+	}
+
+	data := map[string]any{
+		"trigger": map[string]any{"params": map[string]any{}},
+	}
+
+	err := exec.evaluateStepParams(cs, data)
+	if err == nil {
+		t.Fatal("expected error for template execution failure")
+	}
+
+	if !strings.Contains(err.Error(), "bad_param") {
+		t.Errorf("error should mention param name, got: %v", err)
+	}
+}
+
+func TestEvaluateStepParams_MultipleParams(t *testing.T) {
+	logger := &testLogger{}
+	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
+
+	// Create step with multiple params
+	cs := &CompiledStep{
+		Config: &StepConfig{Name: "test_step"},
+		ParamTmpls: map[string]*template.Template{
+			"int_param":    template.Must(template.New("int").Parse("123")),
+			"string_param": template.Must(template.New("string").Parse("test-value")),
+			"float_int":    template.Must(template.New("float").Parse("456.0")), // Float with .0 should parse as int
+		},
+	}
+
+	data := map[string]any{
+		"trigger": map[string]any{"params": map[string]any{}},
+	}
+
+	err := exec.evaluateStepParams(cs, data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	params := data["params"].(map[string]any)
+
+	// Check int_param
+	if params["int_param"] != int64(123) {
+		t.Errorf("int_param = %v (%T), want int64(123)", params["int_param"], params["int_param"])
+	}
+
+	// Check string_param
+	if params["string_param"] != "test-value" {
+		t.Errorf("string_param = %v (%T), want \"test-value\"", params["string_param"], params["string_param"])
+	}
+
+	// Check float_int (456.0 should be parsed as int64)
+	if params["float_int"] != int64(456) {
+		t.Errorf("float_int = %v (%T), want int64(456)", params["float_int"], params["float_int"])
+	}
+}
+
+func TestEvaluateStepParams_UsesExistingParamsMap(t *testing.T) {
+	logger := &testLogger{}
+	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
+
+	paramTmpl := template.Must(template.New("param").Parse("new_value"))
+	cs := &CompiledStep{
+		Config:     &StepConfig{Name: "test_step"},
+		ParamTmpls: map[string]*template.Template{"new_param": paramTmpl},
+	}
+
+	// Pre-populate data with existing params
+	existingParams := map[string]any{"existing_key": "existing_value"}
+	data := map[string]any{
+		"params":  existingParams,
+		"trigger": map[string]any{"params": map[string]any{}},
+	}
+
+	err := exec.evaluateStepParams(cs, data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	params := data["params"].(map[string]any)
+
+	// Existing key should be preserved
+	if params["existing_key"] != "existing_value" {
+		t.Errorf("existing_key = %v, want \"existing_value\"", params["existing_key"])
+	}
+
+	// New key should be added
+	if params["new_param"] != "new_value" {
+		t.Errorf("new_param = %v, want \"new_value\"", params["new_param"])
+	}
+}
+
+func TestEvaluateStepParams_TemplateWithData(t *testing.T) {
+	logger := &testLogger{}
+	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
+
+	// Create step with param that uses trigger data
+	paramTmpl := template.Must(template.New("param").Parse("{{.trigger.params.id}}"))
+	cs := &CompiledStep{
+		Config:     &StepConfig{Name: "test_step"},
+		ParamTmpls: map[string]*template.Template{"computed_id": paramTmpl},
+	}
+
+	data := map[string]any{
+		"trigger": map[string]any{
+			"params": map[string]any{"id": "99"},
+		},
+	}
+
+	err := exec.evaluateStepParams(cs, data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	params := data["params"].(map[string]any)
+
+	// Template should evaluate using trigger data, result is "99" which parses as int64
+	if params["computed_id"] != int64(99) {
+		t.Errorf("computed_id = %v (%T), want int64(99)", params["computed_id"], params["computed_id"])
+	}
+}
+
+func TestEvaluateStepParams_EmptyParams(t *testing.T) {
+	logger := &testLogger{}
+	exec := NewExecutor(&mockDBManager{}, &mockHTTPClient{}, nil, logger)
+
+	// Step with no param templates
+	cs := &CompiledStep{
+		Config:     &StepConfig{Name: "test_step"},
+		ParamTmpls: map[string]*template.Template{},
+	}
+
+	data := map[string]any{
+		"trigger": map[string]any{"params": map[string]any{}},
+	}
+
+	err := exec.evaluateStepParams(cs, data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should create empty params map
+	params, ok := data["params"].(map[string]any)
+	if !ok {
+		t.Fatal("params should be set in data")
+	}
+	if len(params) != 0 {
+		t.Errorf("params should be empty, got %v", params)
 	}
 }
 
@@ -1137,4 +1363,46 @@ func TestCompileAndEvaluate_ConditionAliases(t *testing.T) {
 		t.Error("expected '!found' condition to be true when count=0")
 	}
 	t.Logf("!found condition result: %v", notFoundResult)
+}
+
+func TestParseInt64(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    int64
+		wantErr bool
+	}{
+		{"positive integer", "123", 123, false},
+		{"negative integer", "-456", -456, false},
+		{"zero", "0", 0, false},
+		{"with whitespace", "  123  ", 123, false},
+		{"float whole number", "123.0", 123, false},
+		{"large number", "9223372036854775807", 9223372036854775807, false},
+		{"invalid string", "abc", 0, true},
+		{"float with decimals", "123.5", 0, true},
+		{"empty string", "", 0, true},
+		// Boundary tests for int64 range
+		{"min int64", "-9223372036854775808", -9223372036854775808, false},
+		{"min int64 as float", "-9223372036854775808.0", -9223372036854775808, false},
+		// Overflow tests - values outside int64 range
+		{"overflow positive", "9223372036854775808", 0, true},  // max int64 + 1
+		{"overflow negative", "-9223372036854775809", 0, true}, // min int64 - 1
+		{"float overflow positive", "9.3e18", 0, true},         // larger than max int64
+		{"float overflow negative", "-9.3e18", 0, true},        // smaller than min int64
+		// Float precision test - small whole numbers should work
+		{"small float", "1000000.0", 1000000, false},
+		{"negative float", "-1000000.0", -1000000, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseInt64(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parseInt64() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("parseInt64() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }

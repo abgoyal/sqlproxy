@@ -91,8 +91,10 @@ test_list_categories_caching() {
     local first_cache=$(echo "$_response_headers" | grep -i "^X-Cache:" | sed 's/.*: //' | tr -d '\r\n')
     info "First request cache status: $first_cache"
 
+    EXPECT_CACHE_HIT=true
     GET /api/categories
     expect_header "X-Cache" "HIT" "Second request is cache HIT"
+    reset_expectations
 }
 
 test_get_category() {
@@ -212,11 +214,15 @@ test_get_product_caching() {
     header "Get Product - Caching"
 
     # Use a product not fetched before
+    EXPECT_CACHE_MISS=true
     GET /api/products/5
     expect_header "X-Cache" "MISS" "First request is cache MISS"
 
+    EXPECT_CACHE_MISS=false
+    EXPECT_CACHE_HIT=true
     GET /api/products/5
     expect_header "X-Cache" "HIT" "Second request is cache HIT"
+    reset_expectations
 }
 
 test_get_product_not_found() {
@@ -675,7 +681,11 @@ test_stats_step_caching() {
 test_rate_limiting() {
     header "Rate Limiting"
 
-    info "Sending rapid requests to test rate limiting..."
+    # Wait for rate limit bucket to recover from previous tests
+    sleep 2
+
+    info "Sending rapid requests to trigger rate limit..."
+    EXPECT_RATE_LIMIT=true  # We expect 429s in this test
     local rate_limited=false
     # orders pool has burst=20, send 30 to reliably trigger
     for i in $(seq 1 30); do
@@ -696,6 +706,7 @@ test_rate_limiting() {
         TESTS_FAILED=$((TESTS_FAILED + 1))
     fi
 
+    reset_expectations
     sleep 2  # Let rate limit recover
 }
 

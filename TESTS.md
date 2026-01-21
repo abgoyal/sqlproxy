@@ -33,6 +33,10 @@ Run `make test-cover` for current coverage statistics.
 - **TestValidDeadlockPriorities**: TestValidDeadlockPriorities checks the ValidDeadlockPriorities map for low/normal/high
 - **TestValidJournalModes**: TestValidJournalModes checks ValidJournalModes for SQLite: wal/delete/truncate/memory/off
 - **TestValidDatabaseTypes**: TestValidDatabaseTypes checks ValidDatabaseTypes contains sqlserver and sqlite only
+- **TestLoad_VariablesSection**: TestLoad_VariablesSection verifies the variables section with values
+- **TestLoad_VariablesDefaultValues**: TestLoad_VariablesDefaultValues verifies ${VAR:default} syntax works correctly
+- **TestLoad_VariablesEnvFileSupport**: TestLoad_VariablesEnvFileSupport verifies loading variables from env file
+- **TestLoad_VariablesEnvOverridesFile**: TestLoad_VariablesEnvOverridesFile verifies actual env vars override env file values
 - **TestIsArrayType**: TestIsArrayType verifies IsArrayType correctly identifies array types
 - **TestArrayBaseType**: TestArrayBaseType verifies ArrayBaseType extracts the base type from array types
 - **TestValidParameterTypes**: TestValidParameterTypes verifies all expected parameter types are in ValidParameterTypes
@@ -154,6 +158,7 @@ Run `make test-cover` for current coverage statistics.
 - **TestValidateServerCache**: TestValidateServerCache tests server-level cache configuration validation
 - **TestValidateRateLimits**: TestValidateRateLimits tests server-level rate limit pool validation
 - **TestRun_NoWorkflowsWarning**: TestRun_NoWorkflowsWarning tests that empty workflows list generates a warning
+- **TestValidatePublicIDs**: TestValidatePublicIDs tests public ID configuration validation
 
 
 ---
@@ -343,7 +348,7 @@ Run `make test-cover` for current coverage statistics.
 
 ### benchmark_test.go
 
-- **BenchmarkEngine_CacheKey_Simple**: BenchmarkEngine_CacheKey_Simple benchmarks simple cache key like "items:{{.Param.status}}"
+- **BenchmarkEngine_CacheKey_Simple**: BenchmarkEngine_CacheKey_Simple benchmarks simple cache key like "items:{{.trigger.params.status}}"
 - **BenchmarkEngine_CacheKey_MultiParam**: BenchmarkEngine_CacheKey_MultiParam benchmarks cache key with multiple params
 - **BenchmarkEngine_CacheKey_WithDefault**: BenchmarkEngine_CacheKey_WithDefault benchmarks cache key with default fallback
 - **BenchmarkEngine_RateLimit_ClientIP**: BenchmarkEngine_RateLimit_ClientIP benchmarks simple rate limit key
@@ -418,6 +423,51 @@ Run `make test-cover` for current coverage statistics.
 - **TestEngine_ExecuteInline_EmptyResult**: TestEngine_ExecuteInline_EmptyResult tests that empty results are rejected
 - **TestEngine_Execute_TemplateError**: TestEngine_Execute_TemplateError tests template execution error handling
 - **TestEngine_Validate_StructuralError**: TestEngine_Validate_StructuralError tests validation with structural template errors
+- **TestToNumber**: TestToNumber tests the numeric type conversion helper
+- **TestEngine_MathFunctions_Float**: TestEngine_MathFunctions_Float tests math functions with float values
+- **TestEngine_MathFunctions_Extended**: TestEngine_MathFunctions_Extended tests extended math functions
+- **TestEngine_NumericFormatFunctions**: TestEngine_NumericFormatFunctions tests numeric formatting functions
+- **TestHeaderFunc**: TestHeaderFunc tests header access with canonical form handling
+- **TestCookieFunc**: TestCookieFunc tests cookie access with default value
+- **TestArrayHelpers**: TestArrayHelpers tests first, last, len, pluck, isEmpty functions
+- **TestTypeConversions**: TestTypeConversions tests float, string, bool functions
+- **TestEngine_NewFunctionsInTemplates**: TestEngine_NewFunctionsInTemplates tests new functions work in templates
+- **TestIPNetworkFunc**: TestIPNetworkFunc tests the ipNetwork template function
+- **TestIPPrefixFunc**: TestIPPrefixFunc tests the ipPrefix template function
+- **TestNormalizeIPFunc**: TestNormalizeIPFunc tests the normalizeIP template function
+- **TestIPFunctionsInTemplates**: TestIPFunctionsInTemplates tests that IP functions work in actual templates
+- **TestUUIDFunc**: TestUUIDFunc tests UUID generation
+- **TestUUIDShortFunc**: TestUUIDShortFunc tests UUID without hyphens
+- **TestShortIDFunc**: TestShortIDFunc tests short ID generation
+- **TestNanoidFunc**: TestNanoidFunc tests NanoID generation
+- **TestIDFunctionsInTemplates**: TestIDFunctionsInTemplates tests UUID/ID functions in actual templates
+- **TestPublicIDFunc**: TestPublicIDFunc tests the publicID template function
+- **TestPrivateIDFunc**: TestPrivateIDFunc tests the privateID template function
+- **TestPublicPrivateIDRoundTrip**: TestPublicPrivateIDRoundTrip tests encoding and decoding produces original value
+- **TestPublicIDInTemplates**: TestPublicIDInTemplates tests publicID/privateID functions in templates
+- **TestValidationHelpers**: ValidationHelpers
+- **TestEncodingHashingFuncs**: EncodingHashingFuncs
+- **TestStringHelpers**: StringHelpers
+- **TestDateTimeFuncs**: DateTimeFuncs
+- **TestJSONHelpers**: JSONHelpers
+- **TestConditionalHelpers**: ConditionalHelpers
+- **TestDigFunc**: DigFunc
+- **TestDebugHelpers**: DebugHelpers
+- **TestNumericFormatting**: NumericFormatting
+- **TestParseTimeFunc**: ParseTimeFunc
+- **TestMergeFunc**: MergeFunc
+- **TestValuesFunc**: ValuesFunc
+- **TestFormatTimeEdgeCases**: FormatTimeEdgeCases
+- **TestDigFuncEdgeCases**: DigFuncEdgeCases
+- **TestTypeOfNil**: TypeOfNil
+- **TestUrlDecodeError**: UrlDecodeError
+- **TestBase64DecodeError**: Base64DecodeError
+- **TestMatchesInvalidRegex**: MatchesInvalidRegex
+- **TestSubstrEdgeCases**: SubstrEdgeCases
+- **TestTruncateEdgeCases**: TruncateEdgeCases
+- **TestJoinNonSlice**: JoinNonSlice
+- **TestKeysNonMap**: KeysNonMap
+- **TestToIntConversions**: ToIntConversions
 
 
 ---
@@ -496,6 +546,8 @@ Run `make test-cover` for current coverage statistics.
 - **TestContext_SetGetStepResult**: Context SetGetStepResult
 - **TestContext_BuildExprEnv_HTTPTrigger**: Context BuildExprEnv HTTPTrigger
 - **TestContext_BuildExprEnv_CronTrigger**: Context BuildExprEnv CronTrigger
+- **TestContext_BuildExprEnv_WithVariables**: Context BuildExprEnv WithVariables
+- **TestContext_BuildExprEnv_NilVariables**: Context BuildExprEnv NilVariables
 - **TestContext_BuildTemplateData**: Context BuildTemplateData
 - **TestStepResultToMap**: StepResultToMap
 - **TestHeaderToMap**: HeaderToMap
@@ -557,6 +609,10 @@ Run `make test-cover` for current coverage statistics.
 - **TestHTTPHandler_TriggerCache_Hit**: HTTPHandler TriggerCache Hit
 - **TestHTTPHandler_TriggerCache_Miss**: HTTPHandler TriggerCache Miss
 - **TestHTTPHandler_TriggerCache_NilCache**: HTTPHandler TriggerCache NilCache
+- **TestFlattenHeaders**: FlattenHeaders
+- **TestFlattenQuery**: FlattenQuery
+- **TestEvaluateCacheKey_ExpandedContext**: EvaluateCacheKey ExpandedContext
+- **TestParseCookies**: ParseCookies
 
 ### step_test.go
 

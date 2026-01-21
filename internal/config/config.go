@@ -3,9 +3,13 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"regexp"
 
+	"github.com/joho/godotenv"
 	"gopkg.in/yaml.v3"
 
+	"sql-proxy/internal/publicid"
 	"sql-proxy/internal/types"
 	"sql-proxy/internal/workflow"
 )
@@ -18,7 +22,24 @@ type Config struct {
 	Debug      DebugConfig           `yaml:"debug"`       // Debug/pprof endpoints
 	RateLimits []RateLimitPoolConfig `yaml:"rate_limits"` // Named rate limit pools
 	Workflows  []WorkflowConfig      `yaml:"workflows"`   // Workflow definitions
+	Variables  VariablesConfig       `yaml:"variables"`   // Template variables
+	PublicIDs  *PublicIDsConfig      `yaml:"public_ids"`  // Encrypted public IDs
 }
+
+// VariablesConfig defines variables available in templates via {{.vars.name}}
+type VariablesConfig struct {
+	EnvFile string            `yaml:"env_file"` // Optional path to env file (shell format)
+	Values  map[string]string `yaml:"values"`   // Variable values with ${VAR} or ${VAR:default} expansion
+}
+
+// PublicIDsConfig configures encrypted public ID generation to prevent PK enumeration
+type PublicIDsConfig struct {
+	SecretKey  string                     `yaml:"secret_key"` // Required: 32+ character secret key
+	Namespaces []publicid.NamespaceConfig `yaml:"namespaces"` // Namespace definitions with optional prefixes
+}
+
+// NamespaceConfig is re-exported from publicid for convenience
+type NamespaceConfig = publicid.NamespaceConfig
 
 // WorkflowConfig is re-exported from internal/workflow for use in main config
 type WorkflowConfig = workflow.WorkflowConfig
@@ -75,7 +96,7 @@ type RateLimitPoolConfig struct {
 	Name              string `yaml:"name"`                // Pool name (required, must be unique)
 	RequestsPerSecond int    `yaml:"requests_per_second"` // Token refill rate (required)
 	Burst             int    `yaml:"burst"`               // Maximum burst size (required)
-	Key               string `yaml:"key"`                 // Template for bucket key (e.g., "{{.ClientIP}}")
+	Key               string `yaml:"key"`                 // Template for bucket key (e.g., "{{.trigger.client_ip}}")
 }
 
 // RateLimitConfig is a rate limit configuration that can reference a named pool
@@ -214,6 +235,14 @@ func (d *DatabaseConfig) DefaultSessionConfig() SessionConfig {
 }
 
 // Load parses a YAML config file, expanding environment variables.
+// If variables.env_file is specified, those values are loaded first, then
+// actual environment variables override them. Finally, variables.values are added
+// and can be used throughout the config.
+//
+// Variable syntax:
+// - ${VAR} and ${VAR:default}: ONLY valid in variables.values section (imports env vars)
+// - {{.vars.X}}: Valid anywhere to reference imported variables
+//
 // Use validate.Run() for comprehensive validation after loading.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -221,13 +250,201 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// Expand environment variables in the config
-	expanded := os.ExpandEnv(string(data))
+	// First pass: parse to get env_file and variables.values (before expansion)
+	var preConfig struct {
+		Variables struct {
+			EnvFile string            `yaml:"env_file"`
+			Values  map[string]string `yaml:"values"`
+		} `yaml:"variables"`
+	}
+	if err := yaml.Unmarshal(data, &preConfig); err != nil {
+		return nil, fmt.Errorf("failed to pre-parse config: %w", err)
+	}
+
+	// Build the variable lookup: env file values first
+	varLookup := make(map[string]string)
+
+	if preConfig.Variables.EnvFile != "" {
+		envFilePath := preConfig.Variables.EnvFile
+		// Resolve relative paths based on config file location
+		if !filepath.IsAbs(envFilePath) {
+			envFilePath = filepath.Join(filepath.Dir(path), envFilePath)
+		}
+		fileVars, err := loadEnvFile(envFilePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load env file %q (resolved to %q): %w", preConfig.Variables.EnvFile, envFilePath, err)
+		}
+		for k, v := range fileVars {
+			varLookup[k] = v
+		}
+	}
+
+	// Selectively load only referenced environment variables (overrides file values)
+	// This avoids loading ALL env vars into memory - only those needed for config
+	if preConfig.Variables.Values != nil {
+		for _, v := range preConfig.Variables.Values {
+			// Find all ${VAR} or ${VAR:default} references
+			matches := varPattern.FindAllStringSubmatch(v, -1)
+			for _, match := range matches {
+				if len(match) >= 2 {
+					varName := match[1]
+					if val, ok := os.LookupEnv(varName); ok {
+						varLookup[varName] = val
+					}
+				}
+			}
+		}
+	}
+
+	// Expand ${VAR} syntax ONLY within variables.values entries
+	// This allows importing environment variables into the config namespace
+	if preConfig.Variables.Values != nil {
+		for k, v := range preConfig.Variables.Values {
+			preConfig.Variables.Values[k] = expandVars(v, varLookup)
+		}
+	}
+
+	// Pre-render {{.vars.X}} templates in the raw YAML before parsing.
+	// This allows template syntax to work in numeric fields (like server.port)
+	// which would otherwise fail YAML parsing with unexpanded template strings.
+	expandedYAML := preRenderVarsTemplates(string(data), preConfig.Variables.Values)
 
 	var cfg Config
-	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {
+	if err := yaml.Unmarshal([]byte(expandedYAML), &cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
+	// Copy the expanded variables.values to the final config
+	// The YAML parse only sees the original ${VAR} syntax, not the expanded values
+	cfg.Variables.Values = preConfig.Variables.Values
+
+	// Render static templates in must-be-static fields
+	// These fields support {{.vars.X}} syntax and pure template functions
+	// Most .vars references are already expanded by preRenderVarsTemplates,
+	// but this handles more complex template expressions (function calls, etc.)
+	if err := renderStaticFields(&cfg); err != nil {
+		return nil, err
+	}
+
 	return &cfg, nil
+}
+
+// renderStaticFields renders {{}} templates in config fields that must be resolved at load time.
+// Returns an error if any template references dynamic paths (like .trigger or .steps).
+func renderStaticFields(cfg *Config) error {
+	staticCtx := &StaticContext{
+		Vars: cfg.Variables.Values,
+	}
+	if staticCtx.Vars == nil {
+		staticCtx.Vars = make(map[string]string)
+	}
+
+	// Database connection fields
+	for i := range cfg.Databases {
+		db := &cfg.Databases[i]
+		var err error
+
+		if db.Host, err = RenderStaticTemplate(db.Host, staticCtx); err != nil {
+			return fmt.Errorf("databases[%d].host: %w", i, err)
+		}
+		if db.User, err = RenderStaticTemplate(db.User, staticCtx); err != nil {
+			return fmt.Errorf("databases[%d].user: %w", i, err)
+		}
+		if db.Password, err = RenderStaticTemplate(db.Password, staticCtx); err != nil {
+			return fmt.Errorf("databases[%d].password: %w", i, err)
+		}
+		if db.Database, err = RenderStaticTemplate(db.Database, staticCtx); err != nil {
+			return fmt.Errorf("databases[%d].database: %w", i, err)
+		}
+		if db.Path, err = RenderStaticTemplate(db.Path, staticCtx); err != nil {
+			return fmt.Errorf("databases[%d].path: %w", i, err)
+		}
+	}
+
+	// Public IDs secret key
+	if cfg.PublicIDs != nil {
+		var err error
+		if cfg.PublicIDs.SecretKey, err = RenderStaticTemplate(cfg.PublicIDs.SecretKey, staticCtx); err != nil {
+			return fmt.Errorf("public_ids.secret_key: %w", err)
+		}
+	}
+
+	// Parameter defaults in workflows
+	for i := range cfg.Workflows {
+		wf := &cfg.Workflows[i]
+		for j := range wf.Triggers {
+			trigger := &wf.Triggers[j]
+			for k := range trigger.Parameters {
+				param := &trigger.Parameters[k]
+				if param.Default != "" {
+					var err error
+					if param.Default, err = RenderStaticTemplate(param.Default, staticCtx); err != nil {
+						return fmt.Errorf("workflows[%d].triggers[%d].parameters[%d].default: %w", i, j, k, err)
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// loadEnvFile parses a .env file using godotenv.
+// Supports: KEY=value, KEY="value", KEY='value', # comments, export prefix,
+// escaped quotes within values, and multi-line values in quotes.
+func loadEnvFile(path string) (map[string]string, error) {
+	return godotenv.Read(path)
+}
+
+// varPattern matches ${VAR} and ${VAR:default} syntax
+var varPattern = regexp.MustCompile(`\$\{([^}:]+)(?::([^}]*))?\}`)
+
+// expandVars expands ${VAR} and ${VAR:default} patterns using the lookup map.
+func expandVars(s string, lookup map[string]string) string {
+	return varPattern.ReplaceAllStringFunc(s, func(match string) string {
+		parts := varPattern.FindStringSubmatch(match)
+		if len(parts) < 2 {
+			return match
+		}
+
+		varName := parts[1]
+		defaultVal := ""
+		if len(parts) >= 3 {
+			defaultVal = parts[2]
+		}
+
+		if val, ok := lookup[varName]; ok {
+			return val
+		}
+		return defaultVal
+	})
+}
+
+// varsTemplatePattern matches simple {{.vars.X}} references.
+// Only matches direct .vars.NAME references, not function calls or complex expressions.
+var varsTemplatePattern = regexp.MustCompile(`\{\{\s*\.vars\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}`)
+
+// preRenderVarsTemplates expands simple {{.vars.X}} templates in the raw YAML string.
+// This is done BEFORE YAML parsing to allow template syntax in numeric fields.
+// Only simple variable references are expanded; complex expressions (function calls, etc.)
+// are left for renderStaticFields to handle after YAML parsing.
+func preRenderVarsTemplates(yamlStr string, vars map[string]string) string {
+	if vars == nil {
+		vars = make(map[string]string)
+	}
+
+	return varsTemplatePattern.ReplaceAllStringFunc(yamlStr, func(match string) string {
+		parts := varsTemplatePattern.FindStringSubmatch(match)
+		if len(parts) < 2 {
+			return match
+		}
+
+		varName := parts[1]
+		if val, ok := vars[varName]; ok {
+			return val
+		}
+		// Variable not found - leave the template unexpanded
+		// This will be caught as an error during renderStaticFields or at runtime
+		return match
+	})
 }

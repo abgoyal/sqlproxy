@@ -2,21 +2,39 @@
 # Exercises ALL sql-proxy features for exhaustive E2E testing
 #
 # Features covered:
+# - Variables config with ${VAR:default} for env import, {{.vars.X}} for usage
+# - Public IDs for secure ID exposure (prevents enumeration)
+# - Step-level computed params for ID decoding
 # - Path parameters (/api/tasks/{id})
 # - All HTTP methods (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS)
-# - Trigger-level caching (X-Cache headers)
-# - Step-level caching
-# - Rate limiting (429 responses)
-# - Conditional responses (404 for missing)
-# - Template functions (string, math, default)
-# - Array/JSON parameters
-# - Blocks with iteration
-# - on_error: continue
+# - Trigger-level and step-level caching with expanded cache key context
+# - Rate limiting with composite keys
+# - Conditional responses using step shortcuts (.found, .row, .empty)
+# - Template functions (string, math, date/time, formatting, validation, IDs)
+# - Array/JSON parameters with batch operations
+# - Blocks with iteration and on_error handling
 # - Disabled steps
+
+# Variables for configuration values
+# ${VAR:default} syntax is ONLY valid in this section - imports env vars
+# Use {{.vars.X}} everywhere else to reference these values
+variables:
+  values:
+    # Environment variables (imported via ${VAR} syntax)
+    PORT: "${PORT:8080}"
+    DB_PATH: "${DB_PATH::memory:}"
+    PUBLIC_ID_SECRET: "${PUBLIC_ID_SECRET:taskapp-secret-key-for-testing-32ch}"
+    # Application constants
+    DEFAULT_LIMIT: "10"
+    MAX_LIMIT: "100"
+    CACHE_TTL_SHORT: "30"
+    CACHE_TTL_MEDIUM: "60"
+    CACHE_TTL_LONG: "300"
+    APP_NAME: "TaskApp"
 
 server:
   host: "127.0.0.1"
-  port: ${PORT}
+  port: {{.vars.PORT}}
   default_timeout_sec: 30
   max_timeout_sec: 300
   cache:
@@ -24,17 +42,31 @@ server:
     max_size_mb: 256
     default_ttl_sec: 300
 
+# Public ID configuration for secure external IDs
+public_ids:
+  secret_key: "{{.vars.PUBLIC_ID_SECRET}}"
+  namespaces:
+    - name: task
+      prefix: tsk
+    - name: category
+      prefix: cat
+
 databases:
   - name: "main"
     type: "sqlite"
-    path: "${DB_PATH}"
+    path: "{{.vars.DB_PATH}}"
     readonly: false
 
 rate_limits:
   - name: "create_limit"
     requests_per_second: 2
     burst: 3
-    key: "{{.ClientIP}}"
+    key: "create_{{.trigger.client_ip}}"
+
+  - name: "search_limit"
+    requests_per_second: 10
+    burst: 20
+    key: "search_{{.trigger.client_ip}}"
 
 logging:
   level: "debug"
@@ -68,7 +100,9 @@ workflows:
             status TEXT DEFAULT 'pending',
             priority INTEGER DEFAULT 0,
             due_date TEXT,
-            created_at TEXT DEFAULT (datetime('now'))
+            tags TEXT DEFAULT '[]',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
           )
       - name: create_categories
         type: query
@@ -76,27 +110,61 @@ workflows:
         sql: |
           CREATE TABLE IF NOT EXISTS categories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE
+            name TEXT NOT NULL UNIQUE,
+            color TEXT DEFAULT '#808080',
+            created_at TEXT DEFAULT (datetime('now'))
           )
       - name: seed_categories
         type: query
         database: "main"
         sql: |
-          INSERT OR IGNORE INTO categories (id, name) VALUES
-            (1, 'Work'),
-            (2, 'Personal'),
-            (3, 'Shopping')
+          INSERT OR IGNORE INTO categories (id, name, color) VALUES
+            (1, 'Work', '#3b82f6'),
+            (2, 'Personal', '#10b981'),
+            (3, 'Shopping', '#f59e0b'),
+            (4, 'Health', '#ef4444'),
+            (5, 'Finance', '#8b5cf6')
       - name: seed_tasks
         type: query
         database: "main"
         sql: |
-          INSERT OR IGNORE INTO tasks (id, title, description, status, priority) VALUES
-            (1, 'Review PR', 'Review the pull request for feature X', 'pending', 2),
-            (2, 'Write tests', 'Add unit tests for new module', 'in_progress', 1),
-            (3, 'Deploy', 'Deploy to production', 'completed', 3)
+          -- Using relative dates to ensure consistent test behavior over time
+          -- Task 1: future due date (not overdue)
+          -- Task 2: past due date, in_progress (overdue)
+          -- Task 3: past due date, completed (not overdue)
+          -- Task 4: no due date (not overdue)
+          -- Task 5: past due date, pending (overdue)
+          INSERT OR IGNORE INTO tasks (id, title, description, status, priority, tags, due_date) VALUES
+            (1, 'Review PR', 'Review the pull request for feature X', 'pending', 2, '["code","review"]', date('now', '+7 days')),
+            (2, 'Write tests', 'Add unit tests for new module', 'in_progress', 1, '["testing"]', date('now', '-5 days')),
+            (3, 'Deploy', 'Deploy to production', 'completed', 3, '["devops","production"]', date('now', '-10 days')),
+            (4, 'Documentation', 'Update API documentation', 'pending', 1, '["docs"]', NULL),
+            (5, 'Bug fix', 'Fix login validation issue', 'pending', 2, '["bug","urgent"]', date('now', '-3 days'))
+      - name: create_cron_status
+        type: query
+        database: "main"
+        sql: |
+          CREATE TABLE IF NOT EXISTS cron_status (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            execution_count INTEGER DEFAULT 0,
+            last_run TEXT,
+            message TEXT
+          )
+      - name: seed_cron_status
+        type: query
+        database: "main"
+        sql: |
+          INSERT OR IGNORE INTO cron_status (id, execution_count, last_run, message)
+          VALUES (1, 0, NULL, 'initialized')
       - type: response
         status_code: 201
-        template: '{"success": true, "message": "Database initialized"}'
+        template: |
+          {
+            "success": true,
+            "message": "Database initialized",
+            "app": "{{.vars.APP_NAME}}",
+            "timestamp": "{{now | formatTime "2006-01-02T15:04:05Z07:00"}}"
+          }
 
   # ============================================================================
   # COLLECTION ENDPOINTS - /api/tasks
@@ -120,7 +188,7 @@ workflows:
           - name: "limit"
             type: "int"
             required: false
-            default: "10"
+            default: "{{.vars.DEFAULT_LIMIT}}"
           - name: "page"
             type: "int"
             required: false
@@ -130,12 +198,23 @@ workflows:
         type: query
         database: "main"
         sql: |
-          SELECT id, title, description, status, priority, due_date, created_at
+          SELECT id, title, description, status, priority, due_date, tags, created_at, updated_at,
+            CASE
+              WHEN priority >= 3 THEN 'Critical'
+              WHEN priority = 2 THEN 'High'
+              WHEN priority = 1 THEN 'Medium'
+              ELSE 'Low'
+            END AS priority_label,
+            CASE
+              WHEN due_date IS NOT NULL AND due_date < date('now') AND status != 'completed' THEN 1
+              ELSE 0
+            END AS is_overdue
           FROM tasks
           WHERE (@status = '' OR status = @status)
             AND (@priority = 0 OR priority = @priority)
           ORDER BY priority DESC, created_at DESC
           LIMIT @limit OFFSET ((@page - 1) * @limit)
+        json_columns: ["tags"]
       - name: count
         type: query
         database: "main"
@@ -146,11 +225,28 @@ workflows:
       - type: response
         template: |
           {
-            "tasks": {{json .steps.fetch.data}},
+            "tasks": [
+              {{- range $i, $task := .steps.fetch.data -}}
+              {{if $i}},{{end}}
+              {
+                "public_id": "{{publicID "task" (int64 $task.id)}}",
+                "title": {{json $task.title}},
+                "description": {{json $task.description}},
+                "status": {{json $task.status}},
+                "priority": {{$task.priority}},
+                "priority_label": {{json $task.priority_label}},
+                "due_date": {{json $task.due_date}},
+                "tags": {{json $task.tags}},
+                "created_at": {{json $task.created_at}},
+                "is_overdue": {{eq $task.is_overdue 1}}
+              }
+              {{- end -}}
+            ],
             "count": {{.steps.fetch.count}},
-            "total": {{index .steps.count.data 0 "total"}},
+            "total": {{.steps.count.row.total}},
             "page": {{.trigger.params.page}},
-            "limit": {{.trigger.params.limit}}
+            "limit": {{.trigger.params.limit}},
+            "has_more": {{gt .steps.count.row.total (mul .trigger.params.page .trigger.params.limit)}}
           }
 
   # POST /api/tasks - Create task (with rate limiting)
@@ -179,6 +275,10 @@ workflows:
             type: "string"
             required: false
             default: ""
+          - name: "tags"
+            type: "json"
+            required: false
+            default: "[]"
         rate_limit:
           - pool: "create_limit"
     steps:
@@ -186,19 +286,24 @@ workflows:
         type: query
         database: "main"
         sql: |
-          INSERT INTO tasks (title, description, status, priority, due_date)
-          VALUES (@title, @description, @status, @priority, NULLIF(@due_date, ''))
-      - name: get_id
+          INSERT INTO tasks (title, description, status, priority, due_date, tags)
+          VALUES (@title, @description, @status, @priority, NULLIF(@due_date, ''), @tags)
+      - name: get_created
         type: query
         database: "main"
-        sql: "SELECT last_insert_rowid() AS id"
+        sql: "SELECT * FROM tasks WHERE id = last_insert_rowid()"
       - type: response
         status_code: 201
         template: |
           {
             "success": true,
-            "id": {{index .steps.get_id.data 0 "id"}},
-            "title": "{{.trigger.params.title}}"
+            "task": {
+              "public_id": "{{publicID "task" (int64 .steps.get_created.row.id)}}",
+              "title": {{json .steps.get_created.row.title}},
+              "status": {{json .steps.get_created.row.status}},
+              "priority": {{.steps.get_created.row.priority}},
+              "created_at": {{json .steps.get_created.row.created_at}}
+            }
           }
 
   # HEAD /api/tasks - Check if tasks exist
@@ -221,7 +326,8 @@ workflows:
           WHERE (@status = '' OR status = @status)
       - type: response
         headers:
-          X-Total-Count: "{{index .steps.count.data 0 \"cnt\"}}"
+          X-Total-Count: '{{.steps.count.row.cnt}}'
+          X-Has-Tasks: '{{ternary (gt .steps.count.row.cnt 0) "true" "false"}}'
         template: "{}"
 
   # OPTIONS /api/tasks - List available methods
@@ -239,9 +345,10 @@ workflows:
 
   # ============================================================================
   # SINGLE RESOURCE ENDPOINTS - /api/tasks/{id}
+  # Uses computed params to decode public ID to internal ID
   # ============================================================================
 
-  # GET /api/tasks/{id} - Get single task with caching
+  # GET /api/tasks/{id} - Get single task by public ID with caching
   - name: "get_task"
     triggers:
       - type: http
@@ -249,30 +356,59 @@ workflows:
         method: GET
         parameters:
           - name: "id"
-            type: "int"
+            type: "string"
             required: true
         cache:
           enabled: true
-          key: "task:{{.Param.id}}"
-          ttl_sec: 60
+          key: "task:{{.trigger.params.id}}:{{.trigger.client_ip}}"
+          ttl_sec: 2  # Intentionally short for testing cache behavior
     conditions:
-      found: "steps.fetch.count > 0"
+      valid_id: 'isValidPublicID("task", trigger.params.id)'
+      found: "steps.fetch.found"
     steps:
       - name: fetch
         type: query
         database: "main"
-        sql: "SELECT * FROM tasks WHERE id = @id"
+        condition: "valid_id"
+        params:
+          internal_id: '{{privateID "task" .trigger.params.id}}'
+        sql: |
+          SELECT *,
+            CASE
+              WHEN priority >= 3 THEN 'Critical'
+              WHEN priority = 2 THEN 'High'
+              WHEN priority = 1 THEN 'Medium'
+              ELSE 'Low'
+            END AS priority_label,
+            CASE
+              WHEN due_date IS NOT NULL AND due_date < date('now') AND status != 'completed' THEN 1
+              ELSE 0
+            END AS is_overdue
+          FROM tasks WHERE id = @internal_id
+        json_columns: ["tags"]
       - type: response
-        condition: "found"
+        condition: "valid_id && found"
         template: |
           {
-            "task": {{json (index .steps.fetch.data 0)}},
+            "task": {
+              "public_id": "{{publicID "task" (int64 .steps.fetch.row.id)}}",
+              "title": {{json .steps.fetch.row.title}},
+              "description": {{json .steps.fetch.row.description}},
+              "status": {{json .steps.fetch.row.status}},
+              "priority": {{.steps.fetch.row.priority}},
+              "priority_label": {{json .steps.fetch.row.priority_label}},
+              "due_date": {{json .steps.fetch.row.due_date}},
+              "is_overdue": {{eq .steps.fetch.row.is_overdue 1}},
+              "tags": {{json .steps.fetch.row.tags}},
+              "created_at": {{json .steps.fetch.row.created_at}},
+              "updated_at": {{json .steps.fetch.row.updated_at}}
+            },
             "cache_hit": {{.steps.fetch.cache_hit}}
           }
       - type: response
-        condition: "!found"
+        condition: "!valid_id || !found"
         status_code: 404
-        template: '{"error": "Task not found", "id": {{.trigger.params.id}}}'
+        template: '{"error": "Task not found", "public_id": {{json .trigger.params.id}}}'
 
   # PUT /api/tasks/{id} - Replace task
   - name: "replace_task"
@@ -282,7 +418,7 @@ workflows:
         method: PUT
         parameters:
           - name: "id"
-            type: "int"
+            type: "string"
             required: true
           - name: "title"
             type: "string"
@@ -297,33 +433,41 @@ workflows:
             type: "int"
             required: true
     conditions:
-      exists: "steps.check.count > 0"
+      valid_id: 'isValidPublicID("task", trigger.params.id)'
+      exists: "steps.check.found"
     steps:
       - name: check
         type: query
         database: "main"
-        sql: "SELECT 1 FROM tasks WHERE id = @id"
+        condition: "valid_id"
+        params:
+          internal_id: '{{privateID "task" .trigger.params.id}}'
+        sql: "SELECT id, title FROM tasks WHERE id = @internal_id"
       - name: update
         type: query
         database: "main"
-        condition: "exists"
+        condition: "valid_id && exists"
+        params:
+          internal_id: '{{privateID "task" .trigger.params.id}}'
         sql: |
           UPDATE tasks
           SET title = @title, description = @description,
-              status = @status, priority = @priority
-          WHERE id = @id
+              status = @status, priority = @priority,
+              updated_at = datetime('now')
+          WHERE id = @internal_id
       - type: response
-        condition: "exists"
+        condition: "valid_id && exists"
         template: |
           {
             "success": true,
-            "id": {{.trigger.params.id}},
-            "title": "{{.trigger.params.title | upper}}"
+            "public_id": {{json .trigger.params.id}},
+            "title": {{json .trigger.params.title}},
+            "previous_title": {{json .steps.check.row.title}}
           }
       - type: response
-        condition: "!exists"
+        condition: "!valid_id || !exists"
         status_code: 404
-        template: '{"error": "Task not found", "id": {{.trigger.params.id}}}'
+        template: '{"error": "Task not found", "public_id": {{json .trigger.params.id}}}'
 
   # PATCH /api/tasks/{id} - Partial update
   - name: "update_task"
@@ -333,7 +477,7 @@ workflows:
         method: PATCH
         parameters:
           - name: "id"
-            type: "int"
+            type: "string"
             required: true
           - name: "title"
             type: "string"
@@ -349,30 +493,37 @@ workflows:
             required: false
             default: "-1"
     conditions:
-      exists: "steps.check.count > 0"
+      valid_id: 'isValidPublicID("task", trigger.params.id)'
+      exists: "steps.check.found"
     steps:
       - name: check
         type: query
         database: "main"
-        sql: "SELECT 1 FROM tasks WHERE id = @id"
+        condition: "valid_id"
+        params:
+          internal_id: '{{privateID "task" .trigger.params.id}}'
+        sql: "SELECT 1 FROM tasks WHERE id = @internal_id"
       - name: update
         type: query
         database: "main"
-        condition: "exists"
+        condition: "valid_id && exists"
+        params:
+          internal_id: '{{privateID "task" .trigger.params.id}}'
         sql: |
           UPDATE tasks
           SET title = COALESCE(NULLIF(@title, ''), title),
               description = COALESCE(NULLIF(@description, ''), description),
               status = COALESCE(NULLIF(@status, ''), status),
-              priority = CASE WHEN @priority >= 0 THEN @priority ELSE priority END
-          WHERE id = @id
+              priority = CASE WHEN @priority >= 0 THEN @priority ELSE priority END,
+              updated_at = datetime('now')
+          WHERE id = @internal_id
       - type: response
-        condition: "exists"
-        template: '{"success": true, "id": {{.trigger.params.id}}}'
+        condition: "valid_id && exists"
+        template: '{"success": true, "public_id": {{json .trigger.params.id}}}'
       - type: response
-        condition: "!exists"
+        condition: "!valid_id || !exists"
         status_code: 404
-        template: '{"error": "Task not found", "id": {{.trigger.params.id}}}'
+        template: '{"error": "Task not found", "public_id": {{json .trigger.params.id}}}'
 
   # DELETE /api/tasks/{id} - Delete task
   - name: "delete_task"
@@ -382,27 +533,40 @@ workflows:
         method: DELETE
         parameters:
           - name: "id"
-            type: "int"
+            type: "string"
             required: true
     conditions:
-      exists: "steps.check.count > 0"
+      valid_id: 'isValidPublicID("task", trigger.params.id)'
+      exists: "steps.check.found"
     steps:
       - name: check
         type: query
         database: "main"
-        sql: "SELECT 1 FROM tasks WHERE id = @id"
+        condition: "valid_id"
+        params:
+          internal_id: '{{privateID "task" .trigger.params.id}}'
+        sql: "SELECT id, title FROM tasks WHERE id = @internal_id"
       - name: delete
         type: query
         database: "main"
-        condition: "exists"
-        sql: "DELETE FROM tasks WHERE id = @id"
+        condition: "valid_id && exists"
+        params:
+          internal_id: '{{privateID "task" .trigger.params.id}}'
+        sql: "DELETE FROM tasks WHERE id = @internal_id"
       - type: response
-        condition: "exists"
-        template: '{"success": true, "deleted_id": {{.trigger.params.id}}}'
+        condition: "valid_id && exists"
+        template: |
+          {
+            "success": true,
+            "deleted": {
+              "public_id": {{json .trigger.params.id}},
+              "title": {{json .steps.check.row.title}}
+            }
+          }
       - type: response
-        condition: "!exists"
+        condition: "!valid_id || !exists"
         status_code: 404
-        template: '{"error": "Task not found", "id": {{.trigger.params.id}}}'
+        template: '{"error": "Task not found", "public_id": {{json .trigger.params.id}}}'
 
   # HEAD /api/tasks/{id} - Check if task exists
   - name: "task_exists"
@@ -412,22 +576,27 @@ workflows:
         method: HEAD
         parameters:
           - name: "id"
-            type: "int"
+            type: "string"
             required: true
     conditions:
-      found: "steps.check.count > 0"
+      valid_id: 'isValidPublicID("task", trigger.params.id)'
+      found: "steps.check.found"
     steps:
       - name: check
         type: query
         database: "main"
-        sql: "SELECT 1 FROM tasks WHERE id = @id"
+        condition: "valid_id"
+        params:
+          internal_id: '{{privateID "task" .trigger.params.id}}'
+        sql: "SELECT status FROM tasks WHERE id = @internal_id"
       - type: response
-        condition: "found"
+        condition: "valid_id && found"
         headers:
           X-Exists: "true"
+          X-Status: "{{.steps.check.row.status}}"
         template: "{}"
       - type: response
-        condition: "!found"
+        condition: "!valid_id || !found"
         status_code: 404
         headers:
           X-Exists: "false"
@@ -441,7 +610,7 @@ workflows:
         method: OPTIONS
         parameters:
           - name: "id"
-            type: "int"
+            type: "string"
             required: true
     steps:
       - type: response
@@ -483,10 +652,11 @@ workflows:
           {
             "success": true,
             "created": {{.steps.batch.success_count}},
-            "failed": {{.steps.batch.failure_count}}
+            "failed": {{.steps.batch.failure_count}},
+            "total_attempted": {{add .steps.batch.success_count .steps.batch.failure_count}}
           }
 
-  # DELETE /api/tasks/batch - Batch delete tasks by IDs
+  # DELETE /api/tasks/batch - Batch delete tasks by public IDs
   - name: "batch_delete"
     triggers:
       - type: http
@@ -500,13 +670,16 @@ workflows:
       - name: batch
         iterate:
           over: "trigger.params.ids"
-          as: "task_id"
+          as: "public_id"
           on_error: continue
         steps:
           - name: del
             type: query
             database: "main"
-            sql: "DELETE FROM tasks WHERE id = @task_id"
+            condition: 'isValidPublicID("task", iter.public_id)'
+            params:
+              internal_id: '{{privateID "task" .iter.public_id}}'
+            sql: "DELETE FROM tasks WHERE id = @internal_id"
       - type: response
         template: |
           {
@@ -537,18 +710,47 @@ workflows:
             COUNT(*) as total,
             SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
             SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress,
-            SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed
+            SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+            SUM(CASE WHEN due_date < date('now') AND status != 'completed' THEN 1 ELSE 0 END) as overdue
           FROM tasks
-      - name: priority_avg
+      - name: priority_stats
         type: query
         database: "main"
-        sql: "SELECT AVG(priority) as avg_priority FROM tasks"
+        sql: |
+          SELECT
+            AVG(priority) as avg_priority,
+            MAX(priority) as max_priority,
+            MIN(priority) as min_priority
+          FROM tasks
+      - name: recent
+        type: query
+        database: "main"
+        sql: "SELECT id, title, status FROM tasks ORDER BY created_at DESC LIMIT 3"
       - type: response
         template: |
           {
-            "stats": {{json (index .steps.counts.data 0)}},
-            "avg_priority": {{index .steps.priority_avg.data 0 "avg_priority" | default 0}},
-            "counts_cached": {{.steps.counts.cache_hit}}
+            "stats": {
+              "total": {{.steps.counts.row.total}},
+              "by_status": {
+                "pending": {{.steps.counts.row.pending}},
+                "in_progress": {{.steps.counts.row.in_progress}},
+                "completed": {{.steps.counts.row.completed}}
+              },
+              "overdue": {{.steps.counts.row.overdue}},
+              "completion_rate": "{{formatPercent (div (float64 .steps.counts.row.completed) (max 1.0 (float64 .steps.counts.row.total))) 1}}"
+            },
+            "priority": {
+              "average": {{.steps.priority_stats.row.avg_priority | default 0 | printf "%.2f"}},
+              "max": {{.steps.priority_stats.row.max_priority | default 0}},
+              "min": {{.steps.priority_stats.row.min_priority | default 0}}
+            },
+            "recent_tasks": [
+              {{- range $i, $task := .steps.recent.data -}}
+              {{if $i}},{{end}}{"public_id": "{{publicID "task" (int64 $task.id)}}", "title": {{json $task.title}}, "status": {{json $task.status}}}
+              {{- end -}}
+            ],
+            "counts_cached": {{.steps.counts.cache_hit}},
+            "generated_at": "{{now | formatTime "2006-01-02T15:04:05Z07:00"}}"
           }
 
   # ============================================================================
@@ -569,6 +771,10 @@ workflows:
             type: "bool"
             required: false
             default: "false"
+        rate_limit:
+          - pool: "search_limit"
+    conditions:
+      has_results: "steps.search.found"
     steps:
       - name: search
         type: query
@@ -587,9 +793,22 @@ workflows:
       - type: response
         template: |
           {
-            "query": "{{.trigger.params.q | lower | trim}}",
-            "results": {{json .steps.search.data}},
-            "count": {{.steps.search.count}}
+            "query": {{json (.trigger.params.q | lower | trim)}},
+            "case_sensitive": {{.trigger.params.case_sensitive}},
+            "results": [
+              {{- range $i, $task := .steps.search.data -}}
+              {{if $i}},{{end}}
+              {
+                "public_id": "{{publicID "task" (int64 $task.id)}}",
+                "title": {{json $task.title}},
+                "description_preview": {{json (truncate $task.description 100 "...")}},
+                "status": {{json $task.status}},
+                "priority": {{$task.priority}}
+              }
+              {{- end -}}
+            ],
+            "count": {{.steps.search.count}},
+            "empty": {{.steps.search.empty}}
           }
 
   # ============================================================================
@@ -604,41 +823,53 @@ workflows:
         method: POST
         parameters:
           - name: "id"
-            type: "int"
+            type: "string"
             required: true
     conditions:
-      exists: "steps.check.count > 0"
+      valid_id: 'isValidPublicID("task", trigger.params.id)'
+      exists: "steps.check.found"
     steps:
       - name: check
         type: query
         database: "main"
-        sql: "SELECT status FROM tasks WHERE id = @id"
+        condition: "valid_id"
+        params:
+          internal_id: '{{privateID "task" .trigger.params.id}}'
+        sql: "SELECT id, status, title FROM tasks WHERE id = @internal_id"
       - name: update
         type: query
         database: "main"
-        condition: "exists"
-        sql: "UPDATE tasks SET status = 'completed' WHERE id = @id"
+        condition: "valid_id && exists"
+        params:
+          internal_id: '{{privateID "task" .trigger.params.id}}'
+        sql: "UPDATE tasks SET status = 'completed', updated_at = datetime('now') WHERE id = @internal_id"
       - name: audit
         type: query
         database: "main"
-        condition: "exists"
+        condition: "valid_id && exists"
         disabled: true
+        params:
+          internal_id: '{{privateID "task" .trigger.params.id}}'
         sql: |
           INSERT INTO audit_log (task_id, action, timestamp)
-          VALUES (@id, 'completed', datetime('now'))
+          VALUES (@internal_id, 'completed', datetime('now'))
       - type: response
-        condition: "exists"
+        condition: "valid_id && exists"
         template: |
           {
             "success": true,
-            "id": {{.trigger.params.id}},
-            "previous_status": "{{index .steps.check.data 0 "status"}}",
-            "new_status": "completed"
+            "task": {
+              "public_id": {{json .trigger.params.id}},
+              "title": {{json .steps.check.row.title}},
+              "previous_status": {{json .steps.check.row.status}},
+              "new_status": "completed"
+            },
+            "completed_at": "{{now | formatTime "2006-01-02T15:04:05Z07:00"}}"
           }
       - type: response
-        condition: "!exists"
+        condition: "!valid_id || !exists"
         status_code: 404
-        template: '{"error": "Task not found", "id": {{.trigger.params.id}}}'
+        template: '{"error": "Task not found", "public_id": {{json .trigger.params.id}}}'
 
   # ============================================================================
   # CATEGORIES - Additional entity for testing
@@ -650,13 +881,26 @@ workflows:
       - type: http
         path: "/api/categories"
         method: GET
+        cache:
+          enabled: true
+          key: "categories:list"
+          ttl_sec: 300
     steps:
       - name: fetch
         type: query
         database: "main"
-        sql: "SELECT id, name FROM categories ORDER BY name"
+        sql: "SELECT id, name, color, created_at FROM categories ORDER BY name"
       - type: response
-        template: '{"categories": {{json .steps.fetch.data}}, "count": {{.steps.fetch.count}}}'
+        template: |
+          {
+            "categories": [
+              {{- range $i, $cat := .steps.fetch.data -}}
+              {{if $i}},{{end}}
+              {"public_id": "{{publicID "category" (int64 $cat.id)}}", "name": {{json $cat.name}}, "color": {{json $cat.color}}}
+              {{- end -}}
+            ],
+            "count": {{.steps.fetch.count}}
+          }
 
   # GET /api/categories/{id} - Get single category
   - name: "get_category"
@@ -666,19 +910,450 @@ workflows:
         method: GET
         parameters:
           - name: "id"
-            type: "int"
+            type: "string"
             required: true
     conditions:
-      found: "steps.fetch.count > 0"
+      valid_id: 'isValidPublicID("category", trigger.params.id)'
+      found: "steps.fetch.found"
     steps:
       - name: fetch
         type: query
         database: "main"
-        sql: "SELECT * FROM categories WHERE id = @id"
+        condition: "valid_id"
+        params:
+          internal_id: '{{privateID "category" .trigger.params.id}}'
+        sql: "SELECT * FROM categories WHERE id = @internal_id"
       - type: response
-        condition: "found"
-        template: '{"category": {{json (index .steps.fetch.data 0)}}}'
+        condition: "valid_id && found"
+        template: |
+          {
+            "category": {
+              "public_id": {{json .trigger.params.id}},
+              "name": {{json .steps.fetch.row.name}},
+              "color": {{json .steps.fetch.row.color}},
+              "created_at": {{json .steps.fetch.row.created_at}}
+            }
+          }
       - type: response
-        condition: "!found"
+        condition: "!valid_id || !found"
         status_code: 404
-        template: '{"error": "Category not found", "id": {{.trigger.params.id}}}'
+        template: '{"error": "Category not found", "public_id": {{json .trigger.params.id}}}'
+
+  # ============================================================================
+  # VALIDATION DEMO - Using new validation functions
+  # ============================================================================
+
+  # POST /api/tasks/validate - Validate task data without creating
+  - name: "validate_task"
+    triggers:
+      - type: http
+        path: "/api/tasks/validate"
+        method: POST
+        parameters:
+          - name: "title"
+            type: "string"
+            required: true
+          - name: "due_date"
+            type: "string"
+            required: false
+            default: ""
+          - name: "priority"
+            type: "int"
+            required: false
+            default: "0"
+          - name: "email"
+            type: "string"
+            required: false
+            default: ""
+    steps:
+      - type: response
+        template: |
+          {{- $title_valid := gt (len .trigger.params.title) 0 -}}
+          {{- $priority_valid := and (ge .trigger.params.priority 0) (le .trigger.params.priority 10) -}}
+          {
+            "valid": {{and $title_valid $priority_valid}},
+            "validation": {
+              "title": {
+                "value": {{json .trigger.params.title}},
+                "length": {{len .trigger.params.title}},
+                "valid": {{$title_valid}},
+                "trimmed": {{json (trim .trigger.params.title)}}
+              },
+              "due_date": {
+                "value": {{json .trigger.params.due_date}},
+                "provided": {{ne .trigger.params.due_date ""}},
+                "matches_format": {{matches "^\\d{4}-\\d{2}-\\d{2}$" .trigger.params.due_date}}
+              },
+              "priority": {
+                "value": {{.trigger.params.priority}},
+                "in_range": {{$priority_valid}}
+              },
+              "email": {
+                "value": {{json .trigger.params.email}},
+                "provided": {{ne .trigger.params.email ""}},
+                "valid_format": {{isEmail .trigger.params.email}}
+              }
+            },
+            "validated_at": "{{now | formatTime "2006-01-02T15:04:05Z07:00"}}"
+          }
+
+  # ============================================================================
+  # ID GENERATION DEMO - Using new ID functions
+  # ============================================================================
+
+  # GET /api/demo/ids - Demonstrate various ID generation functions
+  - name: "demo_ids"
+    triggers:
+      - type: http
+        path: "/api/demo/ids"
+        method: GET
+    steps:
+      - type: response
+        template: |
+          {
+            "generated_ids": {
+              "uuid": "{{uuid}}",
+              "uuid_short": "{{uuidShort}}",
+              "short_id_8": "{{shortID 8}}",
+              "short_id_16": "{{shortID 16}}",
+              "nanoid": "{{nanoid}}",
+              "nanoid_custom": "{{nanoid 12}}"
+            },
+            "app_info": {
+              "name": "{{.vars.APP_NAME}}",
+              "default_limit": "{{.vars.DEFAULT_LIMIT}}",
+              "max_limit": "{{.vars.MAX_LIMIT}}"
+            },
+            "request_info": {
+              "client_ip": "{{.trigger.client_ip}}",
+              "method": "{{.trigger.method}}",
+              "path": "{{.trigger.path}}",
+              "request_id": "{{.trigger.request_id}}"
+            },
+            "string_functions": {
+              "upper": "{{upper "hello world"}}",
+              "split_join": "{{join "-" (split "," "a,b,c")}}",
+              "contains": {{contains "hello world" "world"}},
+              "hasPrefix": {{hasPrefix "task_123" "task_"}},
+              "hasSuffix": {{hasSuffix "report.pdf" ".pdf"}},
+              "repeat": "{{repeat "*" 5}}",
+              "substr": "{{substr "hello world" 0 5}}"
+            },
+            "encoding_functions": {
+              "urlEncode": "{{urlEncode "hello world&foo=bar"}}",
+              "urlDecode": "{{urlDecode "hello+world%26foo%3Dbar"}}",
+              "base64_encode": "{{base64Encode "secret data"}}",
+              "base64_decode": "{{base64Decode "c2VjcmV0IGRhdGE="}}",
+              "sha256_hex": "{{sha256 "test input"}}",
+              "md5_hex": "{{md5 "test input"}}",
+              "hmac_sha256": "{{hmacSHA256 "secret-key" "message to sign"}}"
+            },
+            "validation_functions": {
+              "is_email_valid": {{isEmail "user@example.com"}},
+              "is_email_invalid": {{isEmail "not-an-email"}},
+              "is_uuid_valid": {{isUUID "550e8400-e29b-41d4-a716-446655440000"}},
+              "is_uuid_invalid": {{isUUID "not-a-uuid"}},
+              "is_url_valid": {{isURL "https://example.com/path?query=1"}},
+              "is_url_invalid": {{isURL "not a url"}},
+              "is_ip_v4": {{isIPv4 "192.168.1.1"}},
+              "is_ip_v6": {{isIPv6 "::1"}},
+              "is_ip_any": {{isIP "192.168.1.1"}},
+              "is_numeric_int": {{isNumeric "12345"}},
+              "is_numeric_float": {{isNumeric "123.45"}},
+              "is_numeric_invalid": {{isNumeric "12.34.56"}}
+            },
+            "ip_network_functions": {
+              "client_ip": "{{.trigger.client_ip}}",
+              "normalized_ip": "{{normalizeIP .trigger.client_ip}}",
+              "ip_network_24": "{{ipNetwork .trigger.client_ip 24}}",
+              "ip_prefix_16": "{{ipPrefix .trigger.client_ip 16}}"
+            },
+            "formatting_functions": {
+              "formatNumber": "{{formatNumber 1234567.89 2}}",
+              "formatBytes": "{{formatBytes 1536000}}",
+              "zeropad": "{{zeropad 42 5}}",
+              "pad": "{{pad "X" 5 "-"}}"
+            },
+            "datetime_functions": {
+              "unix_timestamp": {{unixTime}},
+              "parsed_unix": {{parseTime "2024-12-25" "2006-01-02"}}
+            },
+            "debug_functions": {
+              "type_of_string": "{{typeOf "hello"}}",
+              "type_of_number": "{{typeOf 42}}",
+              "type_of_bool": "{{typeOf true}}"
+            }
+          }
+
+  # ============================================================================
+  # HEADER AND COOKIE DEMO - Using header() and cookie() functions
+  # ============================================================================
+
+  # GET /api/demo/request - Demonstrate header and cookie access
+  - name: "demo_request"
+    triggers:
+      - type: http
+        path: "/api/demo/request"
+        method: GET
+    steps:
+      - type: response
+        template: |
+          {
+            "headers": {
+              "user_agent": {{json (header .trigger.headers "User-Agent" "unknown")}},
+              "accept": {{json (header .trigger.headers "Accept" "*/*")}},
+              "custom_header": {{json (header .trigger.headers "X-Custom-Header" "not provided")}},
+              "auth_present": {{ne (header .trigger.headers "Authorization" "") ""}}
+            },
+            "cookies": {
+              "session_id": {{json (cookie .trigger.cookies "session_id" "none")}},
+              "theme": {{json (cookie .trigger.cookies "theme" "light")}},
+              "has_session": {{ne (cookie .trigger.cookies "session_id" "") ""}}
+            },
+            "request": {
+              "method": "{{.trigger.method}}",
+              "path": "{{.trigger.path}}",
+              "client_ip": "{{.trigger.client_ip}}"
+            }
+          }
+
+  # ============================================================================
+  # ARRAY AND JSON HELPERS DEMO
+  # ============================================================================
+
+  # GET /api/demo/helpers - Demonstrate array and JSON helper functions
+  - name: "demo_helpers"
+    triggers:
+      - type: http
+        path: "/api/demo/helpers"
+        method: GET
+    steps:
+      - name: tasks
+        type: query
+        database: "main"
+        sql: "SELECT id, title, status, priority FROM tasks ORDER BY priority DESC LIMIT 5"
+      - type: response
+        condition: "steps.tasks.found"
+        template: |
+          {
+            "array_helpers": {
+              "first_task": {{json (first .steps.tasks.data)}},
+              "last_task": {{json (last .steps.tasks.data)}},
+              "all_titles": {{json (pluck .steps.tasks.data "title")}},
+              "all_statuses": {{json (pluck .steps.tasks.data "status")}},
+              "is_empty": {{isEmpty .steps.tasks.data}},
+              "count": {{len .steps.tasks.data}}
+            },
+            "json_helpers": {
+              "picked_fields": {{json (pick (first .steps.tasks.data) "title" "status")}},
+              "omitted_fields": {{json (omit (first .steps.tasks.data) "id")}},
+              "nested_access": {{json (dig .steps "tasks" "row" "title")}},
+              "merged": {{json (merge (pick (first .steps.tasks.data) "title") (pick (first .steps.tasks.data) "status"))}},
+              "keys_of_first": {{json (keys (first .steps.tasks.data))}},
+              "values_of_first": {{json (values (pick (first .steps.tasks.data) "id" "priority"))}}
+            },
+            "conditional_helpers": {
+              "ternary_true": {{json (ternary true "yes" "no")}},
+              "ternary_false": {{json (ternary false "yes" "no")}},
+              "when_true": {{json (when true "shows")}},
+              "when_false": {{json (when false "hidden")}},
+              "coalesce_value": {{json (coalesce "provided" "fallback")}},
+              "coalesce_empty": {{json (coalesce "" "fallback")}}
+            }
+          }
+      - type: response
+        condition: "steps.tasks.empty"
+        template: |
+          {
+            "array_helpers": {
+              "first_task": null,
+              "last_task": null,
+              "all_titles": [],
+              "all_statuses": [],
+              "is_empty": true,
+              "count": 0
+            },
+            "json_helpers": {
+              "picked_fields": null,
+              "omitted_fields": null,
+              "nested_access": null,
+              "merged": {},
+              "keys_of_first": null,
+              "values_of_first": null
+            },
+            "conditional_helpers": {
+              "ternary_true": "yes",
+              "ternary_false": "no",
+              "when_true": "shows",
+              "when_false": "",
+              "coalesce_value": "provided",
+              "coalesce_empty": "fallback"
+            },
+            "note": "No tasks found - initialize database first with POST /api/init"
+          }
+
+  # ============================================================================
+  # CRON TRIGGER DEMONSTRATION
+  # ============================================================================
+
+  # Cron workflow that runs every minute and increments a counter
+  # This demonstrates scheduled background tasks
+  - name: "cron_heartbeat"
+    triggers:
+      - type: cron
+        schedule: "* * * * *"
+    steps:
+      - name: update
+        type: query
+        database: "main"
+        sql: |
+          INSERT INTO cron_status (id, execution_count, last_run, message)
+          VALUES (1, 1, datetime('now'), 'cron executed')
+          ON CONFLICT(id) DO UPDATE SET
+            execution_count = execution_count + 1,
+            last_run = datetime('now'),
+            message = 'cron executed'
+
+  # GET /api/cron/status - Read cron execution status
+  - name: "get_cron_status"
+    triggers:
+      - type: http
+        path: "/api/cron/status"
+        method: GET
+    steps:
+      - name: status
+        type: query
+        database: "main"
+        sql: "SELECT * FROM cron_status WHERE id = 1"
+      - type: response
+        template: |
+          {
+            "cron_enabled": true,
+            "schedule": "* * * * *",
+            "description": "Runs every minute",
+            "execution_count": {{.steps.status.row.execution_count}},
+            "last_run": {{json .steps.status.row.last_run}},
+            "message": {{json .steps.status.row.message}}
+          }
+
+  # POST /api/cron/trigger - Manually trigger the cron logic (for testing)
+  - name: "trigger_cron_manually"
+    triggers:
+      - type: http
+        path: "/api/cron/trigger"
+        method: POST
+    steps:
+      - name: update
+        type: query
+        database: "main"
+        sql: |
+          UPDATE cron_status
+          SET execution_count = execution_count + 1,
+              last_run = datetime('now'),
+              message = 'manually triggered'
+          WHERE id = 1
+      - name: result
+        type: query
+        database: "main"
+        sql: "SELECT * FROM cron_status WHERE id = 1"
+      - type: response
+        template: |
+          {
+            "triggered": true,
+            "execution_count": {{.steps.result.row.execution_count}},
+            "last_run": {{json .steps.result.row.last_run}},
+            "message": {{json .steps.result.row.message}}
+          }
+
+  # ============================================================================
+  # HTTPCALL STEP DEMONSTRATION
+  # ============================================================================
+
+  # GET /api/demo/httpcall - Demonstrate HTTPCall step with external API
+  # Uses httpbin.org which is a free service for testing HTTP requests
+  - name: "demo_httpcall"
+    triggers:
+      - type: http
+        path: "/api/demo/httpcall"
+        method: GET
+    steps:
+      # Call httpbin.org/ip to get external IP
+      - name: ip_check
+        type: httpcall
+        url: "https://httpbin.org/ip"
+        http_method: GET
+        parse: "json"
+        timeout_sec: 10
+      # Call httpbin.org/get to demonstrate request reflection
+      - name: get_check
+        type: httpcall
+        url: "https://httpbin.org/get?demo=true&app={{.vars.APP_NAME}}"
+        http_method: GET
+        headers:
+          Accept: "application/json"
+          X-Request-ID: "{{.workflow.request_id}}"
+          X-Custom-Header: "demo-value"
+        parse: "json"
+        timeout_sec: 10
+      - type: response
+        condition: "steps.ip_check.status_code >= 200 && steps.ip_check.status_code < 300 && steps.get_check.status_code >= 200 && steps.get_check.status_code < 300"
+        template: |
+          {
+            "httpcall_demo": true,
+            "external_ip": "{{.steps.ip_check.row.origin}}",
+            "httpbin_response": {
+              "status_code": {{.steps.get_check.status_code}},
+              "args_received": {{json .steps.get_check.row.args}},
+              "custom_header_echoed": "{{dig .steps.get_check.row "headers" "X-Custom-Header" "not found"}}"
+            }
+          }
+      - type: response
+        condition: "steps.ip_check.status_code < 200 || steps.ip_check.status_code >= 300 || steps.get_check.status_code < 200 || steps.get_check.status_code >= 300"
+        status_code: 502
+        template: |
+          {
+            "error": "External service unavailable",
+            "note": "This demo requires httpbin.org to be accessible",
+            "ip_check_status": {{.steps.ip_check.status_code}},
+            "get_check_status": {{.steps.get_check.status_code}}
+          }
+
+  # POST /api/demo/httpcall/echo - Demonstrate POST with body
+  - name: "demo_httpcall_post"
+    triggers:
+      - type: http
+        path: "/api/demo/httpcall/echo"
+        method: POST
+        parameters:
+          - name: "message"
+            type: "string"
+            required: true
+    steps:
+      - name: echo
+        type: httpcall
+        url: "https://httpbin.org/post"
+        http_method: POST
+        headers:
+          Content-Type: "application/json"
+        body: |
+          {"message": {{json .trigger.params.message}}, "timestamp": "{{now | formatTime "2006-01-02T15:04:05Z07:00"}}"}
+        parse: "json"
+        timeout_sec: 10
+      - type: response
+        condition: "steps.echo.status_code >= 200 && steps.echo.status_code < 300"
+        template: |
+          {
+            "echo_demo": true,
+            "sent_message": {{json .trigger.params.message}},
+            "httpbin_received": {{json .steps.echo.row.json}},
+            "httpbin_status": {{.steps.echo.status_code}}
+          }
+      - type: response
+        condition: "steps.echo.status_code < 200 || steps.echo.status_code >= 300"
+        status_code: 502
+        template: |
+          {
+            "error": "External service unavailable",
+            "note": "This demo requires httpbin.org to be accessible",
+            "echo_status": {{.steps.echo.status_code}}
+          }

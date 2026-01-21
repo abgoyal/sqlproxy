@@ -66,7 +66,7 @@ workflows:
             required: true
         cache:
           enabled: true
-          key: "user:{{.Param.id}}"  # Cache per user ID
+          key: "user:{{.trigger.params.id}}"  # Cache per user ID
           ttl_sec: 300               # 5 minutes
     steps:
       - name: fetch
@@ -96,7 +96,7 @@ workflows:
             required: false
         cache:
           enabled: true
-          key: "search:{{.Param.query}}:{{.Param.page}}:{{.Param.status | default \"all\"}}"
+          key: "search:{{.trigger.params.query}}:{{.trigger.params.page}}:{{.trigger.params.status | default \"all\"}}"
           ttl_sec: 120
     steps:
       - name: search
@@ -151,7 +151,7 @@ workflows:
         database: "main"
         sql: "SELECT @id AS id, 'Item ' || @id AS name, datetime('now') AS fetched_at"
         cache:
-          key: "item:{{.Param.id}}"  # Cache key from request params
+          key: "item:{{.trigger.params.id}}"  # Cache key from request params
           ttl_sec: 600               # 10 minutes
       - type: response
         template: |
@@ -182,7 +182,7 @@ workflows:
         database: "main"
         sql: "SELECT @id AS id, 'User ' || @id AS name"
         cache:
-          key: "user:{{.Param.id}}"
+          key: "user:{{.trigger.params.id}}"
           ttl_sec: 300
 
       # Second step: fetch org (cached by org_id parameter)
@@ -192,7 +192,7 @@ workflows:
         database: "main"
         sql: "SELECT @org_id AS org_id, 'Org ' || @org_id AS org_name"
         cache:
-          key: "org:{{.Param.org_id}}"
+          key: "org:{{.trigger.params.org_id}}"
           ttl_sec: 600  # Org data cached longer
 
       - type: response
@@ -269,7 +269,7 @@ workflows:
             required: true
         cache:
           enabled: true
-          key: "response:product:{{.Param.id}}"
+          key: "response:product:{{.trigger.params.id}}"
           ttl_sec: 60  # Short TTL - response changes often
     steps:
       # Even when trigger cache misses, step cache may hit
@@ -278,7 +278,7 @@ workflows:
         database: "main"
         sql: "SELECT @id AS id, 'Product ' || @id AS name"
         cache:
-          key: "product:{{.Param.id}}"
+          key: "product:{{.trigger.params.id}}"
           ttl_sec: 600  # Longer TTL - product data changes less often
 
       - name: fetch_price
@@ -286,7 +286,7 @@ workflows:
         database: "main"
         sql: "SELECT @id AS product_id, 99.99 AS price"
         cache:
-          key: "price:{{.Param.id}}"
+          key: "price:{{.trigger.params.id}}"
           ttl_sec: 120  # Medium TTL
 
       - type: response

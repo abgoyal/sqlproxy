@@ -35,6 +35,63 @@ TESTS_PASSED=0
 TESTS_FAILED=0
 
 # ============================================================================
+# RATE LIMIT AND CACHE DETECTION
+# ============================================================================
+#
+# These variables control expected behavior. Set them before making requests
+# in tests that specifically test rate limiting or caching.
+#
+# EXPECT_RATE_LIMIT=true   - Don't warn on 429 responses
+# EXPECT_CACHE_HIT=true    - Expect X-Cache: HIT
+# EXPECT_CACHE_MISS=true   - Expect X-Cache: MISS
+#
+# After the request, call check_rate_limit_and_cache or let the wrapper do it.
+
+EXPECT_RATE_LIMIT=false
+EXPECT_CACHE_HIT=false
+EXPECT_CACHE_MISS=false
+
+# Track last seen values for debugging
+_last_cache_status=""
+_last_rate_limited=false
+
+# _check_unexpected_behavior - Called after each request to detect issues
+# This acts as a "canary" - it catches rate limiting or cache behavior
+# that might indicate test pollution or ordering issues.
+_check_unexpected_behavior() {
+    local endpoint="$1"
+
+    # Check for unexpected rate limiting
+    if [ "$_status" = "429" ] && [ "$EXPECT_RATE_LIMIT" != "true" ]; then
+        warn "UNEXPECTED RATE LIMIT at $endpoint"
+        warn "  Response: $_response"
+        _last_rate_limited=true
+        # Don't fail the test, but make it very visible
+    else
+        _last_rate_limited=false
+    fi
+
+    # Extract and track cache status (|| true prevents exit on no match with set -e)
+    _last_cache_status=$(echo "$_response_headers" | grep -i "^X-Cache:" | sed 's/.*: //' | tr -d '\r\n' || true)
+
+    if [ -n "$_last_cache_status" ]; then
+        # Check for unexpected cache behavior
+        if [ "$EXPECT_CACHE_HIT" = "true" ] && [ "$_last_cache_status" != "HIT" ]; then
+            warn "EXPECTED CACHE HIT but got $_last_cache_status at $endpoint"
+        elif [ "$EXPECT_CACHE_MISS" = "true" ] && [ "$_last_cache_status" != "MISS" ]; then
+            warn "EXPECTED CACHE MISS but got $_last_cache_status at $endpoint"
+        fi
+    fi
+}
+
+# reset_expectations - Reset rate limit and cache expectations to defaults
+reset_expectations() {
+    EXPECT_RATE_LIMIT=false
+    EXPECT_CACHE_HIT=false
+    EXPECT_CACHE_MISS=false
+}
+
+# ============================================================================
 # HTTP REQUEST HELPERS
 # ============================================================================
 
@@ -97,6 +154,7 @@ GET() {
     # Uses tail -1 to get final status after any redirects
     _status=$(grep "^HTTP" "$_headers_file" | tail -1 | awk '{print $2}')
     _response_headers=$(cat "$_headers_file")
+    _check_unexpected_behavior "GET $full_path"
 }
 
 # POST <path> [key=value ...] or POST <path> --json '<json>' [extra_headers...]
@@ -141,6 +199,7 @@ HEAD() {
     _status=$(grep "^HTTP" "$_headers_file" | tail -1 | awk '{print $2}')
     _response=""
     _response_headers=$(cat "$_headers_file")
+    _check_unexpected_behavior "HEAD $path"
 }
 
 # OPTIONS <path> [extra_headers...]
@@ -156,6 +215,7 @@ OPTIONS() {
     _response=$(curl -s -D "$_headers_file" -X OPTIONS "${header_args[@]}" "$BASE_URL$path")
     _status=$(grep "^HTTP" "$_headers_file" | tail -1 | awk '{print $2}')
     _response_headers=$(cat "$_headers_file")
+    _check_unexpected_behavior "OPTIONS $path"
 }
 
 # Internal: perform request with body
@@ -211,6 +271,7 @@ _do_request() {
     fi
     _status=$(grep "^HTTP" "$_headers_file" | tail -1 | awk '{print $2}')
     _response_headers=$(cat "$_headers_file")
+    _check_unexpected_behavior "$method $path"
 }
 
 # ============================================================================

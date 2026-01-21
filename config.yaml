@@ -77,11 +77,11 @@ metrics:
 #   - name: "default"
 #     requests_per_second: 100
 #     burst: 200
-#     key: "{{.ClientIP}}"
+#     key: "{{.trigger.client_ip}}"
 #   - name: "strict"
 #     requests_per_second: 10
 #     burst: 20
-#     key: "{{.ClientIP}}"
+#     key: "{{.trigger.client_ip}}"
 
 # ============================================================================
 # WORKFLOWS
@@ -244,7 +244,7 @@ workflows:
   #         - pool: "strict"           # Reference named pool
   #         - requests_per_second: 1   # Or inline rate limit
   #           burst: 5
-  #           key: "{{.ClientIP}}"
+  #           key: "{{.trigger.client_ip}}"
   #   steps:
   #     - name: fetch
   #       type: query

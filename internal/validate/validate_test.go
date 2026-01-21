@@ -861,22 +861,22 @@ func TestValidateRateLimits(t *testing.T) {
 		{
 			name: "valid single pool",
 			rateLimits: []config.RateLimitPoolConfig{
-				{Name: "global", RequestsPerSecond: 100, Burst: 200, Key: "{{.ClientIP}}"},
+				{Name: "global", RequestsPerSecond: 100, Burst: 200, Key: "{{.trigger.client_ip}}"},
 			},
 			wantErr: false,
 		},
 		{
 			name: "valid multiple pools",
 			rateLimits: []config.RateLimitPoolConfig{
-				{Name: "global", RequestsPerSecond: 100, Burst: 200, Key: "{{.ClientIP}}"},
-				{Name: "per_user", RequestsPerSecond: 10, Burst: 20, Key: `{{.Header.Authorization}}`},
+				{Name: "global", RequestsPerSecond: 100, Burst: 200, Key: "{{.trigger.client_ip}}"},
+				{Name: "per_user", RequestsPerSecond: 10, Burst: 20, Key: `{{.trigger.headers.Authorization}}`},
 			},
 			wantErr: false,
 		},
 		{
 			name: "missing name",
 			rateLimits: []config.RateLimitPoolConfig{
-				{Name: "", RequestsPerSecond: 100, Burst: 200, Key: "{{.ClientIP}}"},
+				{Name: "", RequestsPerSecond: 100, Burst: 200, Key: "{{.trigger.client_ip}}"},
 			},
 			wantErr: true,
 			errMsg:  "name is required",
@@ -884,8 +884,8 @@ func TestValidateRateLimits(t *testing.T) {
 		{
 			name: "duplicate name",
 			rateLimits: []config.RateLimitPoolConfig{
-				{Name: "pool1", RequestsPerSecond: 100, Burst: 200, Key: "{{.ClientIP}}"},
-				{Name: "pool1", RequestsPerSecond: 50, Burst: 100, Key: "{{.ClientIP}}"},
+				{Name: "pool1", RequestsPerSecond: 100, Burst: 200, Key: "{{.trigger.client_ip}}"},
+				{Name: "pool1", RequestsPerSecond: 50, Burst: 100, Key: "{{.trigger.client_ip}}"},
 			},
 			wantErr: true,
 			errMsg:  "duplicate pool name",
@@ -893,7 +893,7 @@ func TestValidateRateLimits(t *testing.T) {
 		{
 			name: "zero requests per second",
 			rateLimits: []config.RateLimitPoolConfig{
-				{Name: "pool", RequestsPerSecond: 0, Burst: 200, Key: "{{.ClientIP}}"},
+				{Name: "pool", RequestsPerSecond: 0, Burst: 200, Key: "{{.trigger.client_ip}}"},
 			},
 			wantErr: true,
 			errMsg:  "requests_per_second must be positive",
@@ -901,7 +901,7 @@ func TestValidateRateLimits(t *testing.T) {
 		{
 			name: "negative requests per second",
 			rateLimits: []config.RateLimitPoolConfig{
-				{Name: "pool", RequestsPerSecond: -10, Burst: 200, Key: "{{.ClientIP}}"},
+				{Name: "pool", RequestsPerSecond: -10, Burst: 200, Key: "{{.trigger.client_ip}}"},
 			},
 			wantErr: true,
 			errMsg:  "requests_per_second must be positive",
@@ -909,7 +909,7 @@ func TestValidateRateLimits(t *testing.T) {
 		{
 			name: "zero burst",
 			rateLimits: []config.RateLimitPoolConfig{
-				{Name: "pool", RequestsPerSecond: 100, Burst: 0, Key: "{{.ClientIP}}"},
+				{Name: "pool", RequestsPerSecond: 100, Burst: 0, Key: "{{.trigger.client_ip}}"},
 			},
 			wantErr: true,
 			errMsg:  "burst must be positive",
@@ -933,7 +933,7 @@ func TestValidateRateLimits(t *testing.T) {
 		{
 			name: "reserved _inline: prefix",
 			rateLimits: []config.RateLimitPoolConfig{
-				{Name: "_inline:test", RequestsPerSecond: 100, Burst: 200, Key: "{{.ClientIP}}"},
+				{Name: "_inline:test", RequestsPerSecond: 100, Burst: 200, Key: "{{.trigger.client_ip}}"},
 			},
 			wantErr: true,
 			errMsg:  "reserved for internal use",
@@ -994,5 +994,221 @@ func TestRun_NoWorkflowsWarning(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected warning about no workflows, got: %v", result.Warnings)
+	}
+}
+
+// TestValidatePublicIDs tests public ID configuration validation
+func TestValidatePublicIDs(t *testing.T) {
+	tests := []struct {
+		name      string
+		publicIDs *config.PublicIDsConfig
+		wantErr   bool
+		errMsg    string
+	}{
+		{
+			name:      "nil config is valid",
+			publicIDs: nil,
+			wantErr:   false,
+		},
+		{
+			name: "valid configuration",
+			publicIDs: &config.PublicIDsConfig{
+				SecretKey: "this-is-a-secret-key-that-is-32chars",
+				Namespaces: []config.NamespaceConfig{
+					{Name: "user", Prefix: "usr"},
+					{Name: "order", Prefix: "ord"},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing secret key",
+			publicIDs: &config.PublicIDsConfig{
+				SecretKey: "",
+				Namespaces: []config.NamespaceConfig{
+					{Name: "user", Prefix: "usr"},
+				},
+			},
+			wantErr: true,
+			errMsg:  "secret_key is required",
+		},
+		{
+			name: "secret key too short",
+			publicIDs: &config.PublicIDsConfig{
+				SecretKey: "short",
+				Namespaces: []config.NamespaceConfig{
+					{Name: "user", Prefix: "usr"},
+				},
+			},
+			wantErr: true,
+			errMsg:  "at least 32 characters",
+		},
+		{
+			name: "empty namespaces",
+			publicIDs: &config.PublicIDsConfig{
+				SecretKey:  "this-is-a-secret-key-that-is-32chars",
+				Namespaces: []config.NamespaceConfig{},
+			},
+			wantErr: true,
+			errMsg:  "at least one namespace",
+		},
+		{
+			name: "namespace without name",
+			publicIDs: &config.PublicIDsConfig{
+				SecretKey: "this-is-a-secret-key-that-is-32chars",
+				Namespaces: []config.NamespaceConfig{
+					{Name: "", Prefix: "usr"},
+				},
+			},
+			wantErr: true,
+			errMsg:  "name is required",
+		},
+		{
+			name: "duplicate namespace names",
+			publicIDs: &config.PublicIDsConfig{
+				SecretKey: "this-is-a-secret-key-that-is-32chars",
+				Namespaces: []config.NamespaceConfig{
+					{Name: "user", Prefix: "usr"},
+					{Name: "user", Prefix: "usr2"},
+				},
+			},
+			wantErr: true,
+			errMsg:  "duplicate namespace name",
+		},
+		{
+			name: "duplicate prefixes",
+			publicIDs: &config.PublicIDsConfig{
+				SecretKey: "this-is-a-secret-key-that-is-32chars",
+				Namespaces: []config.NamespaceConfig{
+					{Name: "user", Prefix: "same"},
+					{Name: "order", Prefix: "same"},
+				},
+			},
+			wantErr: true,
+			errMsg:  "duplicate prefix",
+		},
+		{
+			name: "no prefix is valid",
+			publicIDs: &config.PublicIDsConfig{
+				SecretKey: "this-is-a-secret-key-that-is-32chars",
+				Namespaces: []config.NamespaceConfig{
+					{Name: "user"},
+					{Name: "order"},
+				},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{
+				PublicIDs: tc.publicIDs,
+			}
+
+			r := &Result{Valid: true}
+			validatePublicIDs(cfg, r)
+
+			if tc.wantErr && r.Valid {
+				t.Error("expected error but got none")
+			}
+			if !tc.wantErr && !r.Valid {
+				t.Errorf("unexpected error: %v", r.Errors)
+			}
+			if tc.wantErr && !strings.Contains(strings.Join(r.Errors, " "), tc.errMsg) {
+				t.Errorf("expected error containing %q, got %v", tc.errMsg, r.Errors)
+			}
+		})
+	}
+}
+
+func TestValidatePublicIDFunctionUsageWithoutConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		wf      workflow.WorkflowConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "publicID in step params without config",
+			wf: workflow.WorkflowConfig{
+				Name: "test_workflow",
+				Steps: []workflow.StepConfig{
+					{
+						Name:   "step1",
+						Type:   "query",
+						Params: map[string]string{"public": `{{publicID "user" .id}}`},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "publicID",
+		},
+		{
+			name: "privateID in response template without config",
+			wf: workflow.WorkflowConfig{
+				Name: "test_workflow",
+				Steps: []workflow.StepConfig{
+					{
+						Name:     "respond",
+						Type:     "response",
+						Template: `{"id": {{privateID "user" .trigger.params.public_id}}}`,
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "privateID",
+		},
+		{
+			name: "isValidPublicID in condition without config",
+			wf: workflow.WorkflowConfig{
+				Name: "test_workflow",
+				Steps: []workflow.StepConfig{
+					{
+						Name:      "check",
+						Type:      "query",
+						Condition: `{{isValidPublicID "user" .trigger.params.id}}`,
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "isValidPublicID",
+		},
+		{
+			name: "no public ID functions - ok",
+			wf: workflow.WorkflowConfig{
+				Name: "test_workflow",
+				Steps: []workflow.StepConfig{
+					{
+						Name:     "respond",
+						Type:     "response",
+						Template: `{"id": {{.trigger.params.id}}}`,
+					},
+				},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{
+				PublicIDs: nil,
+				Workflows: []workflow.WorkflowConfig{tc.wf},
+			}
+
+			r := &Result{Valid: true}
+			validatePublicIDs(cfg, r)
+
+			if tc.wantErr && r.Valid {
+				t.Error("expected error but got none")
+			}
+			if !tc.wantErr && !r.Valid {
+				t.Errorf("unexpected error: %v", r.Errors)
+			}
+			if tc.wantErr && !strings.Contains(strings.Join(r.Errors, " "), tc.errMsg) {
+				t.Errorf("expected error containing %q, got %v", tc.errMsg, r.Errors)
+			}
+		})
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/expr-lang/expr"
 )
 
 func TestNewContext(t *testing.T) {
@@ -19,7 +21,7 @@ func TestNewContext(t *testing.T) {
 	}
 	logger := &testLogger{}
 
-	ctx := NewContext(context.Background(), wf, trigger, "req-123", logger)
+	ctx := NewContext(context.Background(), wf, trigger, "req-123", logger, nil)
 
 	if ctx.Workflow != wf {
 		t.Error("Workflow not set correctly")
@@ -43,7 +45,7 @@ func TestContext_Context(t *testing.T) {
 	wf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "test"}}
 	trigger := &TriggerData{Type: "http"}
 
-	ctx := NewContext(bgCtx, wf, trigger, "req-1", &testLogger{})
+	ctx := NewContext(bgCtx, wf, trigger, "req-1", &testLogger{}, nil)
 
 	if ctx.Context() != bgCtx {
 		t.Error("Context() should return the underlying context")
@@ -53,7 +55,7 @@ func TestContext_Context(t *testing.T) {
 func TestContext_SetGetStepResult(t *testing.T) {
 	wf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "test"}}
 	trigger := &TriggerData{Type: "http"}
-	ctx := NewContext(context.Background(), wf, trigger, "req-1", &testLogger{})
+	ctx := NewContext(context.Background(), wf, trigger, "req-1", &testLogger{}, nil)
 
 	result := &StepResult{
 		Name:    "fetch_users",
@@ -81,11 +83,12 @@ func TestContext_BuildExprEnv_HTTPTrigger(t *testing.T) {
 		Type:     "http",
 		Params:   map[string]any{"status": "active"},
 		Headers:  http.Header{"Authorization": []string{"Bearer token123"}},
+		Cookies:  map[string]string{"session": "abc123", "user": "john"},
 		ClientIP: "192.168.1.1",
 		Method:   "POST",
 		Path:     "/api/users",
 	}
-	ctx := NewContext(context.Background(), wf, trigger, "req-123", &testLogger{})
+	ctx := NewContext(context.Background(), wf, trigger, "req-123", &testLogger{}, nil)
 
 	// Add a step result
 	ctx.SetStepResult("step1", &StepResult{
@@ -129,6 +132,18 @@ func TestContext_BuildExprEnv_HTTPTrigger(t *testing.T) {
 		t.Errorf("trigger.client_ip = %v, want 192.168.1.1", triggerEnv["client_ip"])
 	}
 
+	// Check cookies
+	cookies, ok := triggerEnv["cookies"].(map[string]string)
+	if !ok {
+		t.Fatal("trigger.cookies not found or wrong type")
+	}
+	if cookies["session"] != "abc123" {
+		t.Errorf("trigger.cookies.session = %v, want abc123", cookies["session"])
+	}
+	if cookies["user"] != "john" {
+		t.Errorf("trigger.cookies.user = %v, want john", cookies["user"])
+	}
+
 	// Check workflow
 	workflow, ok := env["workflow"].(map[string]any)
 	if !ok {
@@ -150,11 +165,14 @@ func TestContext_BuildExprEnv_CronTrigger(t *testing.T) {
 		ScheduleTime: schedTime,
 		CronExpr:     "0 8 * * *",
 	}
-	ctx := NewContext(context.Background(), wf, trigger, "cron-123", &testLogger{})
+	ctx := NewContext(context.Background(), wf, trigger, "cron-123", &testLogger{}, nil)
 
 	env := ctx.BuildExprEnv()
 
-	triggerEnv := env["trigger"].(map[string]any)
+	triggerEnv, ok := env["trigger"].(map[string]any)
+	if !ok {
+		t.Fatal("expected trigger to be map[string]any")
+	}
 	if triggerEnv["type"] != "cron" {
 		t.Errorf("trigger.type = %v, want cron", triggerEnv["type"])
 	}
@@ -166,10 +184,166 @@ func TestContext_BuildExprEnv_CronTrigger(t *testing.T) {
 	}
 }
 
+func TestContext_BuildExprEnv_WithVariables(t *testing.T) {
+	wf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "test_workflow"}}
+	trigger := &TriggerData{
+		Type:   "http",
+		Params: map[string]any{"id": 123},
+	}
+	variables := map[string]string{
+		"api_key":     "secret-123",
+		"db_host":     "localhost",
+		"max_retries": "3",
+	}
+	ctx := NewContext(context.Background(), wf, trigger, "req-123", &testLogger{}, variables)
+
+	env := ctx.BuildExprEnv()
+
+	// Check vars is present and correct
+	vars, ok := env["vars"].(map[string]string)
+	if !ok {
+		t.Fatal("vars is not a map[string]string")
+	}
+	if vars["api_key"] != "secret-123" {
+		t.Errorf("vars.api_key = %v, want secret-123", vars["api_key"])
+	}
+	if vars["db_host"] != "localhost" {
+		t.Errorf("vars.db_host = %v, want localhost", vars["db_host"])
+	}
+	if vars["max_retries"] != "3" {
+		t.Errorf("vars.max_retries = %v, want 3", vars["max_retries"])
+	}
+}
+
+func TestContext_BuildExprEnv_NilVariables(t *testing.T) {
+	wf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "test_workflow"}}
+	trigger := &TriggerData{
+		Type: "http",
+	}
+	ctx := NewContext(context.Background(), wf, trigger, "req-123", &testLogger{}, nil)
+
+	env := ctx.BuildExprEnv()
+
+	// vars should be an empty map, not nil
+	vars, ok := env["vars"].(map[string]string)
+	if !ok {
+		t.Fatal("vars is not a map[string]string")
+	}
+	if len(vars) != 0 {
+		t.Errorf("expected empty vars map, got %v", vars)
+	}
+}
+
+func TestContext_BuildExprEnv_VarsInExpr(t *testing.T) {
+	t.Run("access vars.VARIABLE_NAME in expr", func(t *testing.T) {
+		wf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "test"}}
+		trigger := &TriggerData{Type: "http"}
+		variables := map[string]string{
+			"API_KEY": "secret-abc-123",
+		}
+		ctx := NewContext(context.Background(), wf, trigger, "req-1", &testLogger{}, variables)
+
+		env := ctx.BuildExprEnv()
+
+		// Evaluate expr: vars.API_KEY == "secret-abc-123"
+		program, err := expr.Compile(`vars.API_KEY == "secret-abc-123"`, expr.AsBool())
+		if err != nil {
+			t.Fatalf("failed to compile expr: %v", err)
+		}
+		result, err := expr.Run(program, env)
+		if err != nil {
+			t.Fatalf("failed to evaluate expr: %v", err)
+		}
+		if result != true {
+			t.Errorf("vars.API_KEY comparison failed, got %v", result)
+		}
+
+		// Evaluate expr to get actual value: vars.API_KEY
+		valueProgram, err := expr.Compile(`vars.API_KEY`)
+		if err != nil {
+			t.Fatalf("failed to compile value expr: %v", err)
+		}
+		value, err := expr.Run(valueProgram, env)
+		if err != nil {
+			t.Fatalf("failed to evaluate value expr: %v", err)
+		}
+		if value != "secret-abc-123" {
+			t.Errorf("vars.API_KEY = %q, want %q", value, "secret-abc-123")
+		}
+	})
+
+	t.Run("variable not present returns empty string", func(t *testing.T) {
+		wf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "test"}}
+		trigger := &TriggerData{Type: "http"}
+		variables := map[string]string{
+			"EXISTING_VAR": "value",
+		}
+		ctx := NewContext(context.Background(), wf, trigger, "req-1", &testLogger{}, variables)
+
+		env := ctx.BuildExprEnv()
+
+		// Accessing non-existent key in expr returns empty string (zero value for string)
+		program, err := expr.Compile(`vars.NON_EXISTENT == ""`, expr.AsBool())
+		if err != nil {
+			t.Fatalf("failed to compile expr: %v", err)
+		}
+		result, err := expr.Run(program, env)
+		if err != nil {
+			t.Fatalf("failed to evaluate expr: %v", err)
+		}
+		if result != true {
+			t.Errorf("non-existent var should return empty string, got %v", result)
+		}
+	})
+
+	t.Run("multiple variables accessible in same expr", func(t *testing.T) {
+		wf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "test"}}
+		trigger := &TriggerData{Type: "http"}
+		variables := map[string]string{
+			"DB_HOST":     "localhost",
+			"DB_PORT":     "5432",
+			"DB_USER":     "admin",
+			"ENVIRONMENT": "production",
+		}
+		ctx := NewContext(context.Background(), wf, trigger, "req-1", &testLogger{}, variables)
+
+		env := ctx.BuildExprEnv()
+
+		// Test accessing multiple variables in a single expression
+		program, err := expr.Compile(
+			`vars.DB_HOST == "localhost" && vars.DB_PORT == "5432" && vars.ENVIRONMENT == "production"`,
+			expr.AsBool(),
+		)
+		if err != nil {
+			t.Fatalf("failed to compile expr: %v", err)
+		}
+		result, err := expr.Run(program, env)
+		if err != nil {
+			t.Fatalf("failed to evaluate expr: %v", err)
+		}
+		if result != true {
+			t.Errorf("multiple vars comparison failed, got %v", result)
+		}
+
+		// Test string concatenation with variables
+		concatProgram, err := expr.Compile(`vars.DB_HOST + ":" + vars.DB_PORT`)
+		if err != nil {
+			t.Fatalf("failed to compile concat expr: %v", err)
+		}
+		concatResult, err := expr.Run(concatProgram, env)
+		if err != nil {
+			t.Fatalf("failed to evaluate concat expr: %v", err)
+		}
+		if concatResult != "localhost:5432" {
+			t.Errorf("concat result = %q, want %q", concatResult, "localhost:5432")
+		}
+	})
+}
+
 func TestContext_BuildTemplateData(t *testing.T) {
 	wf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "test"}}
 	trigger := &TriggerData{Type: "http"}
-	ctx := NewContext(context.Background(), wf, trigger, "req-1", &testLogger{})
+	ctx := NewContext(context.Background(), wf, trigger, "req-1", &testLogger{}, nil)
 
 	// BuildTemplateData should return the same as BuildExprEnv
 	env := ctx.BuildExprEnv()
@@ -207,6 +381,63 @@ func TestStepResultToMap(t *testing.T) {
 		// rows_affected should be 0 for SELECT queries
 		if m["rows_affected"] != int64(0) {
 			t.Errorf("rows_affected = %v, want 0", m["rows_affected"])
+		}
+
+		// Convenience shortcuts for single row
+		row, ok := m["row"].(map[string]any)
+		if !ok {
+			t.Fatalf("row should be map[string]any, got %T", m["row"])
+		}
+		if row["id"] != 1 {
+			t.Errorf("row.id = %v, want 1", row["id"])
+		}
+		if m["found"] != true {
+			t.Errorf("found = %v, want true", m["found"])
+		}
+		if m["empty"] != false {
+			t.Errorf("empty = %v, want false", m["empty"])
+		}
+		if m["one"] != true {
+			t.Errorf("one = %v, want true", m["one"])
+		}
+		if m["many"] != false {
+			t.Errorf("many = %v, want false", m["many"])
+		}
+	})
+
+	t.Run("query result with multiple rows", func(t *testing.T) {
+		r := &StepResult{
+			Name:       "fetch_all",
+			Type:       "query",
+			Success:    true,
+			DurationMs: 100,
+			Data:       []map[string]any{{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}, {"id": 3, "name": "Charlie"}},
+			Count:      3,
+		}
+		m := stepResultToMap(r)
+
+		// Convenience shortcuts for multiple rows
+		row, ok := m["row"].(map[string]any)
+		if !ok {
+			t.Fatalf("row should be map[string]any, got %T", m["row"])
+		}
+		if row["id"] != 1 {
+			t.Errorf("row.id = %v, want 1 (first element)", row["id"])
+		}
+		if row["name"] != "Alice" {
+			t.Errorf("row.name = %v, want Alice", row["name"])
+		}
+		if m["found"] != true {
+			t.Errorf("found = %v, want true", m["found"])
+		}
+		if m["empty"] != false {
+			t.Errorf("empty = %v, want false", m["empty"])
+		}
+		if m["one"] != false {
+			t.Errorf("one = %v, want false", m["one"])
+		}
+		if m["many"] != true {
+			t.Errorf("many = %v, want true", m["many"])
 		}
 	})
 
@@ -248,6 +479,23 @@ func TestStepResultToMap(t *testing.T) {
 		if len(data) != 0 {
 			t.Errorf("len(data) = %d, want 0", len(data))
 		}
+
+		// Convenience shortcuts for empty result
+		if m["row"] != nil {
+			t.Errorf("row = %v, want nil", m["row"])
+		}
+		if m["found"] != false {
+			t.Errorf("found = %v, want false", m["found"])
+		}
+		if m["empty"] != true {
+			t.Errorf("empty = %v, want true", m["empty"])
+		}
+		if m["one"] != false {
+			t.Errorf("one = %v, want false", m["one"])
+		}
+		if m["many"] != false {
+			t.Errorf("many = %v, want false", m["many"])
+		}
 	})
 
 	t.Run("httpcall result without parsed data", func(t *testing.T) {
@@ -276,6 +524,23 @@ func TestStepResultToMap(t *testing.T) {
 		}
 		if m["count"] != 0 {
 			t.Errorf("count should be 0 when Data is nil, got %v", m["count"])
+		}
+
+		// Convenience shortcuts for empty result
+		if m["row"] != nil {
+			t.Errorf("row = %v, want nil", m["row"])
+		}
+		if m["found"] != false {
+			t.Errorf("found = %v, want false", m["found"])
+		}
+		if m["empty"] != true {
+			t.Errorf("empty = %v, want true", m["empty"])
+		}
+		if m["one"] != false {
+			t.Errorf("one = %v, want false", m["one"])
+		}
+		if m["many"] != false {
+			t.Errorf("many = %v, want false", m["many"])
 		}
 	})
 
@@ -309,6 +574,27 @@ func TestStepResultToMap(t *testing.T) {
 		}
 		if m["count"] != 2 {
 			t.Errorf("count = %v, want 2", m["count"])
+		}
+
+		// Convenience shortcuts for multiple rows
+		row, ok := m["row"].(map[string]any)
+		if !ok {
+			t.Fatalf("row should be map[string]any, got %T", m["row"])
+		}
+		if row["id"] != 1 {
+			t.Errorf("row.id = %v, want 1 (first element)", row["id"])
+		}
+		if m["found"] != true {
+			t.Errorf("found = %v, want true", m["found"])
+		}
+		if m["empty"] != false {
+			t.Errorf("empty = %v, want false", m["empty"])
+		}
+		if m["one"] != false {
+			t.Errorf("one = %v, want false", m["one"])
+		}
+		if m["many"] != true {
+			t.Errorf("many = %v, want true", m["many"])
 		}
 	})
 
@@ -395,7 +681,7 @@ func TestBlockContext(t *testing.T) {
 		Type:   "http",
 		Params: map[string]any{"filter": "active"},
 	}
-	parentCtx := NewContext(context.Background(), parentWf, trigger, "req-1", &testLogger{})
+	parentCtx := NewContext(context.Background(), parentWf, trigger, "req-1", &testLogger{}, nil)
 
 	// Add parent step result
 	parentCtx.SetStepResult("fetch_items", &StepResult{
@@ -427,7 +713,7 @@ func TestBlockContext(t *testing.T) {
 func TestBlockContext_SetGetStepResult(t *testing.T) {
 	parentWf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "parent"}}
 	trigger := &TriggerData{Type: "http"}
-	parentCtx := NewContext(context.Background(), parentWf, trigger, "req-1", &testLogger{})
+	parentCtx := NewContext(context.Background(), parentWf, trigger, "req-1", &testLogger{}, nil)
 
 	blockCtx := NewBlockContext(parentCtx, "block1", nil, 0, 1)
 
@@ -458,7 +744,7 @@ func TestBlockContext_BuildExprEnv(t *testing.T) {
 		Type:   "http",
 		Params: map[string]any{"filter": "active"},
 	}
-	parentCtx := NewContext(context.Background(), parentWf, trigger, "req-1", &testLogger{})
+	parentCtx := NewContext(context.Background(), parentWf, trigger, "req-1", &testLogger{}, nil)
 	parentCtx.SetStepResult("fetch", &StepResult{
 		Name:    "fetch",
 		Type:    "query",
@@ -524,7 +810,7 @@ func TestBlockContext_BuildExprEnv(t *testing.T) {
 func TestBlockContext_BuildTemplateData(t *testing.T) {
 	parentWf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "parent"}}
 	trigger := &TriggerData{Type: "http"}
-	parentCtx := NewContext(context.Background(), parentWf, trigger, "req-1", &testLogger{})
+	parentCtx := NewContext(context.Background(), parentWf, trigger, "req-1", &testLogger{}, nil)
 
 	blockCtx := NewBlockContext(parentCtx, "block", nil, 0, 1)
 
@@ -572,4 +858,264 @@ type testError struct {
 
 func (e testError) Error() string {
 	return e.msg
+}
+
+func TestContext_BuildExprEnv_ContainsExprFuncs(t *testing.T) {
+	// exprFuncs like isValidPublicID should be available in the expression environment
+	wf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "test"}}
+	trigger := &TriggerData{Type: "http"}
+	ctx := NewContext(context.Background(), wf, trigger, "req-1", &testLogger{}, nil)
+
+	env := ctx.BuildExprEnv()
+
+	// Check that isValidPublicID function is present
+	fn, ok := env["isValidPublicID"]
+	if !ok {
+		t.Error("isValidPublicID function should be in BuildExprEnv result")
+	}
+	if fn == nil {
+		t.Error("isValidPublicID function should not be nil")
+	}
+}
+
+func TestContext_BuildExprEnv_CookieAccess(t *testing.T) {
+	t.Run("access single cookie by name", func(t *testing.T) {
+		wf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "test"}}
+		trigger := &TriggerData{
+			Type:    "http",
+			Cookies: map[string]string{"session_id": "abc123"},
+		}
+		ctx := NewContext(context.Background(), wf, trigger, "req-1", &testLogger{}, nil)
+
+		env := ctx.BuildExprEnv()
+
+		triggerEnv, ok := env["trigger"].(map[string]any)
+		if !ok {
+			t.Fatal("expected trigger to be map[string]any")
+		}
+		cookies, ok := triggerEnv["cookies"].(map[string]string)
+		if !ok {
+			t.Fatal("trigger.cookies not found or wrong type")
+		}
+		if cookies["session_id"] != "abc123" {
+			t.Errorf("trigger.cookies.session_id = %q, want %q", cookies["session_id"], "abc123")
+		}
+	})
+
+	t.Run("cookie not present returns empty string", func(t *testing.T) {
+		wf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "test"}}
+		trigger := &TriggerData{
+			Type:    "http",
+			Cookies: map[string]string{"existing": "value"},
+		}
+		ctx := NewContext(context.Background(), wf, trigger, "req-1", &testLogger{}, nil)
+
+		env := ctx.BuildExprEnv()
+
+		triggerEnv, ok := env["trigger"].(map[string]any)
+		if !ok {
+			t.Fatal("expected trigger to be map[string]any")
+		}
+		cookies, ok := triggerEnv["cookies"].(map[string]string)
+		if !ok {
+			t.Fatal("expected cookies to be map[string]string")
+		}
+		if cookies["nonexistent"] != "" {
+			t.Errorf("trigger.cookies.nonexistent = %q, want empty string", cookies["nonexistent"])
+		}
+	})
+
+	t.Run("multiple cookies", func(t *testing.T) {
+		wf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "test"}}
+		trigger := &TriggerData{
+			Type: "http",
+			Cookies: map[string]string{
+				"session":  "sess_abc123",
+				"user_id":  "user_456",
+				"theme":    "dark",
+				"language": "en-US",
+			},
+		}
+		ctx := NewContext(context.Background(), wf, trigger, "req-1", &testLogger{}, nil)
+
+		env := ctx.BuildExprEnv()
+
+		triggerEnv, ok := env["trigger"].(map[string]any)
+		if !ok {
+			t.Fatal("expected trigger to be map[string]any")
+		}
+		cookies, ok := triggerEnv["cookies"].(map[string]string)
+		if !ok {
+			t.Fatal("expected cookies to be map[string]string")
+		}
+
+		if cookies["session"] != "sess_abc123" {
+			t.Errorf("trigger.cookies.session = %q, want %q", cookies["session"], "sess_abc123")
+		}
+		if cookies["user_id"] != "user_456" {
+			t.Errorf("trigger.cookies.user_id = %q, want %q", cookies["user_id"], "user_456")
+		}
+		if cookies["theme"] != "dark" {
+			t.Errorf("trigger.cookies.theme = %q, want %q", cookies["theme"], "dark")
+		}
+		if cookies["language"] != "en-US" {
+			t.Errorf("trigger.cookies.language = %q, want %q", cookies["language"], "en-US")
+		}
+	})
+
+	t.Run("nil cookies map", func(t *testing.T) {
+		wf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "test"}}
+		trigger := &TriggerData{
+			Type:    "http",
+			Cookies: nil,
+		}
+		ctx := NewContext(context.Background(), wf, trigger, "req-1", &testLogger{}, nil)
+
+		env := ctx.BuildExprEnv()
+
+		triggerEnv, ok := env["trigger"].(map[string]any)
+		if !ok {
+			t.Fatal("expected trigger to be map[string]any")
+		}
+		// When Cookies is nil, accessing cookies via expr still works
+		// (nil map allows reads, returning zero value)
+		cookies, ok := triggerEnv["cookies"].(map[string]string)
+		if !ok {
+			t.Fatal("expected cookies to be map[string]string")
+		}
+		if cookies["any_cookie"] != "" {
+			t.Errorf("accessing cookie in nil map should return empty string, got %q", cookies["any_cookie"])
+		}
+	})
+
+	t.Run("empty cookies map", func(t *testing.T) {
+		wf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "test"}}
+		trigger := &TriggerData{
+			Type:    "http",
+			Cookies: map[string]string{},
+		}
+		ctx := NewContext(context.Background(), wf, trigger, "req-1", &testLogger{}, nil)
+
+		env := ctx.BuildExprEnv()
+
+		triggerEnv, ok := env["trigger"].(map[string]any)
+		if !ok {
+			t.Fatal("expected trigger to be map[string]any")
+		}
+		cookies, ok := triggerEnv["cookies"].(map[string]string)
+		if !ok {
+			t.Fatal("trigger.cookies should be map[string]string")
+		}
+		if len(cookies) != 0 {
+			t.Errorf("len(trigger.cookies) = %d, want 0", len(cookies))
+		}
+	})
+}
+
+func TestContext_BuildExprEnv_CookiesInExpr(t *testing.T) {
+	t.Run("access trigger.cookies.cookiename in expr", func(t *testing.T) {
+		wf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "test"}}
+		trigger := &TriggerData{
+			Type:    "http",
+			Cookies: map[string]string{"session": "sess_abc123"},
+		}
+		ctx := NewContext(context.Background(), wf, trigger, "req-1", &testLogger{}, nil)
+
+		env := ctx.BuildExprEnv()
+
+		// Evaluate expr: trigger.cookies.session == "sess_abc123"
+		program, err := expr.Compile(`trigger.cookies.session == "sess_abc123"`, expr.AsBool())
+		if err != nil {
+			t.Fatalf("failed to compile expr: %v", err)
+		}
+		result, err := expr.Run(program, env)
+		if err != nil {
+			t.Fatalf("failed to evaluate expr: %v", err)
+		}
+		if result != true {
+			t.Errorf("trigger.cookies.session comparison failed, got %v", result)
+		}
+
+		// Evaluate expr to get actual value: trigger.cookies.session
+		valueProgram, err := expr.Compile(`trigger.cookies.session`)
+		if err != nil {
+			t.Fatalf("failed to compile value expr: %v", err)
+		}
+		value, err := expr.Run(valueProgram, env)
+		if err != nil {
+			t.Fatalf("failed to evaluate value expr: %v", err)
+		}
+		if value != "sess_abc123" {
+			t.Errorf("trigger.cookies.session = %q, want %q", value, "sess_abc123")
+		}
+	})
+
+	t.Run("cookie not present returns empty string in expr", func(t *testing.T) {
+		wf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "test"}}
+		trigger := &TriggerData{
+			Type:    "http",
+			Cookies: map[string]string{"existing": "value"},
+		}
+		ctx := NewContext(context.Background(), wf, trigger, "req-1", &testLogger{}, nil)
+
+		env := ctx.BuildExprEnv()
+
+		// Accessing non-existent cookie in expr returns empty string (zero value for string)
+		program, err := expr.Compile(`trigger.cookies.nonexistent == ""`, expr.AsBool())
+		if err != nil {
+			t.Fatalf("failed to compile expr: %v", err)
+		}
+		result, err := expr.Run(program, env)
+		if err != nil {
+			t.Fatalf("failed to evaluate expr: %v", err)
+		}
+		if result != true {
+			t.Errorf("non-existent cookie should return empty string, got %v", result)
+		}
+	})
+
+	t.Run("multiple cookies accessible in same expr", func(t *testing.T) {
+		wf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "test"}}
+		trigger := &TriggerData{
+			Type: "http",
+			Cookies: map[string]string{
+				"session":  "sess_abc123",
+				"user_id":  "user_456",
+				"theme":    "dark",
+				"language": "en-US",
+			},
+		}
+		ctx := NewContext(context.Background(), wf, trigger, "req-1", &testLogger{}, nil)
+
+		env := ctx.BuildExprEnv()
+
+		// Test accessing multiple cookies in a single expression
+		program, err := expr.Compile(
+			`trigger.cookies.session == "sess_abc123" && trigger.cookies.theme == "dark"`,
+			expr.AsBool(),
+		)
+		if err != nil {
+			t.Fatalf("failed to compile expr: %v", err)
+		}
+		result, err := expr.Run(program, env)
+		if err != nil {
+			t.Fatalf("failed to evaluate expr: %v", err)
+		}
+		if result != true {
+			t.Errorf("multiple cookies comparison failed, got %v", result)
+		}
+
+		// Test string concatenation with cookies
+		concatProgram, err := expr.Compile(`trigger.cookies.user_id + "@" + trigger.cookies.language`)
+		if err != nil {
+			t.Fatalf("failed to compile concat expr: %v", err)
+		}
+		concatResult, err := expr.Run(concatProgram, env)
+		if err != nil {
+			t.Fatalf("failed to evaluate concat expr: %v", err)
+		}
+		if concatResult != "user_456@en-US" {
+			t.Errorf("concat result = %q, want %q", concatResult, "user_456@en-US")
+		}
+	})
 }

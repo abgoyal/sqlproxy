@@ -179,11 +179,15 @@ test_get_customer() {
 test_get_customer_caching() {
     header "Get Customer - Caching"
 
+    EXPECT_CACHE_MISS=true
     GET /api/customers/2 "api_key=$ADMIN_KEY"
     expect_header "X-Cache" "MISS" "First request is cache MISS"
 
+    EXPECT_CACHE_MISS=false
+    EXPECT_CACHE_HIT=true
     GET /api/customers/2 "api_key=$ADMIN_KEY"
     expect_header "X-Cache" "HIT" "Second request is cache HIT"
+    reset_expectations
 }
 
 test_create_customer_sales() {
@@ -265,8 +269,10 @@ test_deal_pipeline_caching() {
     local first_cache=$(echo "$_response_headers" | grep -i "^X-Cache:" | sed 's/.*: //' | tr -d '\r\n')
     info "First request cache status: $first_cache"
 
+    EXPECT_CACHE_HIT=true
     GET /api/deals/pipeline "api_key=$ADMIN_KEY"
     expect_header "X-Cache" "HIT" "Second request is cache HIT"
+    reset_expectations
 }
 
 test_advance_deal() {
@@ -370,11 +376,14 @@ test_stats_step_caching() {
 test_rate_limiting() {
     header "Rate Limiting"
 
-    info "Sending rapid requests to test rate limiting..."
+    # Wait for rate limit bucket to recover from previous tests
+    sleep 2
+
+    info "Sending rapid requests to trigger rate limit..."
+    EXPECT_RATE_LIMIT=true  # We expect 429s in this test
     local rate_limited=false
-    # sales_limit pool has burst=40 at 20/sec. POST is slow (~100ms each),
-    # so tokens refill during requests. Send 80 to reliably trigger.
-    for i in $(seq 1 80); do
+    # sales_limit pool has burst=5 at 2/sec - should trigger within 10 requests
+    for i in $(seq 1 15); do
         POST /api/customers name="RateTest$i" "api_key=$SALES_KEY"
         if [ "$_status" = "429" ]; then
             rate_limited=true
@@ -392,6 +401,7 @@ test_rate_limiting() {
         TESTS_FAILED=$((TESTS_FAILED + 1))
     fi
 
+    reset_expectations
     sleep 2  # Let rate limit recover
 }
 

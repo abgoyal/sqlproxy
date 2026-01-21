@@ -2,9 +2,10 @@ package workflow
 
 import (
 	"bytes"
-	"strings"
 	"testing"
 	"text/template"
+
+	"sql-proxy/internal/publicid"
 )
 
 func TestCompile_BasicWorkflow(t *testing.T) {
@@ -268,20 +269,30 @@ func TestCompile_InvalidTemplateSyntax(t *testing.T) {
 }
 
 func TestResolveCondition(t *testing.T) {
-	// Create aliases map with a test condition
+	// Create aliases map with test conditions
 	aliases := map[string]*CompiledCondition{
 		"found": {
 			Source: "steps.fetch.count > 0",
 			Prog:   nil, // Will be set below
 		},
+		"valid_id": {
+			Source: "trigger.params.id != \"\"",
+			Prog:   nil,
+		},
+		"is_owner": {
+			Source: "steps.fetch.row.owner_id == 123",
+			Prog:   nil,
+		},
 	}
 
-	// Compile the source
-	prog, err := compileCondition(aliases["found"].Source)
-	if err != nil {
-		t.Fatalf("failed to compile alias: %v", err)
+	// Compile all aliases
+	for name, cc := range aliases {
+		prog, err := compileCondition(cc.Source)
+		if err != nil {
+			t.Fatalf("failed to compile alias %s: %v", name, err)
+		}
+		cc.Prog = prog
 	}
-	aliases["found"].Prog = prog
 
 	// Test cases
 	tests := []struct {
@@ -320,6 +331,97 @@ func TestResolveCondition(t *testing.T) {
 			env:      map[string]any{"steps": map[string]any{"fetch": map[string]any{"count": 10}}},
 			expected: true,
 		},
+		// Compound expression tests (the fix we implemented)
+		{
+			name: "compound AND - both true",
+			cond: "found && valid_id",
+			env: map[string]any{
+				"steps":   map[string]any{"fetch": map[string]any{"count": 5}},
+				"trigger": map[string]any{"params": map[string]any{"id": "abc123"}},
+			},
+			expected: true,
+		},
+		{
+			name: "compound AND - first false",
+			cond: "found && valid_id",
+			env: map[string]any{
+				"steps":   map[string]any{"fetch": map[string]any{"count": 0}},
+				"trigger": map[string]any{"params": map[string]any{"id": "abc123"}},
+			},
+			expected: false,
+		},
+		{
+			name: "compound AND - second false",
+			cond: "found && valid_id",
+			env: map[string]any{
+				"steps":   map[string]any{"fetch": map[string]any{"count": 5}},
+				"trigger": map[string]any{"params": map[string]any{"id": ""}},
+			},
+			expected: false,
+		},
+		{
+			name: "compound OR - first true",
+			cond: "found || valid_id",
+			env: map[string]any{
+				"steps":   map[string]any{"fetch": map[string]any{"count": 5}},
+				"trigger": map[string]any{"params": map[string]any{"id": ""}},
+			},
+			expected: true,
+		},
+		{
+			name: "compound OR - second true",
+			cond: "found || valid_id",
+			env: map[string]any{
+				"steps":   map[string]any{"fetch": map[string]any{"count": 0}},
+				"trigger": map[string]any{"params": map[string]any{"id": "abc"}},
+			},
+			expected: true,
+		},
+		{
+			name: "compound OR - both false",
+			cond: "found || valid_id",
+			env: map[string]any{
+				"steps":   map[string]any{"fetch": map[string]any{"count": 0}},
+				"trigger": map[string]any{"params": map[string]any{"id": ""}},
+			},
+			expected: false,
+		},
+		{
+			name: "negated alias in compound",
+			cond: "!valid_id || !found",
+			env: map[string]any{
+				"steps":   map[string]any{"fetch": map[string]any{"count": 5}},
+				"trigger": map[string]any{"params": map[string]any{"id": "abc"}},
+			},
+			expected: false,
+		},
+		{
+			name: "negated alias in compound - one negation true",
+			cond: "!valid_id || !found",
+			env: map[string]any{
+				"steps":   map[string]any{"fetch": map[string]any{"count": 0}},
+				"trigger": map[string]any{"params": map[string]any{"id": "abc"}},
+			},
+			expected: true,
+		},
+		{
+			name: "three aliases combined",
+			cond: "found && valid_id && is_owner",
+			env: map[string]any{
+				"steps":   map[string]any{"fetch": map[string]any{"count": 5, "row": map[string]any{"owner_id": 123}}},
+				"trigger": map[string]any{"params": map[string]any{"id": "abc"}},
+			},
+			expected: true,
+		},
+		{
+			name: "alias with parentheses",
+			cond: "(found && valid_id) || is_owner",
+			env: map[string]any{
+				"steps":   map[string]any{"fetch": map[string]any{"count": 0, "row": map[string]any{"owner_id": 123}}},
+				"trigger": map[string]any{"params": map[string]any{"id": ""}},
+			},
+			expected: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -338,6 +440,101 @@ func TestResolveCondition(t *testing.T) {
 				t.Errorf("expected %v, got %v", tt.expected, result)
 			}
 		})
+	}
+}
+
+// TestExpandAliases tests the alias expansion function directly.
+func TestExpandAliases(t *testing.T) {
+	aliases := map[string]*CompiledCondition{
+		"found": {
+			Source: "steps.fetch.count > 0",
+		},
+		"valid_id": {
+			Source: "trigger.params.id != \"\"",
+		},
+		"can_modify": {
+			Source: "steps.can_modify.count > 0",
+		},
+	}
+
+	tests := []struct {
+		name     string
+		expr     string
+		expected string
+	}{
+		{
+			name:     "no aliases",
+			expr:     "steps.fetch.count > 0",
+			expected: "steps.fetch.count > 0",
+		},
+		{
+			name:     "alias at start",
+			expr:     "found && x",
+			expected: "(steps.fetch.count > 0) && x",
+		},
+		{
+			name:     "alias at end",
+			expr:     "x && found",
+			expected: "x && (steps.fetch.count > 0)",
+		},
+		{
+			name:     "alias in middle",
+			expr:     "a && found && b",
+			expected: "a && (steps.fetch.count > 0) && b",
+		},
+		{
+			name:     "multiple different aliases",
+			expr:     "found && valid_id",
+			expected: "(steps.fetch.count > 0) && (trigger.params.id != \"\")",
+		},
+		{
+			name:     "negated alias",
+			expr:     "!found",
+			expected: "!(steps.fetch.count > 0)",
+		},
+		{
+			name:     "alias inside parentheses",
+			expr:     "(found || valid_id)",
+			expected: "((steps.fetch.count > 0) || (trigger.params.id != \"\"))",
+		},
+		{
+			name:     "should not match property path",
+			expr:     "steps.can_modify.count > 0",
+			expected: "steps.can_modify.count > 0",
+		},
+		{
+			name:     "alias name appears in property path - should not match",
+			expr:     "steps.can_modify.count > 0 && can_modify",
+			expected: "steps.can_modify.count > 0 && (steps.can_modify.count > 0)",
+		},
+		{
+			name:     "standalone alias vs property access",
+			expr:     "can_modify && steps.can_modify.count > 0",
+			expected: "(steps.can_modify.count > 0) && steps.can_modify.count > 0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := expandAliases(tt.expr, aliases)
+			if result != tt.expected {
+				t.Errorf("expandAliases(%q)\nexpected: %q\ngot:      %q", tt.expr, tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestExpandAliases_EmptyAliases ensures empty alias map returns expression unchanged.
+func TestExpandAliases_EmptyAliases(t *testing.T) {
+	expr := "steps.fetch.count > 0 && trigger.params.id != \"\""
+	result := expandAliases(expr, nil)
+	if result != expr {
+		t.Errorf("expected unchanged expression with nil aliases, got %q", result)
+	}
+
+	result = expandAliases(expr, map[string]*CompiledCondition{})
+	if result != expr {
+		t.Errorf("expected unchanged expression with empty aliases, got %q", result)
 	}
 }
 
@@ -673,6 +870,7 @@ func TestTemplateFuncs(t *testing.T) {
 		}
 	})
 
+	// Math functions use tmpl.BaseFuncMap which returns float64
 	t.Run("add", func(t *testing.T) {
 		result, err := executeTemplate(`{{add .a .b}}`, map[string]any{"a": 5, "b": 3})
 		if err != nil {
@@ -714,12 +912,13 @@ func TestTemplateFuncs(t *testing.T) {
 	})
 
 	t.Run("div_by_zero", func(t *testing.T) {
-		_, err := executeTemplate(`{{div .a .b}}`, map[string]any{"a": 10, "b": 0})
-		if err == nil {
-			t.Fatalf("expected error for div by zero, got nil")
+		// tmpl.BaseFuncMap returns 0 on division by zero (not an error)
+		result, err := executeTemplate(`{{div .a .b}}`, map[string]any{"a": 10, "b": 0})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
 		}
-		if !strings.Contains(err.Error(), "division by zero") {
-			t.Errorf("expected 'division by zero' error, got: %v", err)
+		if result != "0" {
+			t.Errorf("expected '0' for div by zero, got '%s'", result)
 		}
 	})
 
@@ -734,12 +933,13 @@ func TestTemplateFuncs(t *testing.T) {
 	})
 
 	t.Run("mod_by_zero", func(t *testing.T) {
-		_, err := executeTemplate(`{{mod .a .b}}`, map[string]any{"a": 10, "b": 0})
-		if err == nil {
-			t.Fatalf("expected error for mod by zero, got nil")
+		// tmpl.BaseFuncMap returns 0 on modulo by zero (not an error)
+		result, err := executeTemplate(`{{mod .a .b}}`, map[string]any{"a": 10, "b": 0})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
 		}
-		if !strings.Contains(err.Error(), "modulo by zero") {
-			t.Errorf("expected 'modulo by zero' error, got: %v", err)
+		if result != "0" {
+			t.Errorf("expected '0' for mod by zero, got '%s'", result)
 		}
 	})
 }
@@ -820,6 +1020,194 @@ func TestTemplateFuncs_InWorkflowContext(t *testing.T) {
 		}
 		if result != "user:123:page:1" {
 			t.Errorf("expected 'user:123:page:1', got '%s'", result)
+		}
+	})
+}
+
+// TestExprFunc_isValidPublicID tests the isValidPublicID expr function.
+func TestExprFunc_isValidPublicID(t *testing.T) {
+	// Helper to evaluate expression with given environment
+	evalExpr := func(exprStr string, env map[string]any) (bool, error) {
+		// Add exprFuncs to environment (same as addExprFuncs does at runtime)
+		for name, fn := range exprFuncs {
+			env[name] = fn
+		}
+		prog, err := compileCondition(exprStr)
+		if err != nil {
+			return false, err
+		}
+		return EvalCondition(prog, env)
+	}
+
+	t.Run("encoder_not_configured", func(t *testing.T) {
+		// Ensure no encoder is set
+		SetTemplateEncoder(nil)
+
+		env := map[string]any{}
+		result, err := evalExpr(`isValidPublicID("task", "tsk_ABC123")`, env)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result != false {
+			t.Error("expected false when encoder not configured")
+		}
+	})
+
+	// Create encoder for remaining tests
+	enc, err := publicid.NewEncoder(
+		"test-secret-key-must-be-32-chars!",
+		[]publicid.NamespaceConfig{
+			{Name: "task", Prefix: "tsk"},
+			{Name: "user", Prefix: "usr"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("failed to create encoder: %v", err)
+	}
+
+	// Set encoder and ensure cleanup
+	SetTemplateEncoder(enc)
+	t.Cleanup(func() { SetTemplateEncoder(nil) })
+
+	t.Run("valid_public_id", func(t *testing.T) {
+		// Generate a valid public ID
+		validID, err := enc.Encode("task", 12345)
+		if err != nil {
+			t.Fatalf("failed to encode: %v", err)
+		}
+
+		env := map[string]any{
+			"id": validID,
+		}
+		result, err := evalExpr(`isValidPublicID("task", id)`, env)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result != true {
+			t.Errorf("expected true for valid public ID %q", validID)
+		}
+	})
+
+	t.Run("invalid_public_id_format", func(t *testing.T) {
+		env := map[string]any{
+			"id": "tsk_INVALID!!!",
+		}
+		result, err := evalExpr(`isValidPublicID("task", id)`, env)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result != false {
+			t.Error("expected false for invalid public ID format")
+		}
+	})
+
+	t.Run("wrong_namespace", func(t *testing.T) {
+		// Generate ID for "task" namespace
+		taskID, err := enc.Encode("task", 12345)
+		if err != nil {
+			t.Fatalf("failed to encode: %v", err)
+		}
+
+		env := map[string]any{
+			"id": taskID,
+		}
+		// Try to validate against "user" namespace
+		result, err := evalExpr(`isValidPublicID("user", id)`, env)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result != false {
+			t.Error("expected false when validating with wrong namespace")
+		}
+	})
+
+	t.Run("wrong_prefix_for_namespace", func(t *testing.T) {
+		// Generate ID for "user" namespace (has usr_ prefix)
+		userID, err := enc.Encode("user", 99999)
+		if err != nil {
+			t.Fatalf("failed to encode: %v", err)
+		}
+
+		env := map[string]any{
+			"id": userID,
+		}
+		// Try to validate against "task" namespace (expects tsk_ prefix)
+		result, err := evalExpr(`isValidPublicID("task", id)`, env)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result != false {
+			t.Error("expected false when prefix doesn't match namespace")
+		}
+	})
+
+	t.Run("non_string_input_int", func(t *testing.T) {
+		env := map[string]any{
+			"id": 12345,
+		}
+		result, err := evalExpr(`isValidPublicID("task", id)`, env)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result != false {
+			t.Error("expected false for non-string input (int)")
+		}
+	})
+
+	t.Run("non_string_input_nil", func(t *testing.T) {
+		env := map[string]any{
+			"id": nil,
+		}
+		result, err := evalExpr(`isValidPublicID("task", id)`, env)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result != false {
+			t.Error("expected false for nil input")
+		}
+	})
+
+	t.Run("non_string_input_bool", func(t *testing.T) {
+		env := map[string]any{
+			"id": true,
+		}
+		result, err := evalExpr(`isValidPublicID("task", id)`, env)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result != false {
+			t.Error("expected false for non-string input (bool)")
+		}
+	})
+
+	t.Run("empty_string", func(t *testing.T) {
+		env := map[string]any{
+			"id": "",
+		}
+		result, err := evalExpr(`isValidPublicID("task", id)`, env)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result != false {
+			t.Error("expected false for empty string")
+		}
+	})
+
+	t.Run("unknown_namespace", func(t *testing.T) {
+		validTaskID, err := enc.Encode("task", 12345)
+		if err != nil {
+			t.Fatalf("failed to encode: %v", err)
+		}
+
+		env := map[string]any{
+			"id": validTaskID,
+		}
+		result, err := evalExpr(`isValidPublicID("unknown", id)`, env)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result != false {
+			t.Error("expected false for unknown namespace")
 		}
 	})
 }

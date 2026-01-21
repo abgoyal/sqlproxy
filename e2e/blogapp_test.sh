@@ -68,6 +68,7 @@ test_list_authors() {
     header "List Authors"
 
     # First request - should be cache MISS (this is the first access to /api/authors)
+    EXPECT_CACHE_MISS=true
     GET /api/authors
     expect_status 200 "List authors returns 200"
     expect_header "X-Cache" "MISS" "First request is cache MISS"
@@ -84,13 +85,18 @@ test_list_authors() {
     fi
 
     # Second request - should be cache HIT
+    EXPECT_CACHE_MISS=false
+    EXPECT_CACHE_HIT=true
     GET /api/authors
     expect_header "X-Cache" "HIT" "Second request is cache HIT"
 
     # Clear cache and verify MISS again (simulates expiry)
     DELETE "/_/cache/clear"
+    EXPECT_CACHE_HIT=false
+    EXPECT_CACHE_MISS=true
     GET /api/authors
     expect_header "X-Cache" "MISS" "After cache clear is MISS"
+    reset_expectations
 }
 
 test_get_author() {
@@ -119,6 +125,7 @@ test_list_tags() {
     header "List Tags"
 
     # First request - should be cache MISS (this is the first access to /api/tags)
+    EXPECT_CACHE_MISS=true
     GET /api/tags
     expect_status 200 "List tags returns 200"
     expect_header "X-Cache" "MISS" "First request is cache MISS"
@@ -135,8 +142,11 @@ test_list_tags() {
     fi
 
     # Second request - should be cache HIT
+    EXPECT_CACHE_MISS=false
+    EXPECT_CACHE_HIT=true
     GET /api/tags
     expect_header "X-Cache" "HIT" "Second request is cache HIT"
+    reset_expectations
 }
 
 test_get_tag() {
@@ -642,6 +652,7 @@ test_cache_expiry() {
     header "Cache Expiry (TTL=1s)"
 
     # First request - MISS
+    EXPECT_CACHE_MISS=true
     GET /api/test/cache-expiry
     expect_status 200 "First request returns 200"
     expect_header "X-Cache" "MISS" "First request is cache MISS"
@@ -649,6 +660,8 @@ test_cache_expiry() {
     info "First timestamp: $first_ts"
 
     # Second request (immediate) - HIT with same timestamp
+    EXPECT_CACHE_MISS=false
+    EXPECT_CACHE_HIT=true
     GET /api/test/cache-expiry
     expect_header "X-Cache" "HIT" "Immediate second request is cache HIT"
     local second_ts=$(json_val '.timestamp')
@@ -666,6 +679,8 @@ test_cache_expiry() {
     sleep 2
 
     # Third request - MISS (expired) with new timestamp
+    EXPECT_CACHE_HIT=false
+    EXPECT_CACHE_MISS=true
     GET /api/test/cache-expiry
     expect_header "X-Cache" "MISS" "After TTL expiry is cache MISS"
     local third_ts=$(json_val '.timestamp')
@@ -679,6 +694,7 @@ test_cache_expiry() {
         fail "Same timestamp after expiry - TTL not working"
         TESTS_FAILED=$((TESTS_FAILED + 1))
     fi
+    reset_expectations
 }
 
 # ----------------------------------------------------------------------------
@@ -688,7 +704,11 @@ test_cache_expiry() {
 test_rate_limiting() {
     header "Rate Limiting - Comments"
 
-    info "Sending rapid comment requests to test rate limiting..."
+    # Wait for rate limit bucket to recover from previous tests
+    sleep 2
+
+    info "Sending rapid comment requests to trigger rate limit..."
+    EXPECT_RATE_LIMIT=true  # We expect 429s in this test
     local rate_limited=false
     for i in $(seq 1 15); do
         POST /api/posts/getting-started-with-go/comments author_name="Rate$i" author_email="rate$i@test.com" content="Rate limit test $i"
@@ -708,6 +728,7 @@ test_rate_limiting() {
         TESTS_FAILED=$((TESTS_FAILED + 1))
     fi
 
+    reset_expectations
     sleep 2  # Let rate limit recover
 }
 

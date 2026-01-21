@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
 	"net/http"
+	"strconv"
+	"strings"
 	"text/template"
 	"time"
 
@@ -52,7 +55,7 @@ type ExecuteResult struct {
 }
 
 // Execute runs a workflow with the given trigger data.
-func (e *Executor) Execute(ctx context.Context, wf *CompiledWorkflow, trigger *TriggerData, requestID string, w http.ResponseWriter) *ExecuteResult {
+func (e *Executor) Execute(ctx context.Context, wf *CompiledWorkflow, trigger *TriggerData, requestID string, w http.ResponseWriter, variables map[string]string) *ExecuteResult {
 	start := time.Now()
 	result := &ExecuteResult{
 		Steps: make(map[string]*StepResult),
@@ -66,7 +69,7 @@ func (e *Executor) Execute(ctx context.Context, wf *CompiledWorkflow, trigger *T
 	}
 
 	// Create workflow context with the (potentially timeout-wrapped) context
-	wfCtx := NewContext(ctx, wf, trigger, requestID, e.logger)
+	wfCtx := NewContext(ctx, wf, trigger, requestID, e.logger, variables)
 
 	e.logger.Info("workflow_started", map[string]any{
 		"workflow":   wf.Config.Name,
@@ -202,6 +205,13 @@ func (e *Executor) executeStep(ctx context.Context, cs *CompiledStep, wfCtx *Con
 		Logger:         e.logger,
 	}
 
+	// Evaluate computed params if present (for query steps)
+	if len(cs.ParamTmpls) > 0 {
+		if err := e.evaluateStepParams(cs, execData.TemplateData); err != nil {
+			return nil, fmt.Errorf("evaluating params: %w", err)
+		}
+	}
+
 	// Check cache for cacheable steps (query, httpcall)
 	if (stepType == "query" || stepType == "httpcall") && cs.CacheKeyTmpl != nil && e.cache != nil {
 		cacheKey, err := e.evaluateCacheKey(cs.CacheKeyTmpl, execData.TemplateData)
@@ -278,6 +288,71 @@ func (e *Executor) evaluateCacheKey(tmpl *template.Template, data map[string]any
 		return "", fmt.Errorf("evaluating cache key: %w", err)
 	}
 	return buf.String(), nil
+}
+
+// evaluateStepParams evaluates computed params templates and adds them to the data map.
+// This allows steps to define derived parameters computed from templates, e.g.:
+//
+//	params:
+//	  internal_id: '{{privateID "task" .trigger.params.public_id}}'
+//
+// The computed values are added to data["params"] and can be referenced in SQL via @param.
+// SQL parameter extraction checks this namespace BEFORE trigger.params, allowing step-level
+// params to override request params when needed (e.g., decoded internal IDs).
+func (e *Executor) evaluateStepParams(cs *CompiledStep, data map[string]any) error {
+	// Get or create params map at top level
+	params, ok := data["params"].(map[string]any)
+	if !ok {
+		params = make(map[string]any)
+		data["params"] = params
+	}
+
+	// Evaluate each param template and add to params
+	for name, tmpl := range cs.ParamTmpls {
+		var buf bytes.Buffer
+		if err := tmpl.Execute(&buf, data); err != nil {
+			return fmt.Errorf("param %s: %w", name, err)
+		}
+		// Parse the result - try int first, then use string
+		result := buf.String()
+		if intVal, err := parseInt64(result); err == nil {
+			params[name] = intVal
+		} else {
+			params[name] = result
+		}
+	}
+
+	return nil
+}
+
+// parseInt64 parses a string as int64, returning error if not a valid integer.
+// Handles both "123" and "123.0" formats (the latter from template float arithmetic).
+func parseInt64(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	// Try direct int parsing first (most common case)
+	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return i, nil
+	}
+	// Only try float parsing if the string contains a decimal point.
+	// This handles cases like "123.0" from template arithmetic while rejecting
+	// integer overflow values that would get silently rounded by float parsing.
+	if !strings.Contains(s, ".") {
+		return 0, fmt.Errorf("not a valid integer: %s", s)
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		// Check bounds before conversion to avoid silent overflow.
+		// Use 2^63 which is exactly representable as float64.
+		// int64 range is [-2^63, 2^63-1], so reject f >= 2^63 or f < -2^63.
+		const maxFloat = float64(1 << 63)
+		if f >= maxFloat || f < -maxFloat {
+			return 0, fmt.Errorf("value %s out of int64 range", s)
+		}
+		// Only accept if it's a whole number (no fractional part)
+		if f == math.Trunc(f) {
+			return int64(f), nil
+		}
+	}
+	return 0, fmt.Errorf("not a valid integer: %s", s)
 }
 
 func (e *Executor) executeQueryStep(ctx context.Context, cs *CompiledStep, execData step.ExecutionData) (*StepResult, error) {

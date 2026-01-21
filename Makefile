@@ -39,13 +39,14 @@ PKG_TMPL := ./internal/tmpl/...
 PKG_RATELIMIT := ./internal/ratelimit/...
 PKG_WORKFLOW := ./internal/workflow/...
 PKG_TYPES := ./internal/types/...
+PKG_PUBLICID := ./internal/publicid/...
 
 .PHONY: all build clean test validate validate-examples run install deps tidy version \
         build-linux build-windows build-darwin build-all \
         build-linux-arm64 build-darwin-arm64 \
         test-config test-db test-validate \
         test-server test-logging test-metrics test-openapi \
-        test-cache test-tmpl test-ratelimit test-workflow test-types \
+        test-cache test-publicid test-ratelimit test-tmpl test-types test-workflow \
         test-unit test-integration test-e2e test-bench \
         test-e2e-taskapp test-e2e-crmapp test-e2e-shopapp test-e2e-blogapp \
         test-cover test-cover-report test-cover-packages test-clean test-docs \
@@ -115,6 +116,9 @@ test-workflow:
 
 test-types:
 	$(GOTEST) -v $(PKG_TYPES)
+
+test-publicid:
+	$(GOTEST) -v $(PKG_PUBLICID)
 
 # Run unit tests only (exclude benchmarks and e2e)
 test-unit:
@@ -265,6 +269,7 @@ test-cover-packages:
 	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/ratelimit.out $(PKG_RATELIMIT)
 	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/workflow.out $(PKG_WORKFLOW)
 	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/types.out $(PKG_TYPES)
+	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/publicid.out $(PKG_PUBLICID)
 	@echo ""
 	@echo "Per-package coverage reports saved to $(COVERAGE_DIR)/"
 
@@ -403,6 +408,7 @@ help:
 	@echo "  make test-ratelimit  Run ratelimit package tests"
 	@echo "  make test-workflow   Run workflow package tests"
 	@echo "  make test-types      Run types package tests"
+	@echo "  make test-publicid   Run publicid package tests"
 	@echo ""
 	@echo "Testing by type:"
 	@echo "  make test-unit        Run unit tests (internal packages)"

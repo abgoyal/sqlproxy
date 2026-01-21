@@ -1021,7 +1021,7 @@ rate_limits:
   - name: "strict"
     requests_per_second: 1
     burst: 1
-    key: "{{.ClientIP}}"
+    key: "{{.trigger.client_ip}}"
 
 workflows:
   - name: "rate_limited_ping"

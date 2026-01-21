@@ -216,7 +216,7 @@ func TestRateLimitRefConfig(t *testing.T) {
 		cfg := RateLimitRefConfig{
 			RequestsPerSecond: 10,
 			Burst:             20,
-			Key:               "{{.ClientIP}}",
+			Key:               "{{.trigger.client_ip}}",
 		}
 		if cfg.Pool != "" {
 			t.Error("expected inline config, not pool reference")

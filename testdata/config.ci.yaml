@@ -70,17 +70,17 @@ rate_limits:
   - name: "default"
     requests_per_second: 100
     burst: 200
-    key: "{{.ClientIP}}"
+    key: "{{.trigger.client_ip}}"
 
   - name: "strict"
     requests_per_second: 10
     burst: 20
-    key: "{{.ClientIP}}"
+    key: "{{.trigger.client_ip}}"
 
   - name: "by_param"
     requests_per_second: 50
     burst: 100
-    key: "{{.ClientIP}}:{{.user_id}}"
+    key: "{{.trigger.client_ip}}:{{.trigger.params.user_id}}"
 
 # Workflows - comprehensive test coverage
 workflows:
@@ -202,7 +202,7 @@ workflows:
         rate_limit:
           - requests_per_second: 10
             burst: 20
-            key: "{{.ClientIP}}"
+            key: "{{.trigger.client_ip}}"
     steps:
       - name: fetch
         type: query
@@ -828,7 +828,7 @@ workflows:
         database: "primary"
         sql: "SELECT @id AS id, datetime('now') AS fetched_at"
         cache:
-          key: "step:item:{{.Param.id}}"
+          key: "step:item:{{.trigger.params.id}}"
           ttl_sec: 300
       - type: response
         template: |
@@ -851,7 +851,7 @@ workflows:
         database: "primary"
         sql: "SELECT @user_id AS id, 'User ' || @user_id AS name"
         cache:
-          key: "step:user:{{.Param.user_id}}"
+          key: "step:user:{{.trigger.params.user_id}}"
           ttl_sec: 300
       # Second cached step with different TTL
       - name: settings
@@ -859,7 +859,7 @@ workflows:
         database: "primary"
         sql: "SELECT 'default' AS theme, 10 AS page_size"
         cache:
-          key: "step:settings:{{.Param.user_id}}"
+          key: "step:settings:{{.trigger.params.user_id}}"
           ttl_sec: 600
       - type: response
         template: |
@@ -886,7 +886,7 @@ workflows:
         database: "primary"
         sql: "SELECT @user_id AS id, 100 + @user_id AS org_id"
         cache:
-          key: "step:user:{{.Param.user_id}}"
+          key: "step:user:{{.trigger.params.user_id}}"
           ttl_sec: 300
       # Cache key uses result from previous step via params
       - name: org
@@ -914,7 +914,7 @@ workflows:
             required: true
         cache:
           enabled: true
-          key: "trigger:product:{{.Param.id}}"
+          key: "trigger:product:{{.trigger.params.id}}"
           ttl_sec: 60
     steps:
       - name: product
@@ -922,14 +922,14 @@ workflows:
         database: "primary"
         sql: "SELECT @id AS id, 'Product ' || @id AS name"
         cache:
-          key: "step:product:{{.Param.id}}"
+          key: "step:product:{{.trigger.params.id}}"
           ttl_sec: 600
       - name: price
         type: query
         database: "primary"
         sql: "SELECT @id AS product_id, 99.99 AS price"
         cache:
-          key: "step:price:{{.Param.id}}"
+          key: "step:price:{{.trigger.params.id}}"
           ttl_sec: 120
       - type: response
         template: |
@@ -952,7 +952,7 @@ workflows:
         http_method: GET
         parse: "json"
         cache:
-          key: "step:external:{{.Param.resource}}"
+          key: "step:external:{{.trigger.params.resource}}"
           ttl_sec: 300
       - type: response
         template: |
@@ -1424,7 +1424,7 @@ workflows:
           - pool: "default"
           - requests_per_second: 30
             burst: 60
-            key: "{{.ClientIP}}:search"
+            key: "{{.trigger.client_ip}}:search"
     steps:
       - name: search
         type: query

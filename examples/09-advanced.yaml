@@ -30,17 +30,17 @@ rate_limits:
   - name: "api"
     requests_per_second: 100
     burst: 200
-    key: "{{.ClientIP}}"
+    key: "{{.trigger.client_ip}}"
 
   - name: "heavy"
     requests_per_second: 10
     burst: 20
-    key: "{{.ClientIP}}"
+    key: "{{.trigger.client_ip}}"
 
   - name: "per_user"
     requests_per_second: 50
     burst: 100
-    key: "user:{{.Param.user_id}}"
+    key: "user:{{.trigger.params.user_id}}"
 
 workflows:
   # ============================================================================
@@ -65,7 +65,7 @@ workflows:
           - pool: "per_user"
         cache:
           enabled: true
-          key: "dashboard:{{.Param.user_id}}"
+          key: "dashboard:{{.trigger.params.user_id}}"
           ttl_sec: 30  # Short TTL for dashboard
     steps:
       # User profile (cached longer - changes rarely)
@@ -74,7 +74,7 @@ workflows:
         database: "main"
         sql: "SELECT @user_id AS id, 'User ' || @user_id AS name, 'premium' AS tier"
         cache:
-          key: "user:{{.Param.user_id}}"
+          key: "user:{{.trigger.params.user_id}}"
           ttl_sec: 300
 
       # Notifications (not cached - changes frequently)
@@ -91,7 +91,7 @@ workflows:
         database: "main"
         sql: "SELECT 42 AS total_items, 5 AS pending_actions"
         cache:
-          key: "stats:{{.Param.user_id}}"
+          key: "stats:{{.trigger.params.user_id}}"
           ttl_sec: 60
 
       # Premium features (only for premium users)
@@ -272,14 +272,14 @@ workflows:
           # Per-tenant limit
           - requests_per_second: 20
             burst: 40
-            key: "tenant:{{.Param.tenant_id}}"
+            key: "tenant:{{.trigger.params.tenant_id}}"
           # Per-resource limit
           - requests_per_second: 10
             burst: 20
-            key: "tenant:{{.Param.tenant_id}}:{{.Param.resource}}"
+            key: "tenant:{{.trigger.params.tenant_id}}:{{.trigger.params.resource}}"
         cache:
           enabled: true
-          key: "tenant:{{.Param.tenant_id}}:{{.Param.resource}}"
+          key: "tenant:{{.trigger.params.tenant_id}}:{{.trigger.params.resource}}"
           ttl_sec: 60
     steps:
       # Verify tenant exists
@@ -288,7 +288,7 @@ workflows:
         database: "main"
         sql: "SELECT @tenant_id AS id, 'Tenant ' || @tenant_id AS name"
         cache:
-          key: "tenant:{{.Param.tenant_id}}:info"
+          key: "tenant:{{.trigger.params.tenant_id}}:info"
           ttl_sec: 600  # Cache tenant info longer
 
       # Get resource data
@@ -323,7 +323,7 @@ workflows:
         rate_limit:
           - requests_per_second: 10
             burst: 20
-            key: "health:{{.ClientIP}}"
+            key: "health:{{.trigger.client_ip}}"
     steps:
       # Check database
       - name: db_check
@@ -439,7 +439,7 @@ workflows:
             required: false
         cache:
           enabled: true
-          key: "report:daily:{{.Param.date | default \"today\"}}"
+          key: "report:daily:{{.trigger.params.date | default \"today\"}}"
           ttl_sec: 3600
       # Scheduled generation
       - type: cron

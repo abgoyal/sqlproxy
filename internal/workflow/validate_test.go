@@ -945,7 +945,7 @@ func TestValidate_RateLimitInline(t *testing.T) {
 			Path:   "/test",
 			Method: "GET",
 			RateLimit: []RateLimitRefConfig{
-				{RequestsPerSecond: 10, Burst: 20, Key: "{{.ClientIP}}"},
+				{RequestsPerSecond: 10, Burst: 20, Key: "{{.trigger.client_ip}}"},
 			},
 		}},
 		Steps: []StepConfig{{Type: "response", Template: "{}"}},

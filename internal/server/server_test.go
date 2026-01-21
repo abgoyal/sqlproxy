@@ -1157,13 +1157,13 @@ func TestServer_RateLimitsHandler(t *testing.T) {
 				Name:              "global",
 				RequestsPerSecond: 100,
 				Burst:             200,
-				Key:               "{{.ClientIP}}",
+				Key:               "{{.trigger.client_ip}}",
 			},
 			{
 				Name:              "per_user",
 				RequestsPerSecond: 10,
 				Burst:             20,
-				Key:               `{{getOr .Header "Authorization" "anonymous"}}`,
+				Key:               `{{getOr .trigger.headers "Authorization" "anonymous"}}`,
 			},
 		},
 		Workflows: []workflow.WorkflowConfig{
@@ -1370,7 +1370,7 @@ func TestServer_RateLimitResponse(t *testing.T) {
 				Name:              "strict",
 				RequestsPerSecond: 1,
 				Burst:             1, // Only 1 request allowed
-				Key:               "{{.ClientIP}}",
+				Key:               "{{.trigger.client_ip}}",
 			},
 		},
 		Workflows: []workflow.WorkflowConfig{

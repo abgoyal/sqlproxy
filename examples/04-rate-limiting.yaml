@@ -28,25 +28,25 @@ rate_limits:
   - name: "default"
     requests_per_second: 100
     burst: 200
-    key: "{{.ClientIP}}"
+    key: "{{.trigger.client_ip}}"
 
   # Strict pool - for expensive operations
   - name: "strict"
     requests_per_second: 10
     burst: 20
-    key: "{{.ClientIP}}"
+    key: "{{.trigger.client_ip}}"
 
   # Per-user pool - limits per authenticated user
   - name: "per_user"
     requests_per_second: 50
     burst: 100
-    key: "{{.ClientIP}}:{{.Param.user_id}}"
+    key: "{{.trigger.client_ip}}:{{.trigger.params.user_id}}"
 
   # Per-API-key pool (use index for headers with hyphens)
   - name: "per_api_key"
     requests_per_second: 1000
     burst: 2000
-    key: "{{index .Header \"X-API-Key\"}}"
+    key: "{{index .trigger.headers \"X-API-Key\"}}"
 
 workflows:
   # ============================================================================
@@ -122,7 +122,7 @@ workflows:
         rate_limit:
           - requests_per_second: 20
             burst: 40
-            key: "{{.ClientIP}}"
+            key: "{{.trigger.client_ip}}"
     steps:
       - name: fetch
         type: query
@@ -145,7 +145,7 @@ workflows:
         rate_limit:
           - requests_per_second: 30
             burst: 60
-            key: "profile:{{.Param.user_id}}"
+            key: "profile:{{.trigger.params.user_id}}"
     steps:
       - name: fetch
         type: query
@@ -176,7 +176,7 @@ workflows:
           # Per-user rate limit (inline)
           - requests_per_second: 5
             burst: 10
-            key: "sensitive:{{.Param.user_id}}"
+            key: "sensitive:{{.trigger.params.user_id}}"
     steps:
       - name: process
         type: query
@@ -223,11 +223,11 @@ workflows:
           # 2. Per-user limit
           - requests_per_second: 10
             burst: 20
-            key: "user:{{.Param.user_id}}"
+            key: "user:{{.trigger.params.user_id}}"
           # 3. Per-resource limit
           - requests_per_second: 5
             burst: 10
-            key: "resource:{{.Param.resource_id}}"
+            key: "resource:{{.trigger.params.resource_id}}"
     steps:
       - name: process
         type: query
@@ -250,7 +250,7 @@ workflows:
         rate_limit:
           - requests_per_second: 100
             burst: 200
-            key: "{{.ClientIP}}"
+            key: "{{.trigger.client_ip}}"
     steps:
       - type: response
         template: |
@@ -265,7 +265,7 @@ workflows:
         rate_limit:
           - requests_per_second: 1000
             burst: 2000
-            key: "{{.Header.X-API-Key}}"
+            key: "{{.trigger.headers.X-API-Key}}"
     steps:
       - type: response
         template: |
@@ -284,7 +284,7 @@ workflows:
         rate_limit:
           - requests_per_second: 50
             burst: 100
-            key: "tenant:{{.Param.tenant}}"
+            key: "tenant:{{.trigger.params.tenant}}"
     steps:
       - type: response
         template: |
@@ -303,7 +303,7 @@ workflows:
         rate_limit:
           - requests_per_second: 20
             burst: 40
-            key: "{{.ClientIP}}:{{.Param.action}}"
+            key: "{{.trigger.client_ip}}:{{.trigger.params.action}}"
     steps:
       - type: response
         template: |

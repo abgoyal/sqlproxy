@@ -64,7 +64,9 @@ workflows:
 	}
 }
 
-// TestLoad_EnvironmentVariables verifies ${VAR} placeholders in config are expanded from environment
+// TestLoad_EnvironmentVariables verifies ${VAR} in variables.values is expanded from environment.
+// Note: ${VAR} syntax is ONLY valid in variables.values section.
+// Use {{.vars.X}} elsewhere to access imported variables.
 func TestLoad_EnvironmentVariables(t *testing.T) {
 	os.Setenv("TEST_DB_HOST", "testhost.example.com")
 	os.Setenv("TEST_DB_PORT", "1433")
@@ -72,6 +74,12 @@ func TestLoad_EnvironmentVariables(t *testing.T) {
 	defer os.Unsetenv("TEST_DB_PORT")
 
 	content := `
+# Variables section - ONLY place where ${VAR} syntax works
+variables:
+  values:
+    db_host: "${TEST_DB_HOST}"
+    db_port: "${TEST_DB_PORT}"
+
 server:
   host: "127.0.0.1"
   port: 8080
@@ -103,17 +111,18 @@ workflows:
       - name: "fetch"
         type: "query"
         database: "primary"
-        sql: "SELECT '${TEST_DB_HOST}' as host"
+        sql: "SELECT 1 as test"
       - type: "response"
         template: '{"success": true}'
 `
 	cfg := loadFromString(t, content)
 
-	// The SQL should have the env var expanded
-	expectedSQL := "SELECT 'testhost.example.com' as host"
-	gotSQL := strings.TrimSpace(cfg.Workflows[0].Steps[0].SQL)
-	if gotSQL != expectedSQL {
-		t.Errorf("expected env var to be expanded, got %q", gotSQL)
+	// Variables should be expanded from environment
+	if cfg.Variables.Values["db_host"] != "testhost.example.com" {
+		t.Errorf("expected db_host to be expanded, got %q", cfg.Variables.Values["db_host"])
+	}
+	if cfg.Variables.Values["db_port"] != "1433" {
+		t.Errorf("expected db_port to be expanded, got %q", cfg.Variables.Values["db_port"])
 	}
 }
 
@@ -505,6 +514,241 @@ func TestValidDatabaseTypes(t *testing.T) {
 	}
 }
 
+// TestLoad_VariablesSection verifies the variables section with values
+func TestLoad_VariablesSection(t *testing.T) {
+	os.Setenv("TEST_API_KEY", "secret-key-123")
+	defer os.Unsetenv("TEST_API_KEY")
+
+	content := `
+server:
+  host: "127.0.0.1"
+  port: 8080
+  default_timeout_sec: 30
+  max_timeout_sec: 300
+
+databases:
+  - name: "primary"
+    type: "sqlite"
+    path: ":memory:"
+
+logging:
+  level: "info"
+
+variables:
+  values:
+    api_key: "${TEST_API_KEY}"
+    app_name: "myapp"
+    max_retries: "${UNDEFINED_VAR:3}"
+`
+	cfg := loadFromString(t, content)
+
+	if cfg.Variables.Values["api_key"] != "secret-key-123" {
+		t.Errorf("expected api_key to be expanded, got %q", cfg.Variables.Values["api_key"])
+	}
+	if cfg.Variables.Values["app_name"] != "myapp" {
+		t.Errorf("expected app_name to be 'myapp', got %q", cfg.Variables.Values["app_name"])
+	}
+	if cfg.Variables.Values["max_retries"] != "3" {
+		t.Errorf("expected max_retries to have default value '3', got %q", cfg.Variables.Values["max_retries"])
+	}
+}
+
+// TestLoad_VariablesDefaultValues verifies ${VAR:default} syntax works correctly
+func TestLoad_VariablesDefaultValues(t *testing.T) {
+	// Ensure the variable is not set
+	os.Unsetenv("UNSET_VAR_FOR_TEST")
+
+	content := `
+server:
+  host: "127.0.0.1"
+  port: 8080
+  default_timeout_sec: 30
+  max_timeout_sec: 300
+
+databases:
+  - name: "primary"
+    type: "sqlite"
+    path: ":memory:"
+
+logging:
+  level: "info"
+
+variables:
+  values:
+    with_default: "${UNSET_VAR_FOR_TEST:fallback_value}"
+    empty_default: "${UNSET_VAR_FOR_TEST:}"
+`
+	cfg := loadFromString(t, content)
+
+	if cfg.Variables.Values["with_default"] != "fallback_value" {
+		t.Errorf("expected with_default to be 'fallback_value', got %q", cfg.Variables.Values["with_default"])
+	}
+	if cfg.Variables.Values["empty_default"] != "" {
+		t.Errorf("expected empty_default to be empty string, got %q", cfg.Variables.Values["empty_default"])
+	}
+}
+
+// TestLoad_VariablesEnvFileSupport verifies loading variables from env file
+func TestLoad_VariablesEnvFileSupport(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create env file
+	envContent := `# This is a comment
+DB_HOST=file-host.example.com
+DB_PORT=5432
+QUOTED_VAR="quoted value"
+SINGLE_QUOTED='single quoted'
+`
+	envPath := filepath.Join(tmpDir, ".env")
+	if err := os.WriteFile(envPath, []byte(envContent), 0644); err != nil {
+		t.Fatalf("failed to write env file: %v", err)
+	}
+
+	content := `
+server:
+  host: "127.0.0.1"
+  port: 8080
+  default_timeout_sec: 30
+  max_timeout_sec: 300
+
+databases:
+  - name: "primary"
+    type: "sqlite"
+    path: ":memory:"
+
+logging:
+  level: "info"
+
+variables:
+  env_file: ".env"
+  values:
+    db_host: "${DB_HOST}"
+    db_port: "${DB_PORT}"
+    quoted: "${QUOTED_VAR}"
+    single_quoted: "${SINGLE_QUOTED}"
+`
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if cfg.Variables.Values["db_host"] != "file-host.example.com" {
+		t.Errorf("expected db_host from env file, got %q", cfg.Variables.Values["db_host"])
+	}
+	if cfg.Variables.Values["db_port"] != "5432" {
+		t.Errorf("expected db_port from env file, got %q", cfg.Variables.Values["db_port"])
+	}
+	if cfg.Variables.Values["quoted"] != "quoted value" {
+		t.Errorf("expected quoted from env file without quotes, got %q", cfg.Variables.Values["quoted"])
+	}
+	if cfg.Variables.Values["single_quoted"] != "single quoted" {
+		t.Errorf("expected single_quoted from env file without quotes, got %q", cfg.Variables.Values["single_quoted"])
+	}
+}
+
+// TestLoad_VariablesEnvOverridesFile verifies actual env vars override env file values
+func TestLoad_VariablesEnvOverridesFile(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create env file with a value
+	envContent := `OVERRIDE_TEST=from-file`
+	envPath := filepath.Join(tmpDir, ".env")
+	if err := os.WriteFile(envPath, []byte(envContent), 0644); err != nil {
+		t.Fatalf("failed to write env file: %v", err)
+	}
+
+	// Set actual environment variable to override
+	os.Setenv("OVERRIDE_TEST", "from-env")
+	defer os.Unsetenv("OVERRIDE_TEST")
+
+	content := `
+server:
+  host: "127.0.0.1"
+  port: 8080
+  default_timeout_sec: 30
+  max_timeout_sec: 300
+
+databases:
+  - name: "primary"
+    type: "sqlite"
+    path: ":memory:"
+
+logging:
+  level: "info"
+
+variables:
+  env_file: ".env"
+  values:
+    test_value: "${OVERRIDE_TEST}"
+`
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	// Actual env var should override file value
+	if cfg.Variables.Values["test_value"] != "from-env" {
+		t.Errorf("expected env var to override file, got %q", cfg.Variables.Values["test_value"])
+	}
+}
+
+// TestLoad_UndefinedVariable verifies that referencing an undefined variable in templates causes an error
+func TestLoad_UndefinedVariable(t *testing.T) {
+	content := `
+server:
+  host: "127.0.0.1"
+  port: 8080
+  default_timeout_sec: 30
+  max_timeout_sec: 300
+
+databases:
+  - name: "primary"
+    type: "sqlite"
+    path: "{{.vars.undefined_db_path}}"
+
+logging:
+  level: "info"
+
+variables:
+  values:
+    defined_var: "some_value"
+`
+	// The undefined variable should cause an error during config loading
+	expectLoadError(t, content, "undefined_db_path")
+}
+
+// TestLoad_UndefinedVariableInNumericField verifies undefined variable error in pre-rendered numeric fields
+func TestLoad_UndefinedVariableInNumericField(t *testing.T) {
+	content := `
+server:
+  host: "127.0.0.1"
+  port: "{{.vars.undefined_port}}"
+  default_timeout_sec: 30
+  max_timeout_sec: 300
+
+databases:
+  - name: "primary"
+    type: "sqlite"
+    path: ":memory:"
+
+logging:
+  level: "info"
+`
+	// The undefined variable in port (numeric field) should leave template unexpanded
+	// which will cause YAML parsing to fail (string instead of int)
+	expectLoadError(t, content, "")
+}
+
 // Helper functions
 
 func loadFromString(t *testing.T, content string) *config.Config {
@@ -765,7 +1009,7 @@ func TestRateLimitConfig_IsPoolReference(t *testing.T) {
 		},
 		{
 			name:     "inline only - no pool",
-			config:   config.RateLimitConfig{RequestsPerSecond: 10, Burst: 20, Key: "{{.ClientIP}}"},
+			config:   config.RateLimitConfig{RequestsPerSecond: 10, Burst: 20, Key: "{{.trigger.client_ip}}"},
 			expected: false,
 		},
 		{
@@ -814,7 +1058,7 @@ func TestRateLimitConfig_IsInline(t *testing.T) {
 		},
 		{
 			name:     "both positive with key",
-			config:   config.RateLimitConfig{RequestsPerSecond: 10, Burst: 20, Key: "{{.ClientIP}}"},
+			config:   config.RateLimitConfig{RequestsPerSecond: 10, Burst: 20, Key: "{{.trigger.client_ip}}"},
 			expected: true, // Key is optional
 		},
 		{
