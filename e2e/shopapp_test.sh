@@ -381,6 +381,9 @@ test_add_item_product_not_found() {
 test_order_state_pending_to_paid() {
     header "Order State: Pending -> Paid"
 
+    # Reset rate limits - earlier order tests may have consumed tokens
+    reset_rate_limits "orders"
+
     # Create order
     POST /api/orders customer_email="pay@test.com" customer_name="Pay Test" shipping_address="Pay St"
     local order_id=$(json_val '.id')

@@ -334,6 +334,9 @@ test_list_activities_filtering() {
 test_create_activity() {
     header "Create Activity"
 
+    # Reset rate limits - customer creation tests may have consumed tokens
+    reset_rate_limits "sales_limit"
+
     POST /api/activities customer_id=1 type="note" subject="Test Note" description="Test description" "api_key=$SALES_KEY"
     expect_status 201 "Create activity returns 201"
     expect_json '.success' 'true' "Create succeeds"

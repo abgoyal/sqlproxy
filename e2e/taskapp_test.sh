@@ -185,6 +185,9 @@ test_options_requests() {
 test_delete_task() {
     header "Delete Task"
 
+    # Reset rate limits - previous tests exhaust the create_limit bucket
+    reset_rate_limits "create_limit"
+
     POST /api/tasks title="To Delete" priority=1
     local task_public_id=$(json_val '.task.public_id')
     info "Created task $task_public_id for deletion"
@@ -199,13 +202,13 @@ test_delete_task() {
 test_trigger_caching() {
     header "Trigger-Level Caching"
 
+    # Reset rate limits before creating test task
+    reset_rate_limits "create_limit"
+
     # Create a fresh task to test caching - avoids pollution from other tests
     POST /api/tasks title="Cache Test Task" priority=1
     local task_public_id=$(json_val '.task.public_id')
     info "Created task $task_public_id for cache test"
-
-    # Wait for rate limit recovery from any previous tests
-    sleep 1
 
     EXPECT_CACHE_MISS=true
     GET "/api/tasks/$task_public_id"
@@ -337,6 +340,9 @@ test_categories() {
 
 test_complete_task() {
     header "Complete Task"
+
+    # Reset rate limits - batch_delete exhausts the create_limit bucket
+    reset_rate_limits "create_limit"
 
     # Create our own task to complete - don't modify seed data
     POST /api/tasks title="Task For Complete" priority=1
@@ -658,6 +664,9 @@ test_httpcall_functionality() {
 
 test_public_id_round_trip() {
     header "Public ID Round Trip"
+
+    # Reset rate limits for deterministic behavior
+    reset_rate_limits "create_limit"
 
     # Create a task
     POST /api/tasks title="Round Trip Test" priority=1
