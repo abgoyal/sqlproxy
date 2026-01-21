@@ -232,8 +232,8 @@ test_step_caching() {
 test_rate_limiting() {
     header "Rate Limiting"
 
-    # Wait for rate limit bucket to recover from previous tests
-    sleep 2
+    # Reset rate limits to start with a full bucket
+    reset_rate_limits "create_limit"
 
     info "Sending rapid requests to trigger rate limit..."
     EXPECT_RATE_LIMIT=true  # We expect 429s in this test
@@ -257,7 +257,7 @@ test_rate_limiting() {
     fi
 
     reset_expectations
-    sleep 2  # Let rate limit recover for any subsequent tests
+    reset_rate_limits "create_limit"  # Clean up for subsequent tests
 }
 
 test_batch_create() {
@@ -271,8 +271,8 @@ test_batch_create() {
 test_batch_delete() {
     header "Batch Delete"
 
-    # Wait for rate limit recovery before creating test tasks
-    sleep 2
+    # Reset rate limits before creating test tasks
+    reset_rate_limits "create_limit"
 
     local ids=()
     for i in 1 2 3; do

@@ -92,6 +92,60 @@ reset_expectations() {
 }
 
 # ============================================================================
+# SERVER STATE CONTROL
+# ============================================================================
+#
+# These functions reset server-side state for test isolation.
+# Use at the start of tests that need a clean slate.
+#
+# reset_rate_limits [pool]  - Reset rate limit buckets
+# reset_cache [endpoint]    - Clear cached responses
+# reset_server_state        - Reset both rate limits and cache
+#
+
+# reset_rate_limits [pool] - Reset rate limit buckets on server
+# If pool is specified, only that pool is reset. Otherwise all pools.
+reset_rate_limits() {
+    local pool="${1:-}"
+    local url="$BASE_URL/_/ratelimits/reset"
+    [ -n "$pool" ] && url="$url?pool=$pool"
+
+    local result
+    result=$(curl -s -X POST "$url")
+    local cleared
+    cleared=$(echo "$result" | jq -r '.buckets_cleared // 0')
+
+    if [ -n "$pool" ]; then
+        info "Reset rate limits for pool '$pool' ($cleared buckets)"
+    else
+        info "Reset all rate limits ($cleared buckets)"
+    fi
+}
+
+# reset_cache [endpoint] - Clear server cache
+# If endpoint is specified, only that endpoint's cache is cleared.
+reset_cache() {
+    local endpoint="${1:-}"
+    local url="$BASE_URL/_/cache/clear"
+    [ -n "$endpoint" ] && url="$url?endpoint=$endpoint"
+
+    curl -s -X POST "$url" > /dev/null
+
+    if [ -n "$endpoint" ]; then
+        info "Cleared cache for endpoint '$endpoint'"
+    else
+        info "Cleared all cache"
+    fi
+}
+
+# reset_server_state - Reset both rate limits and cache
+# Convenience function for full test isolation
+reset_server_state() {
+    reset_rate_limits
+    reset_cache
+}
+
+# ============================================================================
 # HTTP REQUEST HELPERS
 # ============================================================================
 

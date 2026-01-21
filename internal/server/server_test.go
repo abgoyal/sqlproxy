@@ -1341,6 +1341,175 @@ func TestServer_RateLimitsHandler_NotConfigured(t *testing.T) {
 	}
 }
 
+// TestServer_RateLimitsResetHandler tests the /_/ratelimits/reset endpoint
+func TestServer_RateLimitsResetHandler(t *testing.T) {
+	readOnly := false
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Host:              "127.0.0.1",
+			Port:              8080,
+			DefaultTimeoutSec: 30,
+			MaxTimeoutSec:     300,
+		},
+		Databases: []config.DatabaseConfig{
+			{
+				Name:     "test",
+				Type:     "sqlite",
+				Path:     ":memory:",
+				ReadOnly: &readOnly,
+			},
+		},
+		Logging: config.LoggingConfig{
+			Level: "error",
+		},
+		Metrics: config.MetricsConfig{
+			Enabled: false,
+		},
+		RateLimits: []config.RateLimitPoolConfig{
+			{
+				Name:              "global",
+				RequestsPerSecond: 100,
+				Burst:             200,
+				Key:               "{{.trigger.client_ip}}",
+			},
+		},
+		Workflows: []workflow.WorkflowConfig{
+			{
+				Name: "test",
+				Triggers: []workflow.TriggerConfig{
+					{
+						Type:   "http",
+						Path:   "/api/test",
+						Method: "GET",
+					},
+				},
+				Steps: []workflow.StepConfig{
+					{
+						Name:     "fetch",
+						Type:     "query",
+						Database: "test",
+						SQL:      "SELECT 1",
+					},
+					{
+						Type:     "response",
+						Template: `{"success": true}`,
+					},
+				},
+			},
+		},
+	}
+
+	srv, err := New(cfg, true)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/_/ratelimits/reset", srv.rateLimitsResetHandler)
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	t.Run("method_not_allowed", func(t *testing.T) {
+		resp, err := http.Get(ts.URL + "/_/ratelimits/reset")
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusMethodNotAllowed {
+			t.Errorf("expected 405, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("reset_all", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/_/ratelimits/reset", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200, got %d", resp.StatusCode)
+		}
+
+		var result map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if result["status"] != "ok" {
+			t.Errorf("expected status 'ok', got %v", result["status"])
+		}
+		if result["message"] != "all rate limits reset" {
+			t.Errorf("unexpected message: %v", result["message"])
+		}
+	})
+
+	t.Run("reset_specific_pool", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/_/ratelimits/reset?pool=global", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200, got %d", resp.StatusCode)
+		}
+
+		var result map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if result["pool"] != "global" {
+			t.Errorf("expected pool 'global', got %v", result["pool"])
+		}
+	})
+
+	t.Run("reset_unknown_pool", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/_/ratelimits/reset?pool=unknown", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("expected 404, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("key_requires_pool", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/_/ratelimits/reset?key=somekey", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("expected 400, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("delete_method_works", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/_/ratelimits/reset", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200, got %d", resp.StatusCode)
+		}
+	})
+}
+
 // TestServer_RateLimitResponse tests that 429 response includes retry_after_sec
 func TestServer_RateLimitResponse(t *testing.T) {
 	readOnly := false

@@ -421,8 +421,9 @@ func (s *Server) setupRoutes(mux *http.ServeMux) {
 	// Cache management endpoint
 	mux.HandleFunc("/_/cache/clear", s.cacheClearHandler)
 
-	// Rate limit observability endpoint
+	// Rate limit observability and management endpoints
 	mux.HandleFunc("/_/ratelimits", s.rateLimitsHandler)
+	mux.HandleFunc("/_/ratelimits/reset", s.rateLimitsResetHandler)
 
 	// List available endpoints
 	mux.HandleFunc("/", s.listEndpointsHandler)
@@ -733,6 +734,112 @@ func (s *Server) rateLimitsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, resp)
+}
+
+// rateLimitsResetHandler resets rate limit buckets for test isolation
+func (s *Server) rateLimitsResetHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	// Only allow POST/DELETE methods
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		writeJSON(w, errorResponse{
+			Error: "method not allowed, use POST or DELETE",
+		})
+		return
+	}
+
+	if s.rateLimiter == nil {
+		w.WriteHeader(http.StatusNotFound)
+		writeJSON(w, errorResponse{
+			Error: "rate limiting not configured",
+		})
+		return
+	}
+
+	pool := r.URL.Query().Get("pool")
+	key := r.URL.Query().Get("key")
+
+	type resetResponse struct {
+		Status         string `json:"status"`
+		Message        string `json:"message"`
+		Pool           string `json:"pool,omitempty"`
+		Key            string `json:"key,omitempty"`
+		BucketsCleared int    `json:"buckets_cleared"`
+	}
+
+	// Reset specific key in pool
+	if key != "" {
+		if pool == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, errorResponse{
+				Error: "key parameter requires pool parameter",
+			})
+			return
+		}
+
+		cleared, err := s.rateLimiter.ResetKey(pool, key)
+		if err != nil {
+			w.WriteHeader(http.StatusNotFound)
+			writeJSON(w, errorResponse{Error: err.Error()})
+			return
+		}
+
+		count := 0
+		if cleared {
+			count = 1
+		}
+
+		logging.Info("ratelimit_reset_key", map[string]any{
+			"pool": pool,
+			"key":  key,
+		})
+
+		writeJSON(w, resetResponse{
+			Status:         "ok",
+			Message:        "rate limit key reset",
+			Pool:           pool,
+			Key:            key,
+			BucketsCleared: count,
+		})
+		return
+	}
+
+	// Reset specific pool
+	if pool != "" {
+		count, err := s.rateLimiter.ResetPool(pool)
+		if err != nil {
+			w.WriteHeader(http.StatusNotFound)
+			writeJSON(w, errorResponse{Error: err.Error()})
+			return
+		}
+
+		logging.Info("ratelimit_reset_pool", map[string]any{
+			"pool":            pool,
+			"buckets_cleared": count,
+		})
+
+		writeJSON(w, resetResponse{
+			Status:         "ok",
+			Message:        "rate limit pool reset",
+			Pool:           pool,
+			BucketsCleared: count,
+		})
+		return
+	}
+
+	// Reset all pools
+	count := s.rateLimiter.ResetAll()
+
+	logging.Info("ratelimit_reset_all", map[string]any{
+		"buckets_cleared": count,
+	})
+
+	writeJSON(w, resetResponse{
+		Status:         "ok",
+		Message:        "all rate limits reset",
+		BucketsCleared: count,
+	})
 }
 
 func (s *Server) startTime() time.Time {

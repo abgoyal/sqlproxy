@@ -376,8 +376,8 @@ test_stats_step_caching() {
 test_rate_limiting() {
     header "Rate Limiting"
 
-    # Wait for rate limit bucket to recover from previous tests
-    sleep 2
+    # Reset rate limits to start with a full bucket
+    reset_rate_limits "sales_limit"
 
     info "Sending rapid requests to trigger rate limit..."
     EXPECT_RATE_LIMIT=true  # We expect 429s in this test
@@ -402,7 +402,7 @@ test_rate_limiting() {
     fi
 
     reset_expectations
-    sleep 2  # Let rate limit recover
+    reset_rate_limits "sales_limit"  # Clean up for subsequent tests
 }
 
 # ============================================================================

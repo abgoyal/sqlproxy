@@ -376,3 +376,75 @@ func (l *Limiter) PoolNames() []string {
 	}
 	return names
 }
+
+// ResetAll clears all buckets in all pools, returning total buckets cleared
+func (l *Limiter) ResetAll() int {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	total := 0
+	for _, pool := range l.pools {
+		total += pool.Reset()
+	}
+	for _, pool := range l.inlinePools {
+		total += pool.Reset()
+	}
+	return total
+}
+
+// ResetPool clears all buckets in a specific pool
+// Returns (buckets cleared, error if pool not found)
+func (l *Limiter) ResetPool(name string) (int, error) {
+	l.mu.RLock()
+	pool := l.pools[name]
+	if pool == nil {
+		pool = l.inlinePools[name]
+	}
+	l.mu.RUnlock()
+
+	if pool == nil {
+		return 0, fmt.Errorf("pool %q not found", name)
+	}
+
+	return pool.Reset(), nil
+}
+
+// ResetKey clears a specific bucket key in a pool
+// Returns (true if key existed and was cleared, error if pool not found)
+func (l *Limiter) ResetKey(poolName, key string) (bool, error) {
+	l.mu.RLock()
+	pool := l.pools[poolName]
+	if pool == nil {
+		pool = l.inlinePools[poolName]
+	}
+	l.mu.RUnlock()
+
+	if pool == nil {
+		return false, fmt.Errorf("pool %q not found", poolName)
+	}
+
+	return pool.ResetKey(key), nil
+}
+
+// Reset clears all buckets in this pool, returning count of buckets cleared
+func (p *Pool) Reset() int {
+	p.bucketsMu.Lock()
+	defer p.bucketsMu.Unlock()
+
+	count := len(p.buckets)
+	p.buckets = make(map[string]*bucket)
+	p.lastClean = time.Now()
+	return count
+}
+
+// ResetKey clears a specific bucket key, returning true if it existed
+func (p *Pool) ResetKey(key string) bool {
+	p.bucketsMu.Lock()
+	defer p.bucketsMu.Unlock()
+
+	if _, exists := p.buckets[key]; exists {
+		delete(p.buckets, key)
+		return true
+	}
+	return false
+}

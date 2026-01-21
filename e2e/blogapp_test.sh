@@ -91,7 +91,7 @@ test_list_authors() {
     expect_header "X-Cache" "HIT" "Second request is cache HIT"
 
     # Clear cache and verify MISS again (simulates expiry)
-    DELETE "/_/cache/clear"
+    reset_cache
     EXPECT_CACHE_HIT=false
     EXPECT_CACHE_MISS=true
     GET /api/authors
@@ -288,7 +288,7 @@ test_get_post_increments_views() {
     # KNOWN BUG: Per-endpoint cache clear doesn't work. RegisterEndpoint() is never called,
     # so Clear(endpoint) silently returns. Must use ClearAll() for now.
     # See: dev_notes/TODO.md "Per-Endpoint Cache Clear Doesn't Work"
-    DELETE "/_/cache/clear"
+    reset_cache
 
     # Get initial view count (this request increments views)
     GET /api/posts/modern-css-techniques
@@ -296,7 +296,7 @@ test_get_post_increments_views() {
     info "Initial views: $initial_views"
 
     # Clear all cache again so second request runs the workflow
-    DELETE "/_/cache/clear"
+    reset_cache
 
     # Fetch again (should increment because cache was cleared)
     GET /api/posts/modern-css-techniques
@@ -704,8 +704,8 @@ test_cache_expiry() {
 test_rate_limiting() {
     header "Rate Limiting - Comments"
 
-    # Wait for rate limit bucket to recover from previous tests
-    sleep 2
+    # Reset rate limits to start with a full bucket
+    reset_rate_limits "comments"
 
     info "Sending rapid comment requests to trigger rate limit..."
     EXPECT_RATE_LIMIT=true  # We expect 429s in this test
@@ -729,7 +729,7 @@ test_rate_limiting() {
     fi
 
     reset_expectations
-    sleep 2  # Let rate limit recover
+    reset_rate_limits "comments"  # Clean up for subsequent tests
 }
 
 # ============================================================================

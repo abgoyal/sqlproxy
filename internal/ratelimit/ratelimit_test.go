@@ -583,3 +583,109 @@ func containsSubstring(s, substr string) bool {
 	}
 	return false
 }
+
+func TestReset(t *testing.T) {
+	engine := tmpl.New()
+	limiter, err := New([]config.RateLimitPoolConfig{
+		{Name: "pool1", RequestsPerSecond: 10, Burst: 20, Key: "{{.trigger.client_ip}}"},
+		{Name: "pool2", RequestsPerSecond: 5, Burst: 10, Key: "{{.trigger.client_ip}}"},
+	}, engine)
+	if err != nil {
+		t.Fatalf("failed to create limiter: %v", err)
+	}
+
+	// Create some buckets by making requests
+	ctx := &tmpl.Context{Trigger: &tmpl.TriggerContext{ClientIP: "1.2.3.4"}}
+	limiter.Allow([]config.RateLimitConfig{{Pool: "pool1"}}, ctx)
+
+	ctx2 := &tmpl.Context{Trigger: &tmpl.TriggerContext{ClientIP: "5.6.7.8"}}
+	limiter.Allow([]config.RateLimitConfig{{Pool: "pool1"}}, ctx2)
+	limiter.Allow([]config.RateLimitConfig{{Pool: "pool2"}}, ctx2)
+
+	// Verify buckets exist
+	snapshot := limiter.Snapshot()
+	if snapshot.Pools["pool1"].ActiveBuckets != 2 {
+		t.Errorf("expected 2 buckets in pool1, got %d", snapshot.Pools["pool1"].ActiveBuckets)
+	}
+	if snapshot.Pools["pool2"].ActiveBuckets != 1 {
+		t.Errorf("expected 1 bucket in pool2, got %d", snapshot.Pools["pool2"].ActiveBuckets)
+	}
+
+	t.Run("ResetPool", func(t *testing.T) {
+		count, err := limiter.ResetPool("pool1")
+		if err != nil {
+			t.Fatalf("ResetPool failed: %v", err)
+		}
+		if count != 2 {
+			t.Errorf("expected 2 buckets cleared, got %d", count)
+		}
+
+		snapshot := limiter.Snapshot()
+		if snapshot.Pools["pool1"].ActiveBuckets != 0 {
+			t.Errorf("expected 0 buckets in pool1 after reset, got %d", snapshot.Pools["pool1"].ActiveBuckets)
+		}
+		// pool2 should be unaffected
+		if snapshot.Pools["pool2"].ActiveBuckets != 1 {
+			t.Errorf("expected 1 bucket in pool2, got %d", snapshot.Pools["pool2"].ActiveBuckets)
+		}
+	})
+
+	t.Run("ResetPool_NotFound", func(t *testing.T) {
+		_, err := limiter.ResetPool("nonexistent")
+		if err == nil {
+			t.Error("expected error for nonexistent pool")
+		}
+	})
+
+	t.Run("ResetKey", func(t *testing.T) {
+		// Recreate a bucket
+		limiter.Allow([]config.RateLimitConfig{{Pool: "pool1"}}, ctx)
+
+		cleared, err := limiter.ResetKey("pool1", "1.2.3.4")
+		if err != nil {
+			t.Fatalf("ResetKey failed: %v", err)
+		}
+		if !cleared {
+			t.Error("expected key to be cleared")
+		}
+
+		// Try to clear non-existent key
+		cleared, err = limiter.ResetKey("pool1", "nonexistent")
+		if err != nil {
+			t.Fatalf("ResetKey failed: %v", err)
+		}
+		if cleared {
+			t.Error("expected key not to be cleared (doesn't exist)")
+		}
+	})
+
+	t.Run("ResetKey_PoolNotFound", func(t *testing.T) {
+		_, err := limiter.ResetKey("nonexistent", "key")
+		if err == nil {
+			t.Error("expected error for nonexistent pool")
+		}
+	})
+
+	t.Run("ResetAll", func(t *testing.T) {
+		// First reset everything to start clean
+		limiter.ResetAll()
+
+		// Create buckets in both pools
+		limiter.Allow([]config.RateLimitConfig{{Pool: "pool1"}}, ctx)
+		limiter.Allow([]config.RateLimitConfig{{Pool: "pool1"}}, ctx2)
+		limiter.Allow([]config.RateLimitConfig{{Pool: "pool2"}}, ctx)
+
+		count := limiter.ResetAll()
+		if count != 3 {
+			t.Errorf("expected 3 buckets cleared, got %d", count)
+		}
+
+		snapshot := limiter.Snapshot()
+		if snapshot.Pools["pool1"].ActiveBuckets != 0 {
+			t.Errorf("expected 0 buckets in pool1, got %d", snapshot.Pools["pool1"].ActiveBuckets)
+		}
+		if snapshot.Pools["pool2"].ActiveBuckets != 0 {
+			t.Errorf("expected 0 buckets in pool2, got %d", snapshot.Pools["pool2"].ActiveBuckets)
+		}
+	})
+}
