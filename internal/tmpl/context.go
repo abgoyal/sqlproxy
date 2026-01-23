@@ -161,20 +161,20 @@ func (c *Context) toMap(usage Usage) map[string]any {
 	}
 
 	m := map[string]any{
-		"trigger":   trigger,
-		"RequestID": c.RequestID,
-		"Timestamp": c.Timestamp,
-		"Version":   c.Version,
+		"trigger":    trigger,
+		"request_id": c.RequestID,
+		"timestamp":  c.Timestamp,
+		"version":    c.Version,
 	}
 
 	if usage == UsagePostQuery && c.Result != nil {
-		m["Result"] = map[string]any{
-			"Query":      c.Result.Query,
-			"Success":    c.Result.Success,
-			"Count":      c.Result.Count,
-			"Data":       c.Result.Data,
-			"Error":      c.Result.Error,
-			"DurationMs": c.Result.DurationMs,
+		m["result"] = map[string]any{
+			"query":       c.Result.Query,
+			"success":     c.Result.Success,
+			"count":       c.Result.Count,
+			"data":        c.Result.Data,
+			"error":       c.Result.Error,
+			"duration_ms": c.Result.DurationMs,
 		}
 	}
 

@@ -307,8 +307,8 @@ func TestContext_ToMap(t *testing.T) {
 	if trigger["method"] != "POST" {
 		t.Error("expected method in trigger map")
 	}
-	if _, ok := m["Result"]; ok {
-		t.Error("pre-query should not include Result")
+	if _, ok := m["result"]; ok {
+		t.Error("pre-query should not include result")
 	}
 
 	// Add Result and test post-query
@@ -319,19 +319,19 @@ func TestContext_ToMap(t *testing.T) {
 	}
 
 	m = ctx.toMap(UsagePostQuery)
-	if _, ok := m["Result"]; !ok {
-		t.Error("post-query should include Result")
+	if _, ok := m["result"]; !ok {
+		t.Error("post-query should include result")
 	}
 
-	result := m["Result"].(map[string]any)
-	if result["Query"] != "test" {
-		t.Error("expected Result.Query in map")
+	result := m["result"].(map[string]any)
+	if result["query"] != "test" {
+		t.Error("expected result.query in map")
 	}
-	if result["Success"] != true {
-		t.Error("expected Result.Success in map")
+	if result["success"] != true {
+		t.Error("expected result.success in map")
 	}
-	if result["Count"] != 5 {
-		t.Error("expected Result.Count in map")
+	if result["count"] != 5 {
+		t.Error("expected result.count in map")
 	}
 }
 
@@ -579,7 +579,7 @@ func TestContext_PostQuery_Integration(t *testing.T) {
 	builder := NewContextBuilder(false, "1.0.0")
 	engine := New()
 
-	err := engine.Register("webhook_body", `{"query":"{{.Result.Query}}","count":{{.Result.Count}},"success":{{.Result.Success}}}`, UsagePostQuery)
+	err := engine.Register("webhook_body", `{"query":"{{.result.query}}","count":{{.result.count}},"success":{{.result.success}}}`, UsagePostQuery)
 	if err != nil {
 		t.Fatalf("register failed: %v", err)
 	}

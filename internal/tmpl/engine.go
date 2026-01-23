@@ -881,7 +881,7 @@ var validPathPrefixes = []string{
 	".workflow", // Workflow metadata: name, request_id, start_time
 	".iter",     // Block iteration variables
 	".parent",   // Parent context in blocks
-	".Result",   // Query/httpcall result (post-execution templates)
+	".result",   // Query/httpcall result (post-execution templates)
 }
 
 // Validate checks a template string without executing it
@@ -910,9 +910,9 @@ func (e *Engine) Validate(tmplStr string, usage Usage) error {
 		}
 	}
 
-	// Check for invalid usage (e.g., accessing Result in pre-query template)
-	if usage == UsagePreQuery && strings.Contains(tmplStr, ".Result") {
-		return fmt.Errorf("pre-query templates cannot access .Result")
+	// Check for invalid usage (e.g., accessing result in pre-query template)
+	if usage == UsagePreQuery && strings.Contains(tmplStr, ".result") {
+		return fmt.Errorf("pre-query templates cannot access .result")
 	}
 
 	// Execute with sample data to catch structural errors

@@ -139,7 +139,7 @@ func BenchmarkEngine_RateLimit_HeaderRequired(b *testing.B) {
 // BenchmarkEngine_Webhook_SimpleJSON benchmarks simple webhook JSON body
 func BenchmarkEngine_Webhook_SimpleJSON(b *testing.B) {
 	e := New()
-	tmpl := `{"query":"{{.Result.Query}}","success":{{.Result.Success}},"count":{{.Result.Count}}}`
+	tmpl := `{"query":"{{.result.query}}","success":{{.result.success}},"count":{{.result.count}}}`
 	_ = e.Register("webhook", tmpl, UsagePostQuery)
 
 	ctx := &Context{
@@ -166,7 +166,7 @@ func BenchmarkEngine_Webhook_SimpleJSON(b *testing.B) {
 // BenchmarkEngine_Webhook_SlackFormat benchmarks Slack webhook body
 func BenchmarkEngine_Webhook_SlackFormat(b *testing.B) {
 	e := New()
-	tmpl := `{"text":"Query *{{.Result.Query}}* completed","blocks":[{"type":"section","text":{"type":"mrkdwn","text":"Rows: {{.Result.Count}} | Duration: {{.Result.DurationMs}}ms"}}]}`
+	tmpl := `{"text":"Query *{{.result.query}}* completed","blocks":[{"type":"section","text":{"type":"mrkdwn","text":"Rows: {{.result.count}} | Duration: {{.result.duration_ms}}ms"}}]}`
 	_ = e.Register("webhook", tmpl, UsagePostQuery)
 
 	ctx := &Context{
@@ -193,7 +193,7 @@ func BenchmarkEngine_Webhook_SlackFormat(b *testing.B) {
 // BenchmarkEngine_Webhook_WithConditional benchmarks webhook with conditional logic
 func BenchmarkEngine_Webhook_WithConditional(b *testing.B) {
 	e := New()
-	tmpl := `{"status":"{{if .Result.Success}}ok{{else}}error{{end}}","message":"{{if gt .Result.Count 0}}Found {{.Result.Count}} rows{{else}}No results{{end}}"}`
+	tmpl := `{"status":"{{if .result.success}}ok{{else}}error{{end}}","message":"{{if gt .result.count 0}}Found {{.result.count}} rows{{else}}No results{{end}}"}`
 	_ = e.Register("webhook", tmpl, UsagePostQuery)
 
 	ctx := &Context{

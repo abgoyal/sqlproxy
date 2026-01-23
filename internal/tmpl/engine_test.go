@@ -459,10 +459,10 @@ func TestEngine_Validate(t *testing.T) {
 		wantErr bool
 	}{
 		{"valid pre-query", "{{.trigger.client_ip}}", UsagePreQuery, false},
-		{"valid post-query", "{{.Result.Count}}", UsagePostQuery, false},
+		{"valid post-query", "{{.result.count}}", UsagePostQuery, false},
 		{"empty template", "", UsagePreQuery, true},
 		{"invalid syntax", "{{.Invalid", UsagePreQuery, true},
-		{"result in pre-query", "{{.Result.Count}}", UsagePreQuery, true},
+		{"result in pre-query", "{{.result.count}}", UsagePreQuery, true},
 		{"invalid path prefix", "{{.Param.id}}", UsagePreQuery, true},
 		{"invalid path foo", "{{.foo.bar}}", UsagePreQuery, true},
 		{"valid steps path", "{{.steps.fetch.data}}", UsagePostQuery, false},
@@ -708,10 +708,10 @@ func TestEngine_PostQueryContext(t *testing.T) {
 		tmpl string
 		want string
 	}{
-		{"result query", "{{.Result.Query}}", "test_query"},
-		{"result success", "{{.Result.Success}}", "true"},
-		{"result count", "{{.Result.Count}}", "5"},
-		{"result duration", "{{.Result.DurationMs}}", "42"},
+		{"result query", "{{.result.query}}", "test_query"},
+		{"result success", "{{.result.success}}", "true"},
+		{"result count", "{{.result.count}}", "5"},
+		{"result duration", "{{.result.duration_ms}}", "42"},
 	}
 
 	for _, tt := range tests {

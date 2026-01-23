@@ -1362,7 +1362,7 @@ Trigger cache keys have access to request context:
 | `{{.trigger.headers.Authorization}}` | HTTP headers (flattened) |
 | `{{.trigger.query.page}}` | Query parameters (flattened) |
 | `{{.trigger.cookies.session}}` | Parsed cookies |
-| `{{.RequestID}}` | Request ID |
+| `{{.request_id}}` | Request ID |
 
 **Step-Level Caching** - Cache individual step results (query or httpcall). The workflow still executes, but cached steps return their cached result instead of executing. Useful when multiple endpoints share common queries, or for expensive operations.
 
