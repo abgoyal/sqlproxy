@@ -2898,7 +2898,7 @@ func TestIsIPv4Func(t *testing.T) {
 		{"ipv4 public", "8.8.8.8", true},
 		{"ipv6 localhost", "::1", false},
 		{"ipv6 address", "2001:db8::1", false},
-		{"ipv4-mapped ipv6", "::ffff:192.168.1.1", false},
+		{"ipv4-mapped ipv6", "::ffff:192.168.1.1", true}, // Treated as IPv4
 		{"empty string", "", false},
 		{"hostname", "example.com", false},
 	}
@@ -2922,7 +2922,7 @@ func TestIsIPv6Func(t *testing.T) {
 		{"ipv6 localhost", "::1", true},
 		{"ipv6 full", "2001:0db8:85a3:0000:0000:8a2e:0370:7334", true},
 		{"ipv6 compressed", "2001:db8::1", true},
-		{"ipv4-mapped ipv6", "::ffff:192.168.1.1", true},
+		{"ipv4-mapped ipv6", "::ffff:192.168.1.1", false}, // Treated as IPv4, not IPv6
 		{"ipv4 localhost", "127.0.0.1", false},
 		{"ipv4 private", "192.168.1.1", false},
 		{"empty string", "", false},

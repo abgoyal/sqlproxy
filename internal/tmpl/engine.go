@@ -1029,16 +1029,18 @@ func isIPFunc(s string) bool {
 	return err == nil
 }
 
-// isIPv4Func validates IPv4 address
+// isIPv4Func validates IPv4 address. Returns true for pure IPv4 and IPv4-mapped
+// IPv6 addresses (::ffff:x.x.x.x). Mutually exclusive with isIPv6Func.
 func isIPv4Func(s string) bool {
 	addr, err := netip.ParseAddr(s)
-	return err == nil && addr.Is4()
+	return err == nil && (addr.Is4() || addr.Is4In6())
 }
 
-// isIPv6Func validates IPv6 address
+// isIPv6Func validates IPv6 address. Returns true for pure IPv6, excluding
+// IPv4-mapped addresses (::ffff:x.x.x.x). Mutually exclusive with isIPv4Func.
 func isIPv6Func(s string) bool {
 	addr, err := netip.ParseAddr(s)
-	return err == nil && addr.Is6()
+	return err == nil && addr.Is6() && !addr.Is4In6()
 }
 
 // isNumericFunc checks if string is numeric

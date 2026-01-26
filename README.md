@@ -1613,9 +1613,11 @@ Templates have access to:
 | `isEmail` | Valid email format | `{{if isEmail .email}}...{{end}}` |
 | `isUUID` | Valid UUID format | `{{if isUUID .id}}...{{end}}` |
 | `isURL` | Valid URL with scheme | `{{if isURL .link}}...{{end}}` |
-| `isIP`, `isIPv4`, `isIPv6` | Valid IP address | `{{if isIP .addr}}...{{end}}` |
+| `isIP` | Valid IP address (any type) | `{{if isIP .addr}}...{{end}}` |
+| `isIPv4` | IPv4 address (includes IPv4-mapped IPv6) | `{{if isIPv4 .addr}}...{{end}}` |
+| `isIPv6` | IPv6 address (excludes IPv4-mapped) | `{{if isIPv6 .addr}}...{{end}}` |
 | `isNumeric` | Numeric string | `{{if isNumeric .input}}...{{end}}` |
-| `matches` | Regex match | `{{if matches "^[A-Z]{2}$" .code}}...{{end}}` |
+| `matches` | Regex match (false for invalid patterns) | `{{if matches "^[A-Z]{2}$" .code}}...{{end}}` |
 
 #### IP Network (for rate limiting)
 
