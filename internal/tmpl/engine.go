@@ -1048,6 +1048,7 @@ func isNumericFunc(s string) bool {
 }
 
 // matchesFunc checks if string matches regex pattern.
+// Returns false for invalid patterns (graceful degradation, pattern may be user-provided).
 // Security: Go's regexp uses RE2 engine with guaranteed O(n) matching (ReDoS-safe).
 func matchesFunc(pattern, s string) bool {
 	// Try to get cached regex
@@ -1055,7 +1056,7 @@ func matchesFunc(pattern, s string) bool {
 		return cached.(*regexp.Regexp).MatchString(s)
 	}
 
-	// Compile regex
+	// Compile regex (returns false for invalid patterns)
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return false
