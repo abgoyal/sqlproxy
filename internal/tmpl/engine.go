@@ -1,5 +1,5 @@
 // Package tmpl provides a unified template engine for cache keys, rate limit keys,
-// and webhook payloads. All templates use the same context variables and functions.
+// and response templates. All templates use the same context variables and functions.
 package tmpl
 
 import (
@@ -39,8 +39,6 @@ type Usage int
 const (
 	// UsagePreQuery is for templates evaluated before query execution (cache keys, rate limits)
 	UsagePreQuery Usage = iota
-	// UsagePostQuery is for templates evaluated after query execution (webhooks)
-	UsagePostQuery
 )
 
 // Engine manages compiled templates with consistent context and functions
@@ -881,7 +879,6 @@ var validPathPrefixes = []string{
 	".workflow", // Workflow metadata: name, request_id, start_time
 	".iter",     // Block iteration variables
 	".parent",   // Parent context in blocks
-	".result",   // Query/httpcall result (post-execution templates)
 }
 
 // Validate checks a template string without executing it
@@ -908,11 +905,6 @@ func (e *Engine) Validate(tmplStr string, usage Usage) error {
 				return fmt.Errorf("invalid template path %q - must start with .trigger, .steps, .workflow, .iter, or .parent", path)
 			}
 		}
-	}
-
-	// Check for invalid usage (e.g., accessing result in pre-query template)
-	if usage == UsagePreQuery && strings.Contains(tmplStr, ".result") {
-		return fmt.Errorf("pre-query templates cannot access .result")
 	}
 
 	// Execute with sample data to catch structural errors
@@ -971,17 +963,6 @@ func sampleContextMap(usage Usage) map[string]any {
 		"RequestID": "sample-request-id",
 		"Timestamp": "2024-01-01T00:00:00Z",
 		"Version":   "1.0.0",
-	}
-
-	if usage == UsagePostQuery {
-		m["Result"] = map[string]any{
-			"Query":      "sample_query",
-			"Success":    true,
-			"Count":      1,
-			"Data":       []map[string]any{{"id": 1}},
-			"Error":      "",
-			"DurationMs": int64(10),
-		}
 	}
 
 	return m

@@ -9,7 +9,7 @@ import (
 // Realistic Template Benchmarks
 //
 // These benchmarks measure template performance for actual patterns used in
-// the sql-proxy project: cache keys, rate limit keys, webhook bodies, etc.
+// the sql-proxy project: cache keys, rate limit keys, etc.
 // ============================================================================
 
 // BenchmarkEngine_CacheKey_Simple benchmarks simple cache key like "items:{{.trigger.params.status}}"
@@ -136,87 +136,6 @@ func BenchmarkEngine_RateLimit_HeaderRequired(b *testing.B) {
 	}
 }
 
-// BenchmarkEngine_Webhook_SimpleJSON benchmarks simple webhook JSON body
-func BenchmarkEngine_Webhook_SimpleJSON(b *testing.B) {
-	e := New()
-	tmpl := `{"query":"{{.result.query}}","success":{{.result.success}},"count":{{.result.count}}}`
-	_ = e.Register("webhook", tmpl, UsagePostQuery)
-
-	ctx := &Context{
-		Trigger: &TriggerContext{
-			ClientIP: "192.168.1.1",
-			Headers:  map[string]string{},
-			Query:    map[string]string{},
-			Params:   map[string]any{},
-		},
-		Result: &Result{
-			Query:      "daily_report",
-			Success:    true,
-			Count:      42,
-			DurationMs: 150,
-		},
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _ = e.Execute("webhook", ctx)
-	}
-}
-
-// BenchmarkEngine_Webhook_SlackFormat benchmarks Slack webhook body
-func BenchmarkEngine_Webhook_SlackFormat(b *testing.B) {
-	e := New()
-	tmpl := `{"text":"Query *{{.result.query}}* completed","blocks":[{"type":"section","text":{"type":"mrkdwn","text":"Rows: {{.result.count}} | Duration: {{.result.duration_ms}}ms"}}]}`
-	_ = e.Register("webhook", tmpl, UsagePostQuery)
-
-	ctx := &Context{
-		Trigger: &TriggerContext{
-			ClientIP: "192.168.1.1",
-			Headers:  map[string]string{},
-			Query:    map[string]string{},
-			Params:   map[string]any{},
-		},
-		Result: &Result{
-			Query:      "daily_report",
-			Success:    true,
-			Count:      1250,
-			DurationMs: 2500,
-		},
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _ = e.Execute("webhook", ctx)
-	}
-}
-
-// BenchmarkEngine_Webhook_WithConditional benchmarks webhook with conditional logic
-func BenchmarkEngine_Webhook_WithConditional(b *testing.B) {
-	e := New()
-	tmpl := `{"status":"{{if .result.success}}ok{{else}}error{{end}}","message":"{{if gt .result.count 0}}Found {{.result.count}} rows{{else}}No results{{end}}"}`
-	_ = e.Register("webhook", tmpl, UsagePostQuery)
-
-	ctx := &Context{
-		Trigger: &TriggerContext{
-			ClientIP: "192.168.1.1",
-			Headers:  map[string]string{},
-			Query:    map[string]string{},
-			Params:   map[string]any{},
-		},
-		Result: &Result{
-			Query:      "search",
-			Success:    true,
-			Count:      50,
-			DurationMs: 80,
-		},
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _ = e.Execute("webhook", ctx)
-	}
-}
-
 // BenchmarkEngine_ExecuteInline benchmarks inline (non-cached) template execution
 func BenchmarkEngine_ExecuteInline(b *testing.B) {
 	e := New()
@@ -306,26 +225,6 @@ func BenchmarkContextBuilder_WithHeaders(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = builder.Build(req, params)
-	}
-}
-
-// BenchmarkContextBuilder_WithResult benchmarks context with query result
-func BenchmarkContextBuilder_WithResult(b *testing.B) {
-	builder := NewContextBuilder(false, "1.0.0")
-	req := httptest.NewRequest("GET", "/api/test", nil)
-	req.RemoteAddr = "192.168.1.1:12345"
-
-	result := &Result{
-		Query:      "get_users",
-		Success:    true,
-		Count:      100,
-		DurationMs: 45,
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		ctx := builder.Build(req, nil)
-		ctx.WithResult(result)
 	}
 }
 

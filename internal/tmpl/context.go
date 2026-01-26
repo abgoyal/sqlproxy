@@ -19,9 +19,6 @@ type Context struct {
 	RequestID string
 	Timestamp string
 	Version   string
-
-	// Query result (only for UsagePostQuery)
-	Result *Result
 }
 
 // TriggerContext provides unified access to request data.
@@ -34,16 +31,6 @@ type TriggerContext struct {
 	Headers  map[string]string `json:"headers"`
 	Query    map[string]string `json:"query"`
 	Cookies  map[string]string `json:"cookies"`
-}
-
-// Result contains query execution results for post-query templates
-type Result struct {
-	Query      string
-	Success    bool
-	Count      int
-	Data       []map[string]any
-	Error      string
-	DurationMs int64
 }
 
 // ContextBuilder creates Context from HTTP requests
@@ -138,12 +125,6 @@ func (b *ContextBuilder) BuildForRateLimit(data *RateLimitData) *Context {
 	}
 }
 
-// WithResult adds query result to context (for post-query templates)
-func (c *Context) WithResult(r *Result) *Context {
-	c.Result = r
-	return c
-}
-
 // toMap converts Context to map for template execution.
 // All request data is under the "trigger" namespace for consistency with workflow templates.
 func (c *Context) toMap(usage Usage) map[string]any {
@@ -165,17 +146,6 @@ func (c *Context) toMap(usage Usage) map[string]any {
 		"request_id": c.RequestID,
 		"timestamp":  c.Timestamp,
 		"version":    c.Version,
-	}
-
-	if usage == UsagePostQuery && c.Result != nil {
-		m["result"] = map[string]any{
-			"query":       c.Result.Query,
-			"success":     c.Result.Success,
-			"count":       c.Result.Count,
-			"data":        c.Result.Data,
-			"error":       c.Result.Error,
-			"duration_ms": c.Result.DurationMs,
-		}
 	}
 
 	return m

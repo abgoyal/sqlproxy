@@ -459,13 +459,12 @@ func TestEngine_Validate(t *testing.T) {
 		wantErr bool
 	}{
 		{"valid pre-query", "{{.trigger.client_ip}}", UsagePreQuery, false},
-		{"valid post-query", "{{.result.count}}", UsagePostQuery, false},
 		{"empty template", "", UsagePreQuery, true},
 		{"invalid syntax", "{{.Invalid", UsagePreQuery, true},
-		{"result in pre-query", "{{.result.count}}", UsagePreQuery, true},
 		{"invalid path prefix", "{{.Param.id}}", UsagePreQuery, true},
 		{"invalid path foo", "{{.foo.bar}}", UsagePreQuery, true},
-		{"valid steps path", "{{.steps.fetch.data}}", UsagePostQuery, false},
+		{"invalid result path", "{{.result.count}}", UsagePreQuery, true},
+		{"valid steps path", "{{.steps.fetch.data}}", UsagePreQuery, false},
 		{"valid workflow path", "{{.workflow.request_id}}", UsagePreQuery, false},
 	}
 
@@ -684,49 +683,6 @@ func TestEngine_RequireFuncError(t *testing.T) {
 	}
 }
 
-// TestEngine_PostQueryContext tests post-query context with Result
-func TestEngine_PostQueryContext(t *testing.T) {
-	e := New()
-	ctx := &Context{
-		Trigger: &TriggerContext{
-			Headers: make(map[string]string),
-			Query:   make(map[string]string),
-			Params:  make(map[string]any),
-		},
-		Result: &Result{
-			Query:      "test_query",
-			Success:    true,
-			Count:      5,
-			Data:       []map[string]any{{"id": 1}, {"id": 2}},
-			Error:      "",
-			DurationMs: 42,
-		},
-	}
-
-	tests := []struct {
-		name string
-		tmpl string
-		want string
-	}{
-		{"result query", "{{.result.query}}", "test_query"},
-		{"result success", "{{.result.success}}", "true"},
-		{"result count", "{{.result.count}}", "5"},
-		{"result duration", "{{.result.duration_ms}}", "42"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result, err := e.ExecuteInline(tt.tmpl, ctx, UsagePostQuery)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if result != tt.want {
-				t.Errorf("expected %q, got %q", tt.want, result)
-			}
-		})
-	}
-}
-
 // TestEngine_ConcurrentAccess tests thread safety
 func TestEngine_ConcurrentAccess(t *testing.T) {
 	e := New()
@@ -763,17 +719,12 @@ func TestEngine_ConcurrentAccess(t *testing.T) {
 
 // TestSampleContextMap tests sample context generation
 func TestSampleContextMap(t *testing.T) {
-	preQuery := sampleContextMap(UsagePreQuery)
-	if preQuery["ClientIP"] == "" {
-		t.Error("expected ClientIP in pre-query sample")
+	sample := sampleContextMap(UsagePreQuery)
+	if sample["RequestID"] == "" {
+		t.Error("expected RequestID in sample")
 	}
-	if _, ok := preQuery["Result"]; ok {
-		t.Error("pre-query sample should not have Result")
-	}
-
-	postQuery := sampleContextMap(UsagePostQuery)
-	if _, ok := postQuery["Result"]; !ok {
-		t.Error("post-query sample should have Result")
+	if _, ok := sample["trigger"]; !ok {
+		t.Error("expected trigger in sample")
 	}
 }
 

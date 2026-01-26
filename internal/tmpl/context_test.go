@@ -252,32 +252,6 @@ func TestContextBuilder_GetRequestID(t *testing.T) {
 	}
 }
 
-// TestContext_WithResult tests adding result to context
-func TestContext_WithResult(t *testing.T) {
-	ctx := &Context{
-		Trigger: &TriggerContext{
-			ClientIP: "10.0.0.1",
-		},
-	}
-
-	result := &Result{
-		Query:      "test_query",
-		Success:    true,
-		Count:      10,
-		DurationMs: 42,
-	}
-
-	// Method should return same context for chaining
-	returned := ctx.WithResult(result)
-	if returned != ctx {
-		t.Error("expected WithResult to return same context")
-	}
-
-	if ctx.Result != result {
-		t.Error("expected Result to be set")
-	}
-}
-
 // TestContext_ToMap tests context conversion to map
 func TestContext_ToMap(t *testing.T) {
 	ctx := &Context{
@@ -294,7 +268,6 @@ func TestContext_ToMap(t *testing.T) {
 		Version:   "1.0.0",
 	}
 
-	// Test pre-query (no Result)
 	m := ctx.toMap(UsagePreQuery)
 
 	trigger, ok := m["trigger"].(map[string]any)
@@ -308,30 +281,7 @@ func TestContext_ToMap(t *testing.T) {
 		t.Error("expected method in trigger map")
 	}
 	if _, ok := m["result"]; ok {
-		t.Error("pre-query should not include result")
-	}
-
-	// Add Result and test post-query
-	ctx.Result = &Result{
-		Query:   "test",
-		Success: true,
-		Count:   5,
-	}
-
-	m = ctx.toMap(UsagePostQuery)
-	if _, ok := m["result"]; !ok {
-		t.Error("post-query should include result")
-	}
-
-	result := m["result"].(map[string]any)
-	if result["query"] != "test" {
-		t.Error("expected result.query in map")
-	}
-	if result["success"] != true {
-		t.Error("expected result.success in map")
-	}
-	if result["count"] != 5 {
-		t.Error("expected result.count in map")
+		t.Error("should not include result")
 	}
 }
 
@@ -571,36 +521,6 @@ func TestContext_Integration(t *testing.T) {
 	}
 	if result != "users:active" {
 		t.Errorf("expected 'users:active', got %q", result)
-	}
-}
-
-// TestContext_PostQuery_Integration tests post-query context with webhooks
-func TestContext_PostQuery_Integration(t *testing.T) {
-	builder := NewContextBuilder(false, "1.0.0")
-	engine := New()
-
-	err := engine.Register("webhook_body", `{"query":"{{.result.query}}","count":{{.result.count}},"success":{{.result.success}}}`, UsagePostQuery)
-	if err != nil {
-		t.Fatalf("register failed: %v", err)
-	}
-
-	req := httptest.NewRequest("GET", "/api/test", nil)
-	ctx := builder.Build(req, nil)
-
-	ctx.WithResult(&Result{
-		Query:   "daily_report",
-		Success: true,
-		Count:   42,
-	})
-
-	result, err := engine.Execute("webhook_body", ctx)
-	if err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-
-	expected := `{"query":"daily_report","count":42,"success":true}`
-	if result != expected {
-		t.Errorf("expected %q, got %q", expected, result)
 	}
 }
 

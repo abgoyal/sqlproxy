@@ -16,7 +16,7 @@ Run `make test-cover` for current coverage statistics.
 ### config_test.go
 
 - **TestLoad_ValidConfig**: TestLoad_ValidConfig verifies a complete valid YAML config loads with all fields correctly populated
-- **TestLoad_EnvironmentVariables**: TestLoad_EnvironmentVariables verifies ${VAR} placeholders in config are expanded from environment
+- **TestLoad_EnvironmentVariables**: TestLoad_EnvironmentVariables verifies ${VAR} in variables.values is expanded from environment.
 - **TestLoad_MissingServerHost**: TestLoad_MissingServerHost ensures config loading fails when server.host is omitted
 - **TestLoad_InvalidPort**: TestLoad_InvalidPort validates server.port must be in range 1-65535
 - **TestLoad_InvalidTimeout**: TestLoad_InvalidTimeout checks timeout validation: positive values, max >= default
@@ -37,6 +37,8 @@ Run `make test-cover` for current coverage statistics.
 - **TestLoad_VariablesDefaultValues**: TestLoad_VariablesDefaultValues verifies ${VAR:default} syntax works correctly
 - **TestLoad_VariablesEnvFileSupport**: TestLoad_VariablesEnvFileSupport verifies loading variables from env file
 - **TestLoad_VariablesEnvOverridesFile**: TestLoad_VariablesEnvOverridesFile verifies actual env vars override env file values
+- **TestLoad_UndefinedVariable**: TestLoad_UndefinedVariable verifies that referencing an undefined variable in templates causes an error
+- **TestLoad_UndefinedVariableInNumericField**: TestLoad_UndefinedVariableInNumericField verifies undefined variable error in pre-rendered numeric fields
 - **TestIsArrayType**: TestIsArrayType verifies IsArrayType correctly identifies array types
 - **TestArrayBaseType**: TestArrayBaseType verifies ArrayBaseType extracts the base type from array types
 - **TestValidParameterTypes**: TestValidParameterTypes verifies all expected parameter types are in ValidParameterTypes
@@ -159,6 +161,7 @@ Run `make test-cover` for current coverage statistics.
 - **TestValidateRateLimits**: TestValidateRateLimits tests server-level rate limit pool validation
 - **TestRun_NoWorkflowsWarning**: TestRun_NoWorkflowsWarning tests that empty workflows list generates a warning
 - **TestValidatePublicIDs**: TestValidatePublicIDs tests public ID configuration validation
+- **TestValidatePublicIDFunctionUsageWithoutConfig**: ValidatePublicIDFunctionUsageWithoutConfig
 
 
 ---
@@ -195,6 +198,7 @@ Run `make test-cover` for current coverage statistics.
 - **TestServer_CacheClearHandler_NoCacheConfigured**: TestServer_CacheClearHandler_NoCacheConfigured tests cache clear when cache disabled
 - **TestServer_RateLimitsHandler**: TestServer_RateLimitsHandler tests the /_/ratelimits endpoint
 - **TestServer_RateLimitsHandler_NotConfigured**: TestServer_RateLimitsHandler_NotConfigured tests the endpoint when rate limiting is disabled
+- **TestServer_RateLimitsResetHandler**: TestServer_RateLimitsResetHandler tests the /_/ratelimits/reset endpoint
 - **TestServer_RateLimitResponse**: TestServer_RateLimitResponse tests that 429 response includes retry_after_sec
 - **TestServer_CronWorkflowSetup**: TestServer_CronWorkflowSetup verifies cron workflow jobs are registered correctly
 - **TestServer_CronWorkflowExecution**: TestServer_CronWorkflowExecution verifies cron workflow execution path works
@@ -354,16 +358,12 @@ Run `make test-cover` for current coverage statistics.
 - **BenchmarkEngine_RateLimit_ClientIP**: BenchmarkEngine_RateLimit_ClientIP benchmarks simple rate limit key
 - **BenchmarkEngine_RateLimit_Composite**: BenchmarkEngine_RateLimit_Composite benchmarks composite rate limit key
 - **BenchmarkEngine_RateLimit_HeaderRequired**: BenchmarkEngine_RateLimit_HeaderRequired benchmarks rate limit with required header
-- **BenchmarkEngine_Webhook_SimpleJSON**: BenchmarkEngine_Webhook_SimpleJSON benchmarks simple webhook JSON body
-- **BenchmarkEngine_Webhook_SlackFormat**: BenchmarkEngine_Webhook_SlackFormat benchmarks Slack webhook body
-- **BenchmarkEngine_Webhook_WithConditional**: BenchmarkEngine_Webhook_WithConditional benchmarks webhook with conditional logic
 - **BenchmarkEngine_ExecuteInline**: BenchmarkEngine_ExecuteInline benchmarks inline (non-cached) template execution
 - **BenchmarkEngine_Register**: BenchmarkEngine_Register benchmarks template registration/compilation
 - **BenchmarkEngine_Validate**: BenchmarkEngine_Validate benchmarks template validation
 - **BenchmarkEngine_ValidateWithParams**: BenchmarkEngine_ValidateWithParams benchmarks template validation with param checking
 - **BenchmarkContextBuilder_Simple**: BenchmarkContextBuilder_Simple benchmarks basic context building
 - **BenchmarkContextBuilder_WithHeaders**: BenchmarkContextBuilder_WithHeaders benchmarks context with many headers
-- **BenchmarkContextBuilder_WithResult**: BenchmarkContextBuilder_WithResult benchmarks context with query result
 - **BenchmarkExtractParamRefs_Simple**: BenchmarkExtractParamRefs_Simple benchmarks simple param extraction
 - **BenchmarkExtractParamRefs_Complex**: BenchmarkExtractParamRefs_Complex benchmarks complex param extraction
 - **BenchmarkExtractHeaderRefs**: BenchmarkExtractHeaderRefs benchmarks header reference extraction
@@ -384,13 +384,11 @@ Run `make test-cover` for current coverage statistics.
 - **TestContextBuilder_ResolveClientIP_NoProxy**: TestContextBuilder_ResolveClientIP_NoProxy tests IP resolution without proxy headers
 - **TestContextBuilder_ResolveClientIP_WithProxy**: TestContextBuilder_ResolveClientIP_WithProxy tests IP resolution with proxy headers
 - **TestContextBuilder_GetRequestID**: TestContextBuilder_GetRequestID tests request ID extraction
-- **TestContext_WithResult**: TestContext_WithResult tests adding result to context
 - **TestContext_ToMap**: TestContext_ToMap tests context conversion to map
 - **TestExtractParamRefs**: TestExtractParamRefs tests param reference extraction
 - **TestExtractHeaderRefs**: TestExtractHeaderRefs tests header reference extraction
 - **TestExtractQueryRefs**: TestExtractQueryRefs tests query reference extraction
 - **TestContext_Integration**: TestContext_Integration tests full context usage with engine
-- **TestContext_PostQuery_Integration**: TestContext_PostQuery_Integration tests post-query context with webhooks
 - **BenchmarkContextBuilder_Build**: BenchmarkContextBuilder_Build benchmarks context creation
 - **BenchmarkExtractParamRefs**: BenchmarkExtractParamRefs benchmarks param extraction
 
@@ -403,6 +401,7 @@ Run `make test-cover` for current coverage statistics.
 - **TestJSONFunc**: TestJSONFunc tests JSON serialization
 - **TestJSONIndentFunc**: TestJSONIndentFunc tests indented JSON serialization
 - **TestDefaultFunc**: TestDefaultFunc tests the default helper function
+- **TestDefaultFuncInTemplates**: TestDefaultFuncInTemplates tests both direct and piped forms of default
 - **TestCoalesceFunc**: TestCoalesceFunc tests the coalesce function
 - **TestEngine_Register**: TestEngine_Register tests template registration
 - **TestEngine_Execute**: TestEngine_Execute tests template execution
@@ -415,7 +414,6 @@ Run `make test-cover` for current coverage statistics.
 - **TestEngine_StringFunctions**: TestEngine_StringFunctions tests string helper functions in templates
 - **TestEngine_ContextFunctions**: TestEngine_ContextFunctions tests context-based helper functions
 - **TestEngine_RequireFuncError**: TestEngine_RequireFuncError tests require function error case
-- **TestEngine_PostQueryContext**: TestEngine_PostQueryContext tests post-query context with Result
 - **TestEngine_ConcurrentAccess**: TestEngine_ConcurrentAccess tests thread safety
 - **TestSampleContextMap**: TestSampleContextMap tests sample context generation
 - **TestJSONFunc_Error**: TestJSONFunc_Error tests JSON serialization error handling
@@ -424,7 +422,7 @@ Run `make test-cover` for current coverage statistics.
 - **TestEngine_Execute_TemplateError**: TestEngine_Execute_TemplateError tests template execution error handling
 - **TestEngine_Validate_StructuralError**: TestEngine_Validate_StructuralError tests validation with structural template errors
 - **TestToNumber**: TestToNumber tests the numeric type conversion helper
-- **TestEngine_MathFunctions_Float**: TestEngine_MathFunctions_Float tests math functions with float values
+- **TestEngine_MathFunctions_Float**: TestEngine_MathFunctions_Float tests math functions with float values.
 - **TestEngine_MathFunctions_Extended**: TestEngine_MathFunctions_Extended tests extended math functions
 - **TestEngine_NumericFormatFunctions**: TestEngine_NumericFormatFunctions tests numeric formatting functions
 - **TestHeaderFunc**: TestHeaderFunc tests header access with canonical form handling
@@ -436,7 +434,7 @@ Run `make test-cover` for current coverage statistics.
 - **TestIPPrefixFunc**: TestIPPrefixFunc tests the ipPrefix template function
 - **TestNormalizeIPFunc**: TestNormalizeIPFunc tests the normalizeIP template function
 - **TestIPFunctionsInTemplates**: TestIPFunctionsInTemplates tests that IP functions work in actual templates
-- **TestUUIDFunc**: TestUUIDFunc tests UUID generation
+- **TestUUIDFunc**: TestUUIDFunc tests UUID generation through template engine
 - **TestUUIDShortFunc**: TestUUIDShortFunc tests UUID without hyphens
 - **TestShortIDFunc**: TestShortIDFunc tests short ID generation
 - **TestNanoidFunc**: TestNanoidFunc tests NanoID generation
@@ -468,6 +466,31 @@ Run `make test-cover` for current coverage statistics.
 - **TestJoinNonSlice**: JoinNonSlice
 - **TestKeysNonMap**: KeysNonMap
 - **TestToIntConversions**: ToIntConversions
+- **TestAndFunc**: AndFunc
+- **TestOrFunc**: OrFunc
+- **TestBooleanOperatorsInTemplates**: BooleanOperatorsInTemplates
+- **TestIsEmailFunc**: IsEmailFunc
+- **TestIsUUIDFunc**: IsUUIDFunc
+- **TestIsURLFunc**: IsURLFunc
+- **TestIsIPFunc**: IsIPFunc
+- **TestIsIPv4Func**: IsIPv4Func
+- **TestIsIPv6Func**: IsIPv6Func
+- **TestIsNumericFunc**: IsNumericFunc
+- **TestMatchesFunc**: MatchesFunc
+- **TestUrlEncodeFunc**: UrlEncodeFunc
+- **TestUrlDecodeFunc**: UrlDecodeFunc
+- **TestUrlDecodeOrFunc**: UrlDecodeOrFunc
+- **TestBase64EncodeFunc**: Base64EncodeFunc
+- **TestBase64DecodeFunc**: Base64DecodeFunc
+- **TestBase64DecodeOrFunc**: Base64DecodeOrFunc
+- **TestSHA256Func**: SHA256Func
+- **TestMD5Func**: MD5Func
+- **TestHmacSHA256Func**: HmacSHA256Func
+- **TestIPNetworkFuncEdgeCases**: IPNetworkFuncEdgeCases
+- **TestIPPrefixFuncEdgeCases**: IPPrefixFuncEdgeCases
+- **TestShortIDFuncCharacterSet**: ShortIDFuncCharacterSet
+- **TestNanoidFuncCharacterSet**: NanoidFuncCharacterSet
+- **TestNanoidFuncEdgeCases**: NanoidFuncEdgeCases
 
 
 ---
@@ -492,6 +515,7 @@ Run `make test-cover` for current coverage statistics.
 - **TestPoolNames**: PoolNames
 - **TestGetPool**: GetPool
 - **TestBucketCleanup**: BucketCleanup
+- **TestReset**: Reset
 
 
 ---
@@ -525,10 +549,13 @@ Run `make test-cover` for current coverage statistics.
 - **TestCompile_CacheKeyTemplate**: Compile CacheKeyTemplate
 - **TestCompile_InvalidTemplateSyntax**: Compile InvalidTemplateSyntax
 - **TestResolveCondition**: ResolveCondition
+- **TestExpandAliases**: TestExpandAliases tests the alias expansion function directly.
+- **TestExpandAliases_EmptyAliases**: TestExpandAliases_EmptyAliases ensures empty alias map returns expression unchanged.
 - **TestEvalCondition**: EvalCondition
 - **TestEvalExpression**: EvalExpression
 - **TestTemplateFuncs**: TestTemplateFuncs tests all template functions available in workflow templates.
 - **TestTemplateFuncs_InWorkflowContext**: TestTemplateFuncs_InWorkflowContext tests template functions with realistic workflow data.
+- **TestExprFunc_isValidPublicID**: TestExprFunc_isValidPublicID tests the isValidPublicID expr function.
 
 ### config_test.go
 
@@ -548,6 +575,7 @@ Run `make test-cover` for current coverage statistics.
 - **TestContext_BuildExprEnv_CronTrigger**: Context BuildExprEnv CronTrigger
 - **TestContext_BuildExprEnv_WithVariables**: Context BuildExprEnv WithVariables
 - **TestContext_BuildExprEnv_NilVariables**: Context BuildExprEnv NilVariables
+- **TestContext_BuildExprEnv_VarsInExpr**: Context BuildExprEnv VarsInExpr
 - **TestContext_BuildTemplateData**: Context BuildTemplateData
 - **TestStepResultToMap**: StepResultToMap
 - **TestHeaderToMap**: HeaderToMap
@@ -555,6 +583,9 @@ Run `make test-cover` for current coverage statistics.
 - **TestBlockContext_SetGetStepResult**: BlockContext SetGetStepResult
 - **TestBlockContext_BuildExprEnv**: BlockContext BuildExprEnv
 - **TestBlockContext_BuildTemplateData**: BlockContext BuildTemplateData
+- **TestContext_BuildExprEnv_ContainsExprFuncs**: Context BuildExprEnv ContainsExprFuncs
+- **TestContext_BuildExprEnv_CookieAccess**: Context BuildExprEnv CookieAccess
+- **TestContext_BuildExprEnv_CookiesInExpr**: Context BuildExprEnv CookiesInExpr
 
 ### executor_test.go
 
@@ -580,7 +611,15 @@ Run `make test-cover` for current coverage statistics.
 - **TestExecutor_StepCache_NilCache**: Executor StepCache NilCache
 - **TestExecutor_ConditionalResponse_NegatedAlias**: TestExecutor_ConditionalResponse_NegatedAlias tests that negated condition aliases work correctly
 - **TestExecutor_ConditionalResponse_FromConfig**: TestExecutor_ConditionalResponse_FromConfig tests conditional responses compiled from config (like E2E).
+- **TestEvaluateStepParams_Integer**: EvaluateStepParams Integer
+- **TestEvaluateStepParams_String**: EvaluateStepParams String
+- **TestEvaluateStepParams_TemplateError**: EvaluateStepParams TemplateError
+- **TestEvaluateStepParams_MultipleParams**: EvaluateStepParams MultipleParams
+- **TestEvaluateStepParams_UsesExistingParamsMap**: EvaluateStepParams UsesExistingParamsMap
+- **TestEvaluateStepParams_TemplateWithData**: EvaluateStepParams TemplateWithData
+- **TestEvaluateStepParams_EmptyParams**: EvaluateStepParams EmptyParams
 - **TestCompileAndEvaluate_ConditionAliases**: TestCompileAndEvaluate_ConditionAliases tests that condition aliases and negated aliases are properly compiled and evaluated.
+- **TestParseInt64**: ParseInt64
 
 ### handler_test.go
 
