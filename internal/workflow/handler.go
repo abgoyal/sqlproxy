@@ -458,10 +458,14 @@ func resolveClientIP(r *http.Request, trustProxyHeaders bool) string {
 	return host
 }
 
+// parseCookies extracts cookies into a map. For duplicate cookie names,
+// the first occurrence wins (RFC 6265 compliant, matches Go's r.Cookie() behavior).
 func parseCookies(r *http.Request) map[string]string {
 	cookies := make(map[string]string)
 	for _, c := range r.Cookies() {
-		cookies[c.Name] = c.Value
+		if _, exists := cookies[c.Name]; !exists {
+			cookies[c.Name] = c.Value
+		}
 	}
 	return cookies
 }

@@ -1089,15 +1089,15 @@ func TestParseCookies(t *testing.T) {
 		}
 	})
 
-	t.Run("duplicate cookie names - last wins", func(t *testing.T) {
+	t.Run("duplicate cookie names - first wins", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/", nil)
 		req.AddCookie(&http.Cookie{Name: "session", Value: "first"})
 		req.AddCookie(&http.Cookie{Name: "session", Value: "second"})
 
 		cookies := parseCookies(req)
-		// Go's http.Request.Cookies() returns cookies in order; our loop takes the last value for duplicates
-		if cookies["session"] != "second" {
-			t.Errorf("duplicate cookie: session = %q, want 'second' (last wins)", cookies["session"])
+		// RFC 6265 compliant: first occurrence wins (matches Go's r.Cookie() behavior)
+		if cookies["session"] != "first" {
+			t.Errorf("duplicate cookie: session = %q, want 'first' (first wins per RFC 6265)", cookies["session"])
 		}
 	})
 }
