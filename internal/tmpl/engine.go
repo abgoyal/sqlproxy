@@ -1552,19 +1552,30 @@ func formatPercentFunc(v any, decimals ...int) string {
 	return fmt.Sprintf(format, n)
 }
 
-// formatBytesFunc formats bytes as human-readable size
+// formatBytesFunc formats bytes as human-readable size.
+// Handles negative values correctly (e.g., for difference calculations).
 func formatBytesFunc(v any) string {
 	b := toNumber(v)
+	negative := b < 0
+	if negative {
+		b = -b
+	}
 	const unit = 1024
+	var result string
 	if b < unit {
-		return fmt.Sprintf("%.0f B", b)
+		result = fmt.Sprintf("%.0f B", b)
+	} else {
+		div, exp := float64(unit), 0
+		for n := b / unit; n >= unit; n /= unit {
+			div *= unit
+			exp++
+		}
+		result = fmt.Sprintf("%.1f %cB", b/div, "KMGTPE"[exp])
 	}
-	div, exp := float64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
+	if negative {
+		return "-" + result
 	}
-	return fmt.Sprintf("%.1f %cB", b/div, "KMGTPE"[exp])
+	return result
 }
 
 // Template path validation

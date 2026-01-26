@@ -2313,6 +2313,9 @@ func TestNumericFormatting(t *testing.T) {
 		{"formatBytes KB", `{{formatBytes 1536}}`, "1.5 KB"},
 		{"formatBytes MB", `{{formatBytes 1572864}}`, "1.5 MB"},
 		{"formatBytes GB", `{{formatBytes 1610612736}}`, "1.5 GB"},
+		{"formatBytes negative small", `{{formatBytes -500}}`, "-500 B"},
+		{"formatBytes negative KB", `{{formatBytes -1536}}`, "-1.5 KB"},
+		{"formatBytes negative MB", `{{formatBytes -1572864}}`, "-1.5 MB"},
 	}
 
 	e := New()

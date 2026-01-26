@@ -1711,7 +1711,7 @@ steps:
 |----------|-------------|---------|
 | `formatNumber` | With thousand separators | `{{formatNumber 1234567}}` → `1,234,567` |
 | `formatPercent` | As percentage | `{{formatPercent 0.156}}` → `15.6%` |
-| `formatBytes` | Human-readable bytes | `{{formatBytes 1572864}}` → `1.5 MB` |
+| `formatBytes` | Human-readable bytes (handles negatives) | `{{formatBytes 1572864}}` → `1.5 MB` |
 
 ### Condition Expressions
 
