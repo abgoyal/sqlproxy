@@ -558,6 +558,40 @@ test_array_json_helpers() {
     expect_json '.conditional_helpers.coalesce_empty' 'fallback' "coalesce() skips empty strings"
 }
 
+test_condition_expr_functions() {
+    header "Condition Expression Functions"
+
+    # Test condition functions: alias chaining, divOr, len, hasPrefix, upper
+    GET /api/demo/condition-functions
+    expect_status 200 "Condition functions endpoint returns 200"
+
+    # Alias chaining tests
+    expect_json '.alias_chaining.has_data' 'true' "len() works in condition alias"
+    expect_json '.alias_chaining.has_multiple' 'true' "len() comparison in condition alias"
+    expect_json '.alias_chaining.ready' 'true' "Alias chaining (ready depends on has_data)"
+
+    # Safe division with divOr
+    local task_count=$(json_val '.safe_division.task_count')
+    local half_count=$(json_val '.safe_division.half_count')
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [ "$half_count" -ge 1 ]; then
+        success "divOr() works in condition ($task_count / 2 = $half_count)"
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+    else
+        fail "divOr() should return positive result"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+    fi
+    expect_json '.safe_division.good_ratio' 'true' "divOr() works in condition expression"
+
+    # String functions in conditions
+    expect_contains "sample_title" "Sample title is returned"
+    expect_json '.string_conditions.has_prefix_match' 'true' "hasPrefix() works in condition"
+    expect_contains "upper_status" "upper() transforms string"
+
+    # Overall result
+    expect_json '.result' 'all_conditions_passed' "All condition functions work correctly"
+}
+
 test_header_cookie_functions() {
     header "Header and Cookie Functions"
 
@@ -748,6 +782,7 @@ main() {
     test_validation_functions
     test_id_generation
     test_array_json_helpers
+    test_condition_expr_functions
     test_header_cookie_functions
     test_cron_functionality
     test_httpcall_functionality

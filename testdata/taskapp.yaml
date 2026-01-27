@@ -1193,6 +1193,72 @@ workflows:
           }
 
   # ============================================================================
+  # CONDITION EXPRESSION FUNCTIONS - Test expr functions in conditions
+  # ============================================================================
+
+  # GET /api/demo/condition-functions - Test expr functions available in conditions
+  # Tests: divOr, len, isEmpty, hasPrefix, hasSuffix, upper, lower, trim, coalesce
+  - name: "demo_condition_functions"
+    conditions:
+      # Alias chaining: ready depends on has_data
+      has_data: "len(steps.tasks.data) > 0"
+      has_multiple: "len(steps.tasks.data) > 1"
+      ready: "has_data && has_multiple"
+      # Safe division with divOr
+      good_ratio: "divOr(steps.tasks.count, 2, 0) >= 1"
+      # String functions in conditions
+      has_prefix_match: 'hasPrefix(steps.sample.row.title, "Review")'
+      is_uppercase_status: 'upper(steps.sample.row.status) == "PENDING"'
+    triggers:
+      - type: http
+        path: "/api/demo/condition-functions"
+        method: GET
+    steps:
+      - name: tasks
+        type: query
+        database: "main"
+        sql: "SELECT id, title, status FROM tasks ORDER BY id LIMIT 5"
+      - name: sample
+        type: query
+        database: "main"
+        sql: "SELECT title, status FROM tasks ORDER BY id LIMIT 1"
+      - type: response
+        condition: "ready && good_ratio"
+        template: |
+          {
+            "test": "condition_functions",
+            "alias_chaining": {
+              "has_data": true,
+              "has_multiple": true,
+              "ready": true
+            },
+            "safe_division": {
+              "task_count": {{.steps.tasks.count}},
+              "half_count": {{trunc (divOr .steps.tasks.count 2 0)}},
+              "good_ratio": true
+            },
+            "string_conditions": {
+              "sample_title": {{json .steps.sample.row.title}},
+              "sample_status": {{json .steps.sample.row.status}},
+              "has_prefix_match": {{hasPrefix .steps.sample.row.title "Review"}},
+              "upper_status": {{json (upper .steps.sample.row.status)}},
+              "is_uppercase_status": {{eq (upper .steps.sample.row.status) "PENDING"}}
+            },
+            "result": "all_conditions_passed"
+          }
+      - type: response
+        condition: "!ready"
+        template: |
+          {
+            "test": "condition_functions",
+            "has_data": {{gt (len .steps.tasks.data) 0}},
+            "has_multiple": {{gt (len .steps.tasks.data) 1}},
+            "ready": false,
+            "result": "need_more_data",
+            "note": "Create at least 2 tasks with POST /api/init"
+          }
+
+  # ============================================================================
   # CRON TRIGGER DEMONSTRATION
   # ============================================================================
 

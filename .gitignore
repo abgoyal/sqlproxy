@@ -11,3 +11,5 @@ coverage/
 *.out
 covcounters.*
 covmeta.*
+*.test
+
