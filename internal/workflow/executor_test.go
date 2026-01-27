@@ -899,7 +899,7 @@ func TestExecutor_ConditionalResponse_NegatedAlias(t *testing.T) {
 	wf := &CompiledWorkflow{
 		Config: &WorkflowConfig{Name: "test_workflow"},
 		Conditions: map[string]*CompiledCondition{
-			"found": {Source: "steps.fetch.count > 0", Prog: foundCond},
+			"found": {Source: "steps.fetch.count > 0"},
 		},
 		Steps: []*CompiledStep{
 			{
@@ -1309,7 +1309,7 @@ func TestCompileAndEvaluate_ConditionAliases(t *testing.T) {
 	// Verify conditions map
 	t.Logf("Compiled %d named conditions", len(compiled.Conditions))
 	for name, cc := range compiled.Conditions {
-		t.Logf("  %s: source=%q prog=%v", name, cc.Source, cc.Prog != nil)
+		t.Logf("  %s: source=%q", name, cc.Source)
 	}
 
 	// Verify step conditions

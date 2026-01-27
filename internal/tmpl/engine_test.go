@@ -3284,3 +3284,81 @@ func TestNanoidFuncEdgeCases(t *testing.T) {
 		})
 	}
 }
+
+// TestExprFuncs verifies ExprFuncs returns all expected functions
+func TestExprFuncs(t *testing.T) {
+	funcs := ExprFuncs()
+
+	// Note: "contains" and "matches" are built-in expr operators, not functions
+	expected := []string{
+		// Safe division/modulo
+		"divOr", "modOr",
+		// String functions
+		"upper", "lower", "trim", "hasPrefix", "hasSuffix",
+		// Collection helpers
+		"len", "isEmpty", "first", "last",
+		// Validation helpers
+		"isEmail", "isUUID", "isURL", "isIP", "isIPv4", "isIPv6", "isNumeric",
+		// Coalesce
+		"coalesce",
+	}
+
+	for _, name := range expected {
+		if _, ok := funcs[name]; !ok {
+			t.Errorf("ExprFuncs missing expected function %q", name)
+		}
+	}
+}
+
+// TestExprFuncs_DivOr tests the divOr function from ExprFuncs
+func TestExprFuncs_DivOr(t *testing.T) {
+	funcs := ExprFuncs()
+	divOr := funcs["divOr"].(func(any, any, any) float64)
+
+	tests := []struct {
+		name     string
+		a, b     any
+		fallback any
+		want     float64
+	}{
+		{"normal division", 10, 2, -1, 5},
+		{"division by zero", 10, 0, -1, -1},
+		{"division by zero custom fallback", 100, 0, 999, 999},
+		{"float division", 7.5, 2.5, -1, 3},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := divOr(tt.a, tt.b, tt.fallback)
+			if got != tt.want {
+				t.Errorf("divOr(%v, %v, %v) = %v, want %v", tt.a, tt.b, tt.fallback, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestExprFuncs_ModOr tests the modOr function from ExprFuncs
+func TestExprFuncs_ModOr(t *testing.T) {
+	funcs := ExprFuncs()
+	modOr := funcs["modOr"].(func(any, any, any) float64)
+
+	tests := []struct {
+		name     string
+		a, b     any
+		fallback any
+		want     float64
+	}{
+		{"normal modulo", 10, 3, -1, 1},
+		{"modulo by zero", 10, 0, -1, -1},
+		{"modulo by zero custom fallback", 100, 0, 999, 999},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := modOr(tt.a, tt.b, tt.fallback)
+			if got != tt.want {
+				t.Errorf("modOr(%v, %v, %v) = %v, want %v", tt.a, tt.b, tt.fallback, got, tt.want)
+			}
+		})
+	}
+}

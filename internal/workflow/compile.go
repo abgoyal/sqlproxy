@@ -3,21 +3,22 @@ package workflow
 import (
 	"fmt"
 	"math"
-	"regexp"
-	"strings"
 	"sync/atomic"
 	"text/template"
 
 	"github.com/expr-lang/expr"
+	"github.com/expr-lang/expr/ast"
+	"github.com/expr-lang/expr/parser"
 	"github.com/expr-lang/expr/vm"
 
 	"sql-proxy/internal/tmpl"
 )
 
-// CompiledCondition holds a condition alias with its source expression and compiled program.
+// CompiledCondition holds a condition alias with its source expression.
+// The source is stored for debugging and error messages. At compile time,
+// aliases are expanded into step conditions via AST patching.
 type CompiledCondition struct {
-	Source string      // Original expression string (e.g., "steps.fetch.count > 0")
-	Prog   *vm.Program // Compiled program
+	Source string // Original expression string (e.g., "steps.fetch.count > 0")
 }
 
 // CompiledWorkflow holds a workflow with pre-compiled expressions and templates.
@@ -213,11 +214,18 @@ func init() {
 }
 
 // exprFuncs contains custom functions for expr evaluation in conditions.
+// Built from tmpl.ExprFuncs() with workflow-specific additions.
 // Defined once at package level, merged into expression environments.
-var exprFuncs = map[string]any{
+var exprFuncs map[string]any
+
+func init() {
+	// Start with common functions from tmpl package
+	exprFuncs = tmpl.ExprFuncs()
+
+	// Add workflow-specific functions
 	// isValidPublicID checks if a public ID is valid for the given namespace.
 	// Usage in conditions: isValidPublicID("task", trigger.params.public_id)
-	"isValidPublicID": func(namespace string, publicID any) bool {
+	exprFuncs["isValidPublicID"] = func(namespace string, publicID any) bool {
 		enc := getTemplateEncoder()
 		if enc == nil {
 			return false
@@ -228,7 +236,7 @@ var exprFuncs = map[string]any{
 		}
 		_, err := enc.Decode(namespace, pidStr)
 		return err == nil
-	},
+	}
 }
 
 // Compile compiles a workflow configuration into an executable form.
@@ -238,15 +246,22 @@ func Compile(cfg *WorkflowConfig) (*CompiledWorkflow, error) {
 		Conditions: make(map[string]*CompiledCondition),
 	}
 
-	// Compile named condition aliases
-	for name, condExpr := range cfg.Conditions {
-		prog, err := compileCondition(condExpr)
+	// Build alias ASTs in dependency order (handles aliases referencing other aliases)
+	var aliasASTs map[string]ast.Node
+	if len(cfg.Conditions) > 0 {
+		order, err := topoSortAliases(cfg.Conditions)
 		if err != nil {
-			return nil, fmt.Errorf("condition '%s': %w", name, err)
+			return nil, fmt.Errorf("conditions: %w", err)
 		}
-		cw.Conditions[name] = &CompiledCondition{
-			Source: condExpr,
-			Prog:   prog,
+
+		aliasASTs, err = buildAliasASTs(cfg.Conditions, order)
+		if err != nil {
+			return nil, fmt.Errorf("conditions: %w", err)
+		}
+
+		// Store source expressions for debugging/error messages
+		for name, source := range cfg.Conditions {
+			cw.Conditions[name] = &CompiledCondition{Source: source}
 		}
 	}
 
@@ -261,7 +276,7 @@ func Compile(cfg *WorkflowConfig) (*CompiledWorkflow, error) {
 
 	// Compile steps
 	for i, stepCfg := range cfg.Steps {
-		cs, err := compileStep(&stepCfg, i, cw.Conditions)
+		cs, err := compileStep(&stepCfg, i, aliasASTs)
 		if err != nil {
 			name := stepCfg.Name
 			if name == "" {
@@ -303,15 +318,15 @@ func compileTrigger(cfg *TriggerConfig) (*CompiledTrigger, error) {
 	return ct, nil
 }
 
-func compileStep(cfg *StepConfig, index int, aliases map[string]*CompiledCondition) (*CompiledStep, error) {
+func compileStep(cfg *StepConfig, index int, aliasASTs map[string]ast.Node) (*CompiledStep, error) {
 	cs := &CompiledStep{
 		Config: cfg,
 		Index:  index,
 	}
 
-	// Compile condition if present
+	// Compile condition if present (with alias expansion via AST patching)
 	if cfg.Condition != "" {
-		prog, err := resolveCondition(cfg.Condition, aliases)
+		prog, err := compileConditionWithAliases(cfg.Condition, aliasASTs)
 		if err != nil {
 			return nil, fmt.Errorf("condition: %w", err)
 		}
@@ -411,7 +426,7 @@ func compileStep(cfg *StepConfig, index int, aliases map[string]*CompiledConditi
 
 		// Compile nested steps
 		for i, nestedCfg := range cfg.Steps {
-			nested, err := compileStep(&nestedCfg, i, aliases)
+			nested, err := compileStep(&nestedCfg, i, aliasASTs)
 			if err != nil {
 				name := nestedCfg.Name
 				if name == "" {
@@ -424,65 +439,6 @@ func compileStep(cfg *StepConfig, index int, aliases map[string]*CompiledConditi
 	}
 
 	return cs, nil
-}
-
-// resolveCondition resolves a condition string to a compiled program.
-// Supports:
-// - Direct alias reference: "found" -> uses pre-compiled alias
-// - Negated alias: "!found" -> wraps alias expression in !()
-// - Compound expressions: "valid_id && found" -> expands aliases inline
-// - Direct expression: "steps.x.count > 0" -> compiles directly
-func resolveCondition(cond string, aliases map[string]*CompiledCondition) (*vm.Program, error) {
-	// Check for direct alias reference (optimization: reuse pre-compiled program)
-	if cc, ok := aliases[cond]; ok {
-		return cc.Prog, nil
-	}
-
-	// Check for simple negated alias (e.g., "!found")
-	if strings.HasPrefix(cond, "!") {
-		aliasName := strings.TrimPrefix(cond, "!")
-		if cc, ok := aliases[aliasName]; ok {
-			return compileCondition("!(" + cc.Source + ")")
-		}
-	}
-
-	// Expand all alias references in compound expressions
-	expanded := expandAliases(cond, aliases)
-
-	return compileCondition(expanded)
-}
-
-// expandAliases replaces alias references in an expression with their source expressions.
-// Handles word boundaries to avoid replacing property access (e.g., "found" won't match "steps.found").
-func expandAliases(expr string, aliases map[string]*CompiledCondition) string {
-	if len(aliases) == 0 {
-		return expr
-	}
-
-	result := expr
-	for name, cc := range aliases {
-		// Build regex to match alias as a standalone identifier (not part of a dotted path)
-		// Must NOT be preceded by a dot (property access) or alphanumeric
-		// Can be preceded by: start, space, operators (&&, ||, !), parentheses
-		// Examples matched: "found", "!found", "x && found", "(found)", "found || y"
-		// Examples NOT matched: "steps.found", "not_found"
-		pattern := regexp.MustCompile(`(^|[^a-zA-Z0-9_.])` + regexp.QuoteMeta(name) + `([^a-zA-Z0-9_]|$)`)
-		result = pattern.ReplaceAllStringFunc(result, func(match string) string {
-			// Preserve the boundary characters and wrap the source in parentheses
-			prefix := ""
-			suffix := ""
-			if len(match) > len(name) {
-				if match[0] != name[0] {
-					prefix = string(match[0])
-				}
-				if match[len(match)-1] != name[len(name)-1] {
-					suffix = string(match[len(match)-1])
-				}
-			}
-			return prefix + "(" + cc.Source + ")" + suffix
-		})
-	}
-	return result
 }
 
 func compileCondition(exprStr string) (*vm.Program, error) {
@@ -501,6 +457,231 @@ func compileExprWithType(exprStr string, asBool bool) (*vm.Program, error) {
 		opts = append(opts, expr.AsBool())
 	}
 	return expr.Compile(exprStr, opts...)
+}
+
+// aliasPatcher implements ast.Visitor to replace alias identifiers with their ASTs.
+type aliasPatcher struct {
+	aliases map[string]ast.Node // alias name -> parsed AST
+}
+
+// Visit implements ast.Visitor. It replaces identifier nodes that match alias names.
+func (p *aliasPatcher) Visit(node *ast.Node) {
+	if node == nil || *node == nil {
+		return
+	}
+	ident, ok := (*node).(*ast.IdentifierNode)
+	if !ok {
+		return
+	}
+	if replacement, exists := p.aliases[ident.Value]; exists {
+		ast.Patch(node, replacement)
+	}
+}
+
+// compileConditionWithAliases compiles a condition, expanding alias references via AST patching.
+func compileConditionWithAliases(exprStr string, aliasASTs map[string]ast.Node) (*vm.Program, error) {
+	opts := []expr.Option{
+		expr.AllowUndefinedVariables(),
+		expr.AsBool(),
+	}
+	if len(aliasASTs) > 0 {
+		opts = append(opts, expr.Patch(&aliasPatcher{aliases: aliasASTs}))
+	}
+	return expr.Compile(exprStr, opts...)
+}
+
+// aliasRefFinder is a visitor that collects alias references from an AST.
+type aliasRefFinder struct {
+	aliasNames map[string]bool
+	refs       []string
+	seen       map[string]bool
+}
+
+func (f *aliasRefFinder) Visit(node *ast.Node) {
+	if node == nil || *node == nil {
+		return
+	}
+	if ident, ok := (*node).(*ast.IdentifierNode); ok {
+		if f.aliasNames[ident.Value] && !f.seen[ident.Value] {
+			f.refs = append(f.refs, ident.Value)
+			f.seen[ident.Value] = true
+		}
+	}
+}
+
+// extractAliasRefs finds alias names referenced in an expression.
+// Returns a list of alias names that appear as standalone identifiers.
+func extractAliasRefs(exprStr string, aliasNames map[string]bool) ([]string, error) {
+	tree, err := parser.Parse(exprStr)
+	if err != nil {
+		return nil, err
+	}
+
+	finder := &aliasRefFinder{
+		aliasNames: aliasNames,
+		seen:       make(map[string]bool),
+	}
+	ast.Walk(&tree.Node, finder)
+	return finder.refs, nil
+}
+
+// topoSortAliases returns aliases in dependency order (dependencies first).
+// Returns an error if a circular dependency is detected.
+func topoSortAliases(aliases map[string]string) ([]string, error) {
+	if len(aliases) == 0 {
+		return nil, nil
+	}
+
+	aliasNames := make(map[string]bool, len(aliases))
+	for name := range aliases {
+		aliasNames[name] = true
+	}
+
+	// Build dependency graph: deps[A] = [B, C] means A depends on B and C
+	deps := make(map[string][]string)
+	for name, source := range aliases {
+		refs, err := extractAliasRefs(source, aliasNames)
+		if err != nil {
+			return nil, fmt.Errorf("alias %q: %w", name, err)
+		}
+		deps[name] = refs
+	}
+
+	// Kahn's algorithm for topological sort
+	// Count incoming edges (how many aliases depend on each alias)
+	inDegree := make(map[string]int)
+	for name := range aliases {
+		inDegree[name] = 0
+	}
+	for _, depList := range deps {
+		for _, dep := range depList {
+			inDegree[dep]++
+		}
+	}
+
+	// Start with aliases that have no dependents
+	var queue []string
+	for name, degree := range inDegree {
+		if degree == 0 {
+			queue = append(queue, name)
+		}
+	}
+
+	var sorted []string
+	for len(queue) > 0 {
+		// Pop from queue
+		curr := queue[0]
+		queue = queue[1:]
+		sorted = append(sorted, curr)
+
+		// Decrease in-degree for aliases this one depends on
+		for _, dep := range deps[curr] {
+			inDegree[dep]--
+			if inDegree[dep] == 0 {
+				queue = append(queue, dep)
+			}
+		}
+	}
+
+	// If we didn't process all aliases, there's a cycle
+	if len(sorted) != len(aliases) {
+		// Find aliases involved in cycle for error message
+		var cycleAliases []string
+		for name, degree := range inDegree {
+			if degree > 0 {
+				cycleAliases = append(cycleAliases, name)
+			}
+		}
+		return nil, fmt.Errorf("circular dependency detected among aliases: %v", cycleAliases)
+	}
+
+	// Reverse to get dependencies-first order
+	for i, j := 0, len(sorted)-1; i < j; i, j = i+1, j-1 {
+		sorted[i], sorted[j] = sorted[j], sorted[i]
+	}
+
+	return sorted, nil
+}
+
+// buildAliasASTs parses and expands aliases in dependency order.
+// Returns a map of alias name to expanded AST.
+func buildAliasASTs(aliases map[string]string, order []string) (map[string]ast.Node, error) {
+	result := make(map[string]ast.Node, len(order))
+
+	for _, name := range order {
+		source := aliases[name]
+
+		// Parse the alias expression
+		tree, err := parser.Parse(source)
+		if err != nil {
+			return nil, fmt.Errorf("alias %q: %w", name, err)
+		}
+
+		// If this alias references other aliases, patch them in
+		if len(result) > 0 {
+			patcher := &aliasPatcher{aliases: result}
+			ast.Walk(&tree.Node, patcher)
+		}
+
+		result[name] = tree.Node
+	}
+
+	return result, nil
+}
+
+// divisionValidator walks the AST to find unsafe division operations.
+// Reports errors for:
+// - Division by literal zero
+// - Division with dynamic divisor (should use divOr instead)
+type divisionValidator struct {
+	errors []string
+}
+
+func (v *divisionValidator) Visit(node *ast.Node) {
+	if node == nil || *node == nil {
+		return
+	}
+
+	binNode, ok := (*node).(*ast.BinaryNode)
+	if !ok || binNode.Operator != "/" {
+		return
+	}
+
+	// Check the divisor (right operand)
+	switch r := binNode.Right.(type) {
+	case *ast.IntegerNode:
+		if r.Value == 0 {
+			v.errors = append(v.errors, "division by zero")
+		}
+		// Non-zero integer literal is safe
+	case *ast.FloatNode:
+		if r.Value == 0 {
+			v.errors = append(v.errors, "division by zero")
+		}
+		// Non-zero float literal is safe
+	default:
+		// Dynamic divisor - require divOr for safety
+		v.errors = append(v.errors, "dynamic divisor in division - use divOr(a, b, fallback) instead of a / b")
+	}
+}
+
+// ValidateDivisions checks an expression for unsafe division operations.
+// Returns an error if:
+// - Expression contains division by literal zero
+// - Expression contains division with dynamic divisor (should use divOr)
+func ValidateDivisions(exprStr string) error {
+	tree, err := parser.Parse(exprStr)
+	if err != nil {
+		return err // Syntax error handled elsewhere
+	}
+
+	validator := &divisionValidator{}
+	ast.Walk(&tree.Node, validator)
+
+	if len(validator.errors) > 0 {
+		return fmt.Errorf("%s", validator.errors[0])
+	}
+	return nil
 }
 
 // EvalCondition evaluates a compiled condition against an environment.

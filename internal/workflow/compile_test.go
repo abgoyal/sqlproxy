@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 	"text/template"
 
@@ -268,30 +269,23 @@ func TestCompile_InvalidTemplateSyntax(t *testing.T) {
 	}
 }
 
-func TestResolveCondition(t *testing.T) {
-	// Create aliases map with test conditions
-	aliases := map[string]*CompiledCondition{
-		"found": {
-			Source: "steps.fetch.count > 0",
-			Prog:   nil, // Will be set below
-		},
-		"valid_id": {
-			Source: "trigger.params.id != \"\"",
-			Prog:   nil,
-		},
-		"is_owner": {
-			Source: "steps.fetch.row.owner_id == 123",
-			Prog:   nil,
-		},
+// TestAliasExpansion tests alias expansion via AST patching.
+func TestAliasExpansion(t *testing.T) {
+	// Create alias ASTs by building them in order
+	aliasSources := map[string]string{
+		"found":    "steps.fetch.count > 0",
+		"valid_id": "trigger.params.id != \"\"",
+		"is_owner": "steps.fetch.row.owner_id == 123",
 	}
 
-	// Compile all aliases
-	for name, cc := range aliases {
-		prog, err := compileCondition(cc.Source)
-		if err != nil {
-			t.Fatalf("failed to compile alias %s: %v", name, err)
-		}
-		cc.Prog = prog
+	order, err := topoSortAliases(aliasSources)
+	if err != nil {
+		t.Fatalf("topoSortAliases error: %v", err)
+	}
+
+	aliasASTs, err := buildAliasASTs(aliasSources, order)
+	if err != nil {
+		t.Fatalf("buildAliasASTs error: %v", err)
 	}
 
 	// Test cases
@@ -326,12 +320,11 @@ func TestResolveCondition(t *testing.T) {
 			expected: false,
 		},
 		{
-			name:     "direct expression",
+			name:     "direct expression (no alias)",
 			cond:     "steps.fetch.count == 10",
 			env:      map[string]any{"steps": map[string]any{"fetch": map[string]any{"count": 10}}},
 			expected: true,
 		},
-		// Compound expression tests (the fix we implemented)
 		{
 			name: "compound AND - both true",
 			cond: "found && valid_id",
@@ -426,9 +419,9 @@ func TestResolveCondition(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			prog, err := resolveCondition(tt.cond, aliases)
+			prog, err := compileConditionWithAliases(tt.cond, aliasASTs)
 			if err != nil {
-				t.Fatalf("resolveCondition error: %v", err)
+				t.Fatalf("compileConditionWithAliases error: %v", err)
 			}
 
 			result, err := EvalCondition(prog, tt.env)
@@ -443,98 +436,222 @@ func TestResolveCondition(t *testing.T) {
 	}
 }
 
-// TestExpandAliases tests the alias expansion function directly.
-func TestExpandAliases(t *testing.T) {
-	aliases := map[string]*CompiledCondition{
-		"found": {
-			Source: "steps.fetch.count > 0",
-		},
-		"valid_id": {
-			Source: "trigger.params.id != \"\"",
-		},
-		"can_modify": {
-			Source: "steps.can_modify.count > 0",
-		},
+// TestAliasChaining tests that aliases can reference other aliases.
+func TestAliasChaining(t *testing.T) {
+	// Alias "ready" depends on alias "has_data"
+	aliasSources := map[string]string{
+		"has_data": "steps.fetch.count > 0",
+		"ready":    "has_data && steps.validate.success",
 	}
 
+	order, err := topoSortAliases(aliasSources)
+	if err != nil {
+		t.Fatalf("topoSortAliases error: %v", err)
+	}
+
+	// Verify has_data comes before ready
+	hasDataIdx, readyIdx := -1, -1
+	for i, name := range order {
+		if name == "has_data" {
+			hasDataIdx = i
+		}
+		if name == "ready" {
+			readyIdx = i
+		}
+	}
+	if hasDataIdx == -1 || readyIdx == -1 {
+		t.Fatalf("expected both aliases in order, got %v", order)
+	}
+	if hasDataIdx > readyIdx {
+		t.Errorf("expected has_data before ready, got order %v", order)
+	}
+
+	aliasASTs, err := buildAliasASTs(aliasSources, order)
+	if err != nil {
+		t.Fatalf("buildAliasASTs error: %v", err)
+	}
+
+	// Test that "ready" correctly expands has_data
+	prog, err := compileConditionWithAliases("ready", aliasASTs)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	// Both conditions true
+	env := map[string]any{
+		"steps": map[string]any{
+			"fetch":    map[string]any{"count": 5},
+			"validate": map[string]any{"success": true},
+		},
+	}
+	result, err := EvalCondition(prog, env)
+	if err != nil {
+		t.Fatalf("eval error: %v", err)
+	}
+	if !result {
+		t.Error("expected true when both conditions met")
+	}
+
+	// has_data is false
+	env["steps"].(map[string]any)["fetch"].(map[string]any)["count"] = 0
+	result, err = EvalCondition(prog, env)
+	if err != nil {
+		t.Fatalf("eval error: %v", err)
+	}
+	if result {
+		t.Error("expected false when has_data is false")
+	}
+}
+
+// TestCircularDependencyDetection verifies that circular alias dependencies are detected.
+func TestCircularDependencyDetection(t *testing.T) {
 	tests := []struct {
-		name     string
-		expr     string
-		expected string
+		name    string
+		aliases map[string]string
 	}{
 		{
-			name:     "no aliases",
-			expr:     "steps.fetch.count > 0",
-			expected: "steps.fetch.count > 0",
+			name: "direct cycle A -> B -> A",
+			aliases: map[string]string{
+				"a": "b && x > 0",
+				"b": "a && y > 0",
+			},
 		},
 		{
-			name:     "alias at start",
-			expr:     "found && x",
-			expected: "(steps.fetch.count > 0) && x",
+			name: "self reference",
+			aliases: map[string]string{
+				"a": "a && x > 0",
+			},
 		},
 		{
-			name:     "alias at end",
-			expr:     "x && found",
-			expected: "x && (steps.fetch.count > 0)",
-		},
-		{
-			name:     "alias in middle",
-			expr:     "a && found && b",
-			expected: "a && (steps.fetch.count > 0) && b",
-		},
-		{
-			name:     "multiple different aliases",
-			expr:     "found && valid_id",
-			expected: "(steps.fetch.count > 0) && (trigger.params.id != \"\")",
-		},
-		{
-			name:     "negated alias",
-			expr:     "!found",
-			expected: "!(steps.fetch.count > 0)",
-		},
-		{
-			name:     "alias inside parentheses",
-			expr:     "(found || valid_id)",
-			expected: "((steps.fetch.count > 0) || (trigger.params.id != \"\"))",
-		},
-		{
-			name:     "should not match property path",
-			expr:     "steps.can_modify.count > 0",
-			expected: "steps.can_modify.count > 0",
-		},
-		{
-			name:     "alias name appears in property path - should not match",
-			expr:     "steps.can_modify.count > 0 && can_modify",
-			expected: "steps.can_modify.count > 0 && (steps.can_modify.count > 0)",
-		},
-		{
-			name:     "standalone alias vs property access",
-			expr:     "can_modify && steps.can_modify.count > 0",
-			expected: "(steps.can_modify.count > 0) && steps.can_modify.count > 0",
+			name: "three-way cycle",
+			aliases: map[string]string{
+				"a": "b && x > 0",
+				"b": "c && y > 0",
+				"c": "a && z > 0",
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := expandAliases(tt.expr, aliases)
-			if result != tt.expected {
-				t.Errorf("expandAliases(%q)\nexpected: %q\ngot:      %q", tt.expr, tt.expected, result)
+			_, err := topoSortAliases(tt.aliases)
+			if err == nil {
+				t.Error("expected circular dependency error")
+			}
+			if err != nil && !contains(err.Error(), "circular") {
+				t.Errorf("expected 'circular' in error, got: %v", err)
 			}
 		})
 	}
 }
 
-// TestExpandAliases_EmptyAliases ensures empty alias map returns expression unchanged.
-func TestExpandAliases_EmptyAliases(t *testing.T) {
-	expr := "steps.fetch.count > 0 && trigger.params.id != \"\""
-	result := expandAliases(expr, nil)
-	if result != expr {
-		t.Errorf("expected unchanged expression with nil aliases, got %q", result)
+// helper function for string containment check
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
+}
+
+func containsHelper(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+// TestAliasInStringLiteral verifies aliases are NOT expanded inside string literals.
+func TestAliasInStringLiteral(t *testing.T) {
+	aliasSources := map[string]string{
+		"found": "steps.fetch.count > 0",
 	}
 
-	result = expandAliases(expr, map[string]*CompiledCondition{})
-	if result != expr {
-		t.Errorf("expected unchanged expression with empty aliases, got %q", result)
+	order, err := topoSortAliases(aliasSources)
+	if err != nil {
+		t.Fatalf("topoSortAliases error: %v", err)
+	}
+
+	aliasASTs, err := buildAliasASTs(aliasSources, order)
+	if err != nil {
+		t.Fatalf("buildAliasASTs error: %v", err)
+	}
+
+	// "found" inside a string should NOT be expanded
+	prog, err := compileConditionWithAliases(`status == "found"`, aliasASTs)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	env := map[string]any{"status": "found"}
+	result, err := EvalCondition(prog, env)
+	if err != nil {
+		t.Fatalf("eval error: %v", err)
+	}
+	if !result {
+		t.Error("expected true - 'found' in string should not be expanded")
+	}
+
+	// And the opposite case
+	env["status"] = "not found"
+	result, err = EvalCondition(prog, env)
+	if err != nil {
+		t.Fatalf("eval error: %v", err)
+	}
+	if result {
+		t.Error("expected false")
+	}
+}
+
+// TestAliasNotMatchPropertyPath verifies aliases don't match property paths.
+func TestAliasNotMatchPropertyPath(t *testing.T) {
+	aliasSources := map[string]string{
+		"can_modify": "steps.check.allowed",
+	}
+
+	order, err := topoSortAliases(aliasSources)
+	if err != nil {
+		t.Fatalf("topoSortAliases error: %v", err)
+	}
+
+	aliasASTs, err := buildAliasASTs(aliasSources, order)
+	if err != nil {
+		t.Fatalf("buildAliasASTs error: %v", err)
+	}
+
+	// "can_modify" as property should NOT be expanded, but standalone should
+	prog, err := compileConditionWithAliases("can_modify && steps.can_modify.value > 0", aliasASTs)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	env := map[string]any{
+		"steps": map[string]any{
+			"check":      map[string]any{"allowed": true},
+			"can_modify": map[string]any{"value": 10},
+		},
+	}
+	result, err := EvalCondition(prog, env)
+	if err != nil {
+		t.Fatalf("eval error: %v", err)
+	}
+	if !result {
+		t.Error("expected true")
+	}
+}
+
+// TestEmptyAliases verifies compilation works with no aliases.
+func TestEmptyAliases(t *testing.T) {
+	prog, err := compileConditionWithAliases("x > 0 && y < 10", nil)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	env := map[string]any{"x": 5, "y": 3}
+	result, err := EvalCondition(prog, env)
+	if err != nil {
+		t.Fatalf("eval error: %v", err)
+	}
+	if !result {
+		t.Error("expected true")
 	}
 }
 
@@ -1208,6 +1325,224 @@ func TestExprFunc_isValidPublicID(t *testing.T) {
 		}
 		if result != false {
 			t.Error("expected false for unknown namespace")
+		}
+	})
+}
+
+// TestExprFuncs_InConditions tests that common functions from tmpl.ExprFuncs
+// are available and work correctly in condition expressions.
+func TestExprFuncs_InConditions(t *testing.T) {
+	// Helper to evaluate condition with given environment
+	evalExpr := func(exprStr string, env map[string]any) (bool, error) {
+		for name, fn := range exprFuncs {
+			env[name] = fn
+		}
+		prog, err := compileCondition(exprStr)
+		if err != nil {
+			return false, err
+		}
+		return EvalCondition(prog, env)
+	}
+
+	t.Run("divOr_safe_division", func(t *testing.T) {
+		env := map[string]any{"a": 10, "b": 0}
+		result, err := evalExpr(`divOr(a, b, -1) == -1`, env)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !result {
+			t.Error("expected divOr to return fallback on division by zero")
+		}
+	})
+
+	t.Run("divOr_normal_division", func(t *testing.T) {
+		env := map[string]any{"a": 10, "b": 2}
+		result, err := evalExpr(`divOr(a, b, -1) == 5`, env)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !result {
+			t.Error("expected divOr(10, 2, -1) == 5")
+		}
+	})
+
+	t.Run("len_function", func(t *testing.T) {
+		env := map[string]any{"items": []any{1, 2, 3}}
+		result, err := evalExpr(`len(items) == 3`, env)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !result {
+			t.Error("expected len(items) == 3")
+		}
+	})
+
+	t.Run("isEmpty_function", func(t *testing.T) {
+		env := map[string]any{"items": []any{}}
+		result, err := evalExpr(`isEmpty(items)`, env)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !result {
+			t.Error("expected isEmpty([]) to be true")
+		}
+	})
+
+	t.Run("contains_operator", func(t *testing.T) {
+		// "contains" is a built-in expr operator, not a function
+		env := map[string]any{"s": "hello world"}
+		result, err := evalExpr(`s contains "world"`, env)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !result {
+			t.Error("expected 'hello world' contains 'world' to be true")
+		}
+	})
+
+	t.Run("hasPrefix_function", func(t *testing.T) {
+		env := map[string]any{"s": "hello world"}
+		result, err := evalExpr(`hasPrefix(s, "hello")`, env)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !result {
+			t.Error("expected hasPrefix('hello world', 'hello') to be true")
+		}
+	})
+
+	t.Run("isEmail_function", func(t *testing.T) {
+		env := map[string]any{"email": "test@example.com"}
+		result, err := evalExpr(`isEmail(email)`, env)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !result {
+			t.Error("expected isEmail('test@example.com') to be true")
+		}
+	})
+
+	t.Run("isUUID_function", func(t *testing.T) {
+		env := map[string]any{"id": "550e8400-e29b-41d4-a716-446655440000"}
+		result, err := evalExpr(`isUUID(id)`, env)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !result {
+			t.Error("expected isUUID to be true for valid UUID")
+		}
+	})
+
+	t.Run("matches_operator", func(t *testing.T) {
+		// "matches" is a built-in expr operator, not a function
+		env := map[string]any{"s": "abc123"}
+		result, err := evalExpr(`s matches "^[a-z]+[0-9]+$"`, env)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !result {
+			t.Error("expected 'abc123' matches '^[a-z]+[0-9]+$' to be true")
+		}
+	})
+
+	t.Run("first_function", func(t *testing.T) {
+		env := map[string]any{"items": []any{"a", "b", "c"}}
+		result, err := evalExpr(`first(items) == "a"`, env)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !result {
+			t.Error("expected first(items) == 'a'")
+		}
+	})
+
+	t.Run("upper_lower_functions", func(t *testing.T) {
+		env := map[string]any{"s": "Hello"}
+		result, err := evalExpr(`upper(s) == "HELLO" && lower(s) == "hello"`, env)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !result {
+			t.Error("expected upper/lower to work correctly")
+		}
+	})
+}
+
+// TestValidateDivisions tests static validation of division operations
+func TestValidateDivisions(t *testing.T) {
+	t.Run("safe_literal_division", func(t *testing.T) {
+		// Division by non-zero literal is safe
+		err := ValidateDivisions("x / 2")
+		if err != nil {
+			t.Errorf("expected no error for x / 2, got: %v", err)
+		}
+	})
+
+	t.Run("safe_float_division", func(t *testing.T) {
+		// Division by non-zero float literal is safe
+		err := ValidateDivisions("x / 2.5")
+		if err != nil {
+			t.Errorf("expected no error for x / 2.5, got: %v", err)
+		}
+	})
+
+	t.Run("division_by_zero_integer", func(t *testing.T) {
+		err := ValidateDivisions("x / 0")
+		if err == nil {
+			t.Error("expected error for division by zero")
+		}
+		if err != nil && !strings.Contains(err.Error(), "division by zero") {
+			t.Errorf("expected 'division by zero' error, got: %v", err)
+		}
+	})
+
+	t.Run("division_by_zero_float", func(t *testing.T) {
+		err := ValidateDivisions("x / 0.0")
+		if err == nil {
+			t.Error("expected error for division by zero")
+		}
+		if err != nil && !strings.Contains(err.Error(), "division by zero") {
+			t.Errorf("expected 'division by zero' error, got: %v", err)
+		}
+	})
+
+	t.Run("dynamic_divisor_rejected", func(t *testing.T) {
+		err := ValidateDivisions("x / y")
+		if err == nil {
+			t.Error("expected error for dynamic divisor")
+		}
+		if err != nil && !strings.Contains(err.Error(), "divOr") {
+			t.Errorf("expected error mentioning divOr, got: %v", err)
+		}
+	})
+
+	t.Run("dynamic_divisor_in_complex_expr", func(t *testing.T) {
+		err := ValidateDivisions("a > 0 && b / divisor > threshold")
+		if err == nil {
+			t.Error("expected error for dynamic divisor in b / divisor")
+		}
+	})
+
+	t.Run("divOr_is_allowed", func(t *testing.T) {
+		// divOr is a function call, not a division operator
+		err := ValidateDivisions("divOr(x, y, 0) > 5")
+		if err != nil {
+			t.Errorf("expected no error for divOr usage, got: %v", err)
+		}
+	})
+
+	t.Run("no_division_is_fine", func(t *testing.T) {
+		err := ValidateDivisions("x + y * z - 10")
+		if err != nil {
+			t.Errorf("expected no error for expression without division, got: %v", err)
+		}
+	})
+
+	t.Run("nested_division_detected", func(t *testing.T) {
+		// Division inside parentheses should still be detected
+		err := ValidateDivisions("(total / divisor) > avg")
+		if err == nil {
+			t.Error("expected error for dynamic divisor in nested expression")
 		}
 	})
 }

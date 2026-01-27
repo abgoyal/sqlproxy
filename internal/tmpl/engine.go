@@ -262,6 +262,57 @@ func BaseFuncMap() template.FuncMap {
 	}
 }
 
+// ExprFuncs returns functions suitable for expr condition evaluation.
+// These are a subset of template functions that work well in expr conditions.
+// Does not include workflow-specific functions like isValidPublicID.
+func ExprFuncs() map[string]any {
+	return map[string]any{
+		// Safe division/modulo (prevents divide-by-zero panics)
+		"divOr": func(a, b, defaultVal any) float64 {
+			bv := toNumber(b)
+			if bv == 0 {
+				return toNumber(defaultVal)
+			}
+			return toNumber(a) / bv
+		},
+		"modOr": func(a, b, defaultVal any) float64 {
+			bv := toNumber(b)
+			if bv == 0 {
+				return toNumber(defaultVal)
+			}
+			return math.Mod(toNumber(a), bv)
+		},
+
+		// String functions
+		// Note: "contains" and "matches" are built-in expr operators, not functions
+		// Use: s contains "substr" and s matches "^pattern$"
+		"upper":     strings.ToUpper,
+		"lower":     strings.ToLower,
+		"trim":      strings.TrimSpace,
+		"hasPrefix": strings.HasPrefix,
+		"hasSuffix": strings.HasSuffix,
+
+		// Collection helpers
+		"len":     lenFunc,
+		"isEmpty": isEmptyFunc,
+		"first":   firstFunc,
+		"last":    lastFunc,
+
+		// Validation helpers
+		// Note: "matches" is a built-in expr operator: s matches "^pattern$"
+		"isEmail":   isEmailFunc,
+		"isUUID":    isUUIDFunc,
+		"isURL":     isURLFunc,
+		"isIP":      isIPFunc,
+		"isIPv4":    isIPv4Func,
+		"isIPv6":    isIPv6Func,
+		"isNumeric": isNumericFunc,
+
+		// Coalesce - first non-empty string
+		"coalesce": coalesceFunc,
+	}
+}
+
 // New creates a new template engine with all standard functions
 func New() *Engine {
 	e := &Engine{

@@ -468,8 +468,18 @@ func validateCronExpr(expr string) error {
 }
 
 func validateExprSyntax(exprStr string) error {
+	// Check syntax by compiling
 	_, err := compileCondition(exprStr)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Check for unsafe divisions
+	if err := ValidateDivisions(exprStr); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // pathParamRegex matches path parameters like {id} or {user_id}

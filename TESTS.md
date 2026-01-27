@@ -491,6 +491,9 @@ Run `make test-cover` for current coverage statistics.
 - **TestShortIDFuncCharacterSet**: ShortIDFuncCharacterSet
 - **TestNanoidFuncCharacterSet**: NanoidFuncCharacterSet
 - **TestNanoidFuncEdgeCases**: NanoidFuncEdgeCases
+- **TestExprFuncs**: TestExprFuncs verifies ExprFuncs returns all expected functions
+- **TestExprFuncs_DivOr**: TestExprFuncs_DivOr tests the divOr function from ExprFuncs
+- **TestExprFuncs_ModOr**: TestExprFuncs_ModOr tests the modOr function from ExprFuncs
 
 
 ---
@@ -548,14 +551,19 @@ Run `make test-cover` for current coverage statistics.
 - **TestCompile_BlockWithIteration**: Compile BlockWithIteration
 - **TestCompile_CacheKeyTemplate**: Compile CacheKeyTemplate
 - **TestCompile_InvalidTemplateSyntax**: Compile InvalidTemplateSyntax
-- **TestResolveCondition**: ResolveCondition
-- **TestExpandAliases**: TestExpandAliases tests the alias expansion function directly.
-- **TestExpandAliases_EmptyAliases**: TestExpandAliases_EmptyAliases ensures empty alias map returns expression unchanged.
+- **TestAliasExpansion**: TestAliasExpansion tests alias expansion via AST patching.
+- **TestAliasChaining**: TestAliasChaining tests that aliases can reference other aliases.
+- **TestCircularDependencyDetection**: TestCircularDependencyDetection verifies that circular alias dependencies are detected.
+- **TestAliasInStringLiteral**: TestAliasInStringLiteral verifies aliases are NOT expanded inside string literals.
+- **TestAliasNotMatchPropertyPath**: TestAliasNotMatchPropertyPath verifies aliases don't match property paths.
+- **TestEmptyAliases**: TestEmptyAliases verifies compilation works with no aliases.
 - **TestEvalCondition**: EvalCondition
 - **TestEvalExpression**: EvalExpression
 - **TestTemplateFuncs**: TestTemplateFuncs tests all template functions available in workflow templates.
 - **TestTemplateFuncs_InWorkflowContext**: TestTemplateFuncs_InWorkflowContext tests template functions with realistic workflow data.
 - **TestExprFunc_isValidPublicID**: TestExprFunc_isValidPublicID tests the isValidPublicID expr function.
+- **TestExprFuncs_InConditions**: TestExprFuncs_InConditions tests that common functions from tmpl.ExprFuncs
+- **TestValidateDivisions**: TestValidateDivisions tests static validation of division operations
 
 ### config_test.go
 
@@ -690,6 +698,7 @@ Run `make test-cover` for current coverage statistics.
 - **TestValidate_RateLimitErrors**: TestValidate_RateLimitErrors verifies rate limit validation catches invalid configurations
 - **TestValidate_HTTPCallRetry**: TestValidate_HTTPCallRetry verifies httpcall retry configuration validation
 - **TestValidate_HTTPCallRetryValid**: TestValidate_HTTPCallRetryValid verifies valid httpcall retry configuration passes
+- **TestValidate_DivisionSafety**: TestValidate_DivisionSafety tests that unsafe divisions are caught during validation
 
 
 ---

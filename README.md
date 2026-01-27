@@ -1725,7 +1725,9 @@ conditions:
   large_result: "steps.fetch.count >= 100"
 ```
 
-Available operators: `==`, `!=`, `<`, `>`, `<=`, `>=`, `&&`, `||`, `!`, `in`, `matches`
+Available operators: `==`, `!=`, `<`, `>`, `<=`, `>=`, `&&`, `||`, `!`, `in`, `contains`, `matches`
+
+Note: `contains` and `matches` are operators, not functions. Use them infix: `trigger.params.name contains "admin"` or `trigger.params.email matches "^.*@example\\.com$"`
 
 **Using condition aliases in compound expressions:**
 
@@ -1754,6 +1756,27 @@ Aliases are expanded at compile time, so `"found && is_owner"` becomes `"(steps.
 | Function | Description | Example |
 |----------|-------------|---------|
 | `isValidPublicID` | Check if public ID is valid | `isValidPublicID("user", trigger.params.id)` |
+| `divOr` | Safe division with fallback | `divOr(total, count, 0)` |
+| `modOr` | Safe modulo with fallback | `modOr(value, divisor, 0)` |
+| `upper` | Uppercase string | `upper(trigger.params.name)` |
+| `lower` | Lowercase string | `lower(trigger.params.name)` |
+| `trim` | Trim whitespace | `trim(trigger.params.input)` |
+| `hasPrefix` | Check string prefix | `hasPrefix(trigger.params.path, "/api")` |
+| `hasSuffix` | Check string suffix | `hasSuffix(trigger.params.file, ".json")` |
+| `len` | Length of string/array/map | `len(steps.fetch.rows) > 0` |
+| `isEmpty` | Check if value is empty | `isEmpty(trigger.params.filter)` |
+| `first` | First element of array | `first(steps.fetch.rows)` |
+| `last` | Last element of array | `last(steps.fetch.rows)` |
+| `coalesce` | First non-nil value | `coalesce(trigger.params.name, "default")` |
+| `isEmail` | Validate email format | `isEmail(trigger.params.email)` |
+| `isUUID` | Validate UUID format | `isUUID(trigger.params.id)` |
+| `isURL` | Validate URL format | `isURL(trigger.params.callback)` |
+| `isIP` | Validate IP address | `isIP(trigger.params.addr)` |
+| `isIPv4` | Validate IPv4 address | `isIPv4(trigger.params.addr)` |
+| `isIPv6` | Validate IPv6 address | `isIPv6(trigger.params.addr)` |
+| `isNumeric` | Check if string is numeric | `isNumeric(trigger.params.code)` |
+
+**Division safety:** Conditions with dynamic divisors must use `divOr(a, b, fallback)` instead of `a / b`. This prevents runtime panics from division by zero. Division by literal non-zero values (e.g., `x / 2`) is allowed. Violations are caught at workflow compile time.
 
 ### Error Handling
 

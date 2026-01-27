@@ -1084,3 +1084,114 @@ func TestValidate_HTTPCallRetryValid(t *testing.T) {
 		t.Errorf("expected valid, got errors: %v", result.Errors)
 	}
 }
+
+// TestValidate_DivisionSafety tests that unsafe divisions are caught during validation
+func TestValidate_DivisionSafety(t *testing.T) {
+	t.Run("rejects_dynamic_divisor_in_condition", func(t *testing.T) {
+		cfg := &WorkflowConfig{
+			Name: "test_workflow",
+			Triggers: []TriggerConfig{
+				{Type: "http", Method: "GET", Path: "/test"},
+			},
+			Steps: []StepConfig{
+				{
+					Name:      "step1",
+					Condition: "total / divisor > 10", // Dynamic divisor - should fail
+					Type:      "response",
+					Template:  "{}",
+				},
+			},
+		}
+
+		result := Validate(cfg, nil)
+		if result.Valid {
+			t.Error("expected validation to fail for dynamic divisor")
+		}
+		found := false
+		for _, err := range result.Errors {
+			if strings.Contains(err, "divOr") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected error mentioning divOr, got: %v", result.Errors)
+		}
+	})
+
+	t.Run("accepts_safe_division_in_condition", func(t *testing.T) {
+		cfg := &WorkflowConfig{
+			Name: "test_workflow",
+			Triggers: []TriggerConfig{
+				{Type: "http", Method: "GET", Path: "/test"},
+			},
+			Steps: []StepConfig{
+				{
+					Name:      "step1",
+					Condition: "total / 2 > 10", // Literal divisor - should pass
+					Type:      "response",
+					Template:  "{}",
+				},
+			},
+		}
+
+		result := Validate(cfg, nil)
+		if !result.Valid {
+			t.Errorf("expected valid for literal divisor, got errors: %v", result.Errors)
+		}
+	})
+
+	t.Run("accepts_divOr_in_condition", func(t *testing.T) {
+		cfg := &WorkflowConfig{
+			Name: "test_workflow",
+			Triggers: []TriggerConfig{
+				{Type: "http", Method: "GET", Path: "/test"},
+			},
+			Steps: []StepConfig{
+				{
+					Name:      "step1",
+					Condition: "divOr(total, divisor, 0) > 10", // divOr is safe
+					Type:      "response",
+					Template:  "{}",
+				},
+			},
+		}
+
+		result := Validate(cfg, nil)
+		if !result.Valid {
+			t.Errorf("expected valid for divOr, got errors: %v", result.Errors)
+		}
+	})
+
+	t.Run("rejects_division_by_zero", func(t *testing.T) {
+		cfg := &WorkflowConfig{
+			Name: "test_workflow",
+			Triggers: []TriggerConfig{
+				{Type: "http", Method: "GET", Path: "/test"},
+			},
+			Steps: []StepConfig{
+				{
+					Name:      "step1",
+					Condition: "total / 0 > 10", // Division by zero - should fail
+					Type:      "response",
+					Template:  "{}",
+				},
+			},
+		}
+
+		result := Validate(cfg, nil)
+		if result.Valid {
+			t.Error("expected validation to fail for division by zero")
+		}
+		found := false
+		for _, err := range result.Errors {
+			if strings.Contains(err, "division by zero") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected 'division by zero' error, got: %v", result.Errors)
+		}
+	})
+}
