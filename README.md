@@ -1778,6 +1778,8 @@ Aliases are expanded at compile time, so `"found && is_owner"` becomes `"(steps.
 
 **Division safety:** Conditions with dynamic divisors must use `divOr(a, b, fallback)` instead of `a / b`. This prevents runtime panics from division by zero. Division by literal non-zero values (e.g., `x / 2`) is allowed. Violations are caught at workflow compile time.
 
+**Step references:** Conditions using `steps.X` are validated at compile time. Steps can only reference results from earlier steps - forward references and self-references are errors. Unknown step names are also caught.
+
 ### Error Handling
 
 Control step failure behavior with `on_error`:

@@ -95,7 +95,7 @@ func Validate(cfg *WorkflowConfig, ctx *ValidationContext) *ValidationResult {
 			stepNames[step.Name] = i
 		}
 
-		validateStep(&step, stepPrefix, stepNames, ctx, r)
+		validateStep(&step, stepPrefix, i, stepNames, cfg.Conditions, ctx, r)
 
 		// Track response steps
 		if step.IsResponse() {
@@ -285,11 +285,14 @@ func validateRateLimit(cfg *RateLimitRefConfig, prefix string, ctx *ValidationCo
 	}
 }
 
-func validateStep(cfg *StepConfig, prefix string, stepNames map[string]int, ctx *ValidationContext, r *ValidationResult) {
-	// Validate condition syntax
+func validateStep(cfg *StepConfig, prefix string, stepIndex int, stepNames map[string]int, aliases map[string]string, ctx *ValidationContext, r *ValidationResult) {
+	// Validate condition syntax and step references
 	if cfg.Condition != "" {
 		if err := validateExprSyntax(cfg.Condition); err != nil {
 			r.addError("%s.condition: invalid expression: %v", prefix, err)
+		} else {
+			// Validate step references in condition
+			validateStepRefs(cfg.Condition, prefix+".condition", stepIndex, stepNames, aliases, r)
 		}
 	}
 
@@ -335,7 +338,7 @@ func validateStep(cfg *StepConfig, prefix string, stepNames map[string]int, ctx 
 	case "response":
 		validateResponseStep(cfg, prefix, r)
 	case "block":
-		validateBlockStep(cfg, prefix, stepNames, ctx, r)
+		validateBlockStep(cfg, prefix, stepNames, aliases, ctx, r)
 	}
 }
 
@@ -402,7 +405,7 @@ func validateResponseStep(cfg *StepConfig, prefix string, r *ValidationResult) {
 	}
 }
 
-func validateBlockStep(cfg *StepConfig, prefix string, parentStepNames map[string]int, ctx *ValidationContext, r *ValidationResult) {
+func validateBlockStep(cfg *StepConfig, prefix string, parentStepNames map[string]int, aliases map[string]string, ctx *ValidationContext, r *ValidationResult) {
 	// Validate iterate if present
 	if cfg.Iterate != nil {
 		iterPrefix := prefix + ".iterate"
@@ -445,7 +448,7 @@ func validateBlockStep(cfg *StepConfig, prefix string, parentStepNames map[strin
 			continue
 		}
 
-		validateStep(&step, stepPrefix, nestedNames, ctx, r)
+		validateStep(&step, stepPrefix, i, nestedNames, aliases, ctx, r)
 	}
 
 	// Validate outputs reference valid step names or special values
@@ -480,6 +483,60 @@ func validateExprSyntax(exprStr string) error {
 	}
 
 	return nil
+}
+
+// validateStepRefs validates step references in an expression.
+// Checks that referenced steps exist and come before the current step.
+func validateStepRefs(exprStr, prefix string, currentStepIndex int, stepNames map[string]int, aliases map[string]string, r *ValidationResult) {
+	// Collect all step refs from the expression and any aliases it uses
+	allRefs := make(map[string]bool)
+
+	// Extract direct step refs from expression
+	refs, err := ExtractStepRefs(exprStr)
+	if err != nil {
+		// Syntax errors already caught by validateExprSyntax
+		return
+	}
+	for _, ref := range refs {
+		allRefs[ref] = true
+	}
+
+	// Find aliases used in expression and extract their step refs too
+	if len(aliases) > 0 {
+		aliasNames := make(map[string]bool, len(aliases))
+		for name := range aliases {
+			aliasNames[name] = true
+		}
+
+		usedAliases, err := extractAliasRefs(exprStr, aliasNames)
+		if err != nil {
+			return
+		}
+
+		// For each used alias, extract step refs from its source
+		for _, aliasName := range usedAliases {
+			aliasSource := aliases[aliasName]
+			aliasRefs, err := ExtractStepRefs(aliasSource)
+			if err != nil {
+				continue
+			}
+			for _, ref := range aliasRefs {
+				allRefs[ref] = true
+			}
+		}
+	}
+
+	// Validate each step reference
+	for stepRef := range allRefs {
+		refIndex, exists := stepNames[stepRef]
+		if !exists {
+			r.addError("%s: references unknown step '%s'", prefix, stepRef)
+		} else if refIndex == currentStepIndex {
+			r.addError("%s: step cannot reference itself ('%s')", prefix, stepRef)
+		} else if refIndex > currentStepIndex {
+			r.addError("%s: references step '%s' which comes after current step (forward reference)", prefix, stepRef)
+		}
+	}
 }
 
 // pathParamRegex matches path parameters like {id} or {user_id}

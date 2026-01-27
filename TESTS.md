@@ -564,6 +564,7 @@ Run `make test-cover` for current coverage statistics.
 - **TestExprFunc_isValidPublicID**: TestExprFunc_isValidPublicID tests the isValidPublicID expr function.
 - **TestExprFuncs_InConditions**: TestExprFuncs_InConditions tests that common functions from tmpl.ExprFuncs
 - **TestValidateDivisions**: TestValidateDivisions tests static validation of division operations
+- **TestExtractStepRefs**: TestExtractStepRefs tests step reference extraction from expressions
 
 ### config_test.go
 
@@ -699,6 +700,7 @@ Run `make test-cover` for current coverage statistics.
 - **TestValidate_HTTPCallRetry**: TestValidate_HTTPCallRetry verifies httpcall retry configuration validation
 - **TestValidate_HTTPCallRetryValid**: TestValidate_HTTPCallRetryValid verifies valid httpcall retry configuration passes
 - **TestValidate_DivisionSafety**: TestValidate_DivisionSafety tests that unsafe divisions are caught during validation
+- **TestValidate_StepReferences**: TestValidate_StepReferences tests that step references are validated
 
 
 ---

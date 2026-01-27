@@ -684,6 +684,64 @@ func ValidateDivisions(exprStr string) error {
 	return nil
 }
 
+// stepRefFinder is a visitor that collects step names referenced via steps.X patterns.
+type stepRefFinder struct {
+	refs []string
+	seen map[string]bool
+}
+
+func (f *stepRefFinder) Visit(node *ast.Node) {
+	if node == nil || *node == nil {
+		return
+	}
+
+	// Look for member access patterns: steps.foo or steps["foo"]
+	member, ok := (*node).(*ast.MemberNode)
+	if !ok {
+		return
+	}
+
+	// Check if the object is the "steps" identifier
+	ident, ok := member.Node.(*ast.IdentifierNode)
+	if !ok || ident.Value != "steps" {
+		return
+	}
+
+	// Extract the step name from the property
+	var stepName string
+	switch prop := member.Property.(type) {
+	case *ast.StringNode:
+		// steps["foo"]
+		stepName = prop.Value
+	case *ast.IdentifierNode:
+		// steps.foo
+		stepName = prop.Value
+	default:
+		// Dynamic access like steps[variable] - can't validate statically
+		return
+	}
+
+	if stepName != "" && !f.seen[stepName] {
+		f.refs = append(f.refs, stepName)
+		f.seen[stepName] = true
+	}
+}
+
+// ExtractStepRefs finds step names referenced in an expression via steps.X patterns.
+// Returns a list of step names that are accessed (e.g., "fetch" from "steps.fetch.count > 0").
+func ExtractStepRefs(exprStr string) ([]string, error) {
+	tree, err := parser.Parse(exprStr)
+	if err != nil {
+		return nil, err
+	}
+
+	finder := &stepRefFinder{
+		seen: make(map[string]bool),
+	}
+	ast.Walk(&tree.Node, finder)
+	return finder.refs, nil
+}
+
 // EvalCondition evaluates a compiled condition against an environment.
 func EvalCondition(prog *vm.Program, env map[string]any) (bool, error) {
 	result, err := vm.Run(prog, env)

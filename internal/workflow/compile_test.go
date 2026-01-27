@@ -1546,3 +1546,79 @@ func TestValidateDivisions(t *testing.T) {
 		}
 	})
 }
+
+// TestExtractStepRefs tests step reference extraction from expressions
+func TestExtractStepRefs(t *testing.T) {
+	tests := []struct {
+		name     string
+		expr     string
+		expected []string
+	}{
+		{
+			name:     "simple step reference",
+			expr:     "steps.fetch.count > 0",
+			expected: []string{"fetch"},
+		},
+		{
+			name:     "multiple step references",
+			expr:     "steps.auth.valid && steps.fetch.count > 0",
+			expected: []string{"auth", "fetch"},
+		},
+		{
+			name:     "nested property access",
+			expr:     "steps.fetch.row.user_id == steps.auth.row.id",
+			expected: []string{"fetch", "auth"},
+		},
+		{
+			name:     "no step references",
+			expr:     "trigger.params.id != \"\"",
+			expected: []string{},
+		},
+		{
+			name:     "bracket notation",
+			expr:     `steps["my-step"].count > 0`,
+			expected: []string{"my-step"},
+		},
+		{
+			name:     "mixed dot and bracket",
+			expr:     `steps.fetch.count > 0 && steps["other"].valid`,
+			expected: []string{"fetch", "other"},
+		},
+		{
+			name:     "steps in string literal not extracted",
+			expr:     `name == "steps.foo"`,
+			expected: []string{},
+		},
+		{
+			name:     "duplicate refs deduplicated",
+			expr:     "steps.fetch.count > 0 && steps.fetch.valid",
+			expected: []string{"fetch"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			refs, err := ExtractStepRefs(tt.expr)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			// Check length
+			if len(refs) != len(tt.expected) {
+				t.Errorf("expected %d refs, got %d: %v", len(tt.expected), len(refs), refs)
+				return
+			}
+
+			// Check each expected ref is present
+			refSet := make(map[string]bool)
+			for _, r := range refs {
+				refSet[r] = true
+			}
+			for _, exp := range tt.expected {
+				if !refSet[exp] {
+					t.Errorf("expected ref %q not found in %v", exp, refs)
+				}
+			}
+		})
+	}
+}

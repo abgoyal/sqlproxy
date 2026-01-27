@@ -1778,7 +1778,7 @@ func TestPrivateIDFunc(t *testing.T) {
 		{"wrong namespace prefix", "order", validPublicID, true, "invalid prefix"},
 		{"invalid base62 characters", "user", "usr_!@#$%^&*()", true, "invalid"},
 		{"empty public ID", "user", "", true, "invalid prefix"},
-		{"prefix only error", "user", "usr_", true, "invalid length"},     // Empty encoded part rejected
+		{"prefix only error", "user", "usr_", true, "invalid length"}, // Empty encoded part rejected
 		{"missing prefix separator", "user", "usr00000000001", true, "invalid prefix"},
 		{"too short encoded part", "user", "usr_abc", true, "invalid length"}, // Must be exactly 11 chars
 		{"no prefix configured namespace", "order", "ord_" + strings.Repeat("0", 11), false, ""},

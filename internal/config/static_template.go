@@ -193,5 +193,3 @@ func filterDynamicPaths(paths []string) []string {
 	}
 	return dynamic
 }
-
-

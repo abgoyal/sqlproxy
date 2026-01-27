@@ -1195,3 +1195,235 @@ func TestValidate_DivisionSafety(t *testing.T) {
 		}
 	})
 }
+
+// TestValidate_StepReferences tests that step references are validated
+func TestValidate_StepReferences(t *testing.T) {
+	t.Run("valid_step_reference", func(t *testing.T) {
+		cfg := &WorkflowConfig{
+			Name: "test_workflow",
+			Triggers: []TriggerConfig{
+				{Type: "http", Method: "GET", Path: "/test"},
+			},
+			Steps: []StepConfig{
+				{
+					Name:     "fetch",
+					Type:     "query",
+					Database: "primary",
+					SQL:      "SELECT * FROM items",
+				},
+				{
+					Name:      "respond",
+					Type:      "response",
+					Condition: "steps.fetch.count > 0", // Valid: fetch is before respond
+					Template:  "{}",
+				},
+			},
+		}
+
+		ctx := &ValidationContext{
+			Databases: map[string]bool{"primary": false},
+		}
+
+		result := Validate(cfg, ctx)
+		if !result.Valid {
+			t.Errorf("expected valid workflow, got errors: %v", result.Errors)
+		}
+	})
+
+	t.Run("unknown_step_reference", func(t *testing.T) {
+		cfg := &WorkflowConfig{
+			Name: "test_workflow",
+			Triggers: []TriggerConfig{
+				{Type: "http", Method: "GET", Path: "/test"},
+			},
+			Steps: []StepConfig{
+				{
+					Name:      "respond",
+					Type:      "response",
+					Condition: "steps.nonexistent.count > 0", // Invalid: step doesn't exist
+					Template:  "{}",
+				},
+			},
+		}
+
+		result := Validate(cfg, nil)
+		if result.Valid {
+			t.Error("expected validation to fail for unknown step reference")
+		}
+		found := false
+		for _, err := range result.Errors {
+			if strings.Contains(err, "unknown step 'nonexistent'") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected 'unknown step' error, got: %v", result.Errors)
+		}
+	})
+
+	t.Run("forward_step_reference", func(t *testing.T) {
+		// Forward references appear as "unknown step" because the referenced step
+		// hasn't been added to stepNames yet during validation
+		cfg := &WorkflowConfig{
+			Name: "test_workflow",
+			Triggers: []TriggerConfig{
+				{Type: "http", Method: "GET", Path: "/test"},
+			},
+			Steps: []StepConfig{
+				{
+					Name:      "first",
+					Type:      "response",
+					Condition: "steps.second.count > 0", // Invalid: second comes after first
+					Template:  "{}",
+				},
+				{
+					Name:     "second",
+					Type:     "query",
+					Database: "primary",
+					SQL:      "SELECT * FROM items",
+				},
+			},
+		}
+
+		ctx := &ValidationContext{
+			Databases: map[string]bool{"primary": false},
+		}
+
+		result := Validate(cfg, ctx)
+		if result.Valid {
+			t.Error("expected validation to fail for forward reference")
+		}
+		found := false
+		for _, err := range result.Errors {
+			// Forward refs appear as "unknown step" since step isn't registered yet
+			if strings.Contains(err, "unknown step 'second'") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected 'unknown step' error for forward reference, got: %v", result.Errors)
+		}
+	})
+
+	t.Run("step_reference_via_alias", func(t *testing.T) {
+		cfg := &WorkflowConfig{
+			Name: "test_workflow",
+			Triggers: []TriggerConfig{
+				{Type: "http", Method: "GET", Path: "/test"},
+			},
+			Conditions: map[string]string{
+				"has_data": "steps.fetch.count > 0", // Alias references step 'fetch'
+			},
+			Steps: []StepConfig{
+				{
+					Name:      "respond",
+					Type:      "response",
+					Condition: "has_data", // Uses alias - but 'fetch' doesn't exist yet
+					Template:  "{}",
+				},
+				{
+					Name:     "fetch",
+					Type:     "query",
+					Database: "primary",
+					SQL:      "SELECT * FROM items",
+				},
+			},
+		}
+
+		ctx := &ValidationContext{
+			Databases: map[string]bool{"primary": false},
+		}
+
+		result := Validate(cfg, ctx)
+		if result.Valid {
+			t.Error("expected validation to fail for alias referencing forward step")
+		}
+		found := false
+		for _, err := range result.Errors {
+			if strings.Contains(err, "forward reference") || strings.Contains(err, "unknown step") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected step reference error, got: %v", result.Errors)
+		}
+	})
+
+	t.Run("self_reference", func(t *testing.T) {
+		cfg := &WorkflowConfig{
+			Name: "test_workflow",
+			Triggers: []TriggerConfig{
+				{Type: "http", Method: "GET", Path: "/test"},
+			},
+			Steps: []StepConfig{
+				{
+					Name:      "fetch",
+					Type:      "query",
+					Database:  "primary",
+					SQL:       "SELECT * FROM items",
+					Condition: "steps.fetch.count > 0", // Invalid: references itself
+				},
+			},
+		}
+
+		ctx := &ValidationContext{
+			Databases: map[string]bool{"primary": false},
+		}
+
+		result := Validate(cfg, ctx)
+		if result.Valid {
+			t.Error("expected validation to fail for self-reference")
+		}
+		found := false
+		for _, err := range result.Errors {
+			if strings.Contains(err, "cannot reference itself") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected 'cannot reference itself' error, got: %v", result.Errors)
+		}
+	})
+
+	t.Run("multiple_step_references", func(t *testing.T) {
+		cfg := &WorkflowConfig{
+			Name: "test_workflow",
+			Triggers: []TriggerConfig{
+				{Type: "http", Method: "GET", Path: "/test"},
+			},
+			Steps: []StepConfig{
+				{
+					Name:     "auth",
+					Type:     "query",
+					Database: "primary",
+					SQL:      "SELECT * FROM users",
+				},
+				{
+					Name:     "fetch",
+					Type:     "query",
+					Database: "primary",
+					SQL:      "SELECT * FROM items",
+				},
+				{
+					Name:      "respond",
+					Type:      "response",
+					Condition: "steps.auth.count > 0 && steps.fetch.count > 0", // Both valid
+					Template:  "{}",
+				},
+			},
+		}
+
+		ctx := &ValidationContext{
+			Databases: map[string]bool{"primary": false},
+		}
+
+		result := Validate(cfg, ctx)
+		if !result.Valid {
+			t.Errorf("expected valid workflow, got errors: %v", result.Errors)
+		}
+	})
+}
