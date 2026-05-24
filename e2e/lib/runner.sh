@@ -156,6 +156,10 @@ cleanup() {
         fi
     fi
     if [ -n "$TEMP_DIR" ] && [ -d "$TEMP_DIR" ]; then
+        if [ "$TESTS_FAILED" -gt 0 ] 2>/dev/null && [ -f "$LOG_FILE" ]; then
+            cp "$LOG_FILE" /tmp/e2e-server.log 2>/dev/null && \
+                echo -e "\033[0;34m[INFO]\033[0m Server log saved to /tmp/e2e-server.log" || true
+        fi
         rm -rf "$TEMP_DIR"
     fi
 }

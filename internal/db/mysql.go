@@ -74,7 +74,6 @@ func buildMySQLDSN(cfg config.DatabaseConfig) string {
 		WriteTimeout:         timeout,
 		TLSConfig:            tlsMode,
 		InterpolateParams:    false,
-		MultiStatements:      true,
 		Collation:            "utf8mb4_general_ci",
 		AllowNativePasswords: true,
 	}
@@ -185,7 +184,6 @@ func (d *MySQLDriver) Close() error {
 }
 
 // configureSession sets MySQL session options based on the provided session config.
-// All SET statements are batched into a single round-trip using multiStatements.
 func (d *MySQLDriver) configureSession(ctx context.Context, conn *sql.Conn, sessCfg config.SessionConfig) error {
 	isolationSQL := mysqlIsolationToSQL(sessCfg.Isolation)
 
@@ -195,18 +193,21 @@ func (d *MySQLDriver) configureSession(ctx context.Context, conn *sql.Conn, sess
 		lockTimeoutSec = mysqlDefaultLockTimeout
 	}
 
-	// Batch all session SET statements into a single multi-statement call
-	sessionSQL := fmt.Sprintf(
-		"SET SESSION TRANSACTION ISOLATION LEVEL %s; SET SESSION innodb_lock_wait_timeout = %d",
-		isolationSQL, lockTimeoutSec,
-	)
-	if d.readOnly {
-		sessionSQL += "; SET SESSION TRANSACTION READ ONLY"
+	_, err := conn.ExecContext(ctx, fmt.Sprintf("SET SESSION TRANSACTION ISOLATION LEVEL %s", isolationSQL))
+	if err != nil {
+		return fmt.Errorf("failed to set isolation level: %w", err)
 	}
 
-	_, err := conn.ExecContext(ctx, sessionSQL)
+	_, err = conn.ExecContext(ctx, fmt.Sprintf("SET SESSION innodb_lock_wait_timeout = %d", lockTimeoutSec))
 	if err != nil {
-		return fmt.Errorf("failed to configure session: %w", err)
+		return fmt.Errorf("failed to set lock timeout: %w", err)
+	}
+
+	if d.readOnly {
+		_, err = conn.ExecContext(ctx, "SET SESSION TRANSACTION READ ONLY")
+		if err != nil {
+			return fmt.Errorf("failed to set read only mode: %w", err)
+		}
 	}
 
 	return nil

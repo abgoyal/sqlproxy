@@ -9,16 +9,24 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      httpbin:
+        image: mccutchen/go-httpbin:latest
+        ports:
+          - 8888:8080
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.25'
 
       - name: Run CI
+        env:
+          HTTPBIN_URL: http://localhost:8888
+          DB_PATH: /tmp/taskapp-test.db
         run: make ci
 
       - name: Build
@@ -46,12 +54,16 @@ jobs:
           --health-interval=10s
           --health-timeout=5s
           --health-retries=5
+      httpbin:
+        image: mccutchen/go-httpbin:latest
+        ports:
+          - 8888:8080
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.25'
 
@@ -75,3 +87,18 @@ jobs:
             echo "=== $f ==="
             ./sql-proxy -validate -config "$f" || exit 1
           done
+
+      - name: Run MySQL e2e tests
+        env:
+          MYSQL_HOST: 127.0.0.1
+          MYSQL_PORT: 3306
+          MYSQL_USER: root
+          MYSQL_PASSWORD: testpass
+          MYSQL_DATABASE: testdb
+          HTTPBIN_URL: http://localhost:8888
+          TASKAPP_CONFIG: testdata/taskapp-mysql.yaml
+        run: ./e2e/taskapp_test.sh
+
+      - name: Show MySQL e2e server logs
+        if: always()
+        run: cat /tmp/e2e-server.log 2>/dev/null || true

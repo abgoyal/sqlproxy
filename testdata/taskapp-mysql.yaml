@@ -22,7 +22,11 @@ variables:
   values:
     # Environment variables (imported via ${VAR} syntax)
     PORT: "${PORT:8080}"
-    DB_PATH: "${DB_PATH::memory:}"
+    MYSQL_HOST: "${MYSQL_HOST:127.0.0.1}"
+    MYSQL_PORT: "${MYSQL_PORT:3306}"
+    MYSQL_USER: "${MYSQL_USER:root}"
+    MYSQL_PASSWORD: "${MYSQL_PASSWORD:testpass}"
+    MYSQL_DATABASE: "${MYSQL_DATABASE:testdb}"
     PUBLIC_ID_SECRET: "${PUBLIC_ID_SECRET:taskapp-secret-key-for-testing-32ch}"
     # External services
     HTTPBIN_URL: "${HTTPBIN_URL:https://httpbin.org}"
@@ -55,8 +59,12 @@ public_ids:
 
 databases:
   - name: "main"
-    type: "sqlite"
-    path: "{{.vars.DB_PATH}}"
+    type: "mysql"
+    host: "{{.vars.MYSQL_HOST}}"
+    port: {{.vars.MYSQL_PORT}}
+    user: "{{.vars.MYSQL_USER}}"
+    password: "{{.vars.MYSQL_PASSWORD}}"
+    database: "{{.vars.MYSQL_DATABASE}}"
     readonly: false
 
 rate_limits:
@@ -96,31 +104,31 @@ workflows:
         database: "main"
         sql: |
           CREATE TABLE IF NOT EXISTS tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            description TEXT DEFAULT '',
-            status TEXT DEFAULT 'pending',
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            title VARCHAR(500) NOT NULL,
+            description TEXT,
+            status VARCHAR(50) DEFAULT 'pending',
             priority INTEGER DEFAULT 0,
-            due_date TEXT,
-            tags TEXT DEFAULT '[]',
-            created_at TEXT DEFAULT (datetime('now')),
-            updated_at TEXT DEFAULT (datetime('now'))
+            due_date DATE,
+            tags TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
           )
       - name: create_categories
         type: query
         database: "main"
         sql: |
           CREATE TABLE IF NOT EXISTS categories (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE,
-            color TEXT DEFAULT '#808080',
-            created_at TEXT DEFAULT (datetime('now'))
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(255) NOT NULL UNIQUE,
+            color VARCHAR(50) DEFAULT '#808080',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
           )
       - name: seed_categories
         type: query
         database: "main"
         sql: |
-          INSERT OR IGNORE INTO categories (id, name, color) VALUES
+          INSERT IGNORE INTO categories (id, name, color) VALUES
             (1, 'Work', '#3b82f6'),
             (2, 'Personal', '#10b981'),
             (3, 'Shopping', '#f59e0b'),
@@ -136,27 +144,27 @@ workflows:
           -- Task 3: past due date, completed (not overdue)
           -- Task 4: no due date (not overdue)
           -- Task 5: past due date, pending (overdue)
-          INSERT OR IGNORE INTO tasks (id, title, description, status, priority, tags, due_date) VALUES
-            (1, 'Review PR', 'Review the pull request for feature X', 'pending', 2, '["code","review"]', date('now', '+7 days')),
-            (2, 'Write tests', 'Add unit tests for new module', 'in_progress', 1, '["testing"]', date('now', '-5 days')),
-            (3, 'Deploy', 'Deploy to production', 'completed', 3, '["devops","production"]', date('now', '-10 days')),
+          INSERT IGNORE INTO tasks (id, title, description, status, priority, tags, due_date) VALUES
+            (1, 'Review PR', 'Review the pull request for feature X', 'pending', 2, '["code","review"]', DATE_ADD(CURDATE(), INTERVAL 7 DAY)),
+            (2, 'Write tests', 'Add unit tests for new module', 'in_progress', 1, '["testing"]', DATE_ADD(CURDATE(), INTERVAL -5 DAY)),
+            (3, 'Deploy', 'Deploy to production', 'completed', 3, '["devops","production"]', DATE_ADD(CURDATE(), INTERVAL -10 DAY)),
             (4, 'Documentation', 'Update API documentation', 'pending', 1, '["docs"]', NULL),
-            (5, 'Bug fix', 'Fix login validation issue', 'pending', 2, '["bug","urgent"]', date('now', '-3 days'))
+            (5, 'Bug fix', 'Fix login validation issue', 'pending', 2, '["bug","urgent"]', DATE_ADD(CURDATE(), INTERVAL -3 DAY))
       - name: create_cron_status
         type: query
         database: "main"
         sql: |
           CREATE TABLE IF NOT EXISTS cron_status (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
+            id INT PRIMARY KEY CHECK (id = 1),
             execution_count INTEGER DEFAULT 0,
-            last_run TEXT,
+            last_run DATETIME,
             message TEXT
           )
       - name: seed_cron_status
         type: query
         database: "main"
         sql: |
-          INSERT OR IGNORE INTO cron_status (id, execution_count, last_run, message)
+          INSERT IGNORE INTO cron_status (id, execution_count, last_run, message)
           VALUES (1, 0, NULL, 'initialized')
       - type: response
         status_code: 201
@@ -199,6 +207,8 @@ workflows:
       - name: fetch
         type: query
         database: "main"
+        params:
+          offset: '{{mul (sub .trigger.params.page 1) .trigger.params.limit}}'
         sql: |
           SELECT id, title, description, status, priority, due_date, tags, created_at, updated_at,
             CASE
@@ -208,14 +218,14 @@ workflows:
               ELSE 'Low'
             END AS priority_label,
             CASE
-              WHEN due_date IS NOT NULL AND due_date < date('now') AND status != 'completed' THEN 1
+              WHEN due_date IS NOT NULL AND due_date < CURDATE() AND status != 'completed' THEN 1
               ELSE 0
             END AS is_overdue
           FROM tasks
           WHERE (@status = '' OR status = @status)
             AND (@priority = 0 OR priority = @priority)
           ORDER BY priority DESC, created_at DESC
-          LIMIT @limit OFFSET ((@page - 1) * @limit)
+          LIMIT @limit OFFSET @offset
         json_columns: ["tags"]
       - name: count
         type: query
@@ -293,7 +303,7 @@ workflows:
       - name: get_created
         type: query
         database: "main"
-        sql: "SELECT * FROM tasks WHERE id = last_insert_rowid()"
+        sql: "SELECT * FROM tasks WHERE id = LAST_INSERT_ID()"
       - type: response
         status_code: 201
         template: |
@@ -383,7 +393,7 @@ workflows:
               ELSE 'Low'
             END AS priority_label,
             CASE
-              WHEN due_date IS NOT NULL AND due_date < date('now') AND status != 'completed' THEN 1
+              WHEN due_date IS NOT NULL AND due_date < CURDATE() AND status != 'completed' THEN 1
               ELSE 0
             END AS is_overdue
           FROM tasks WHERE id = @internal_id
@@ -455,7 +465,7 @@ workflows:
           UPDATE tasks
           SET title = @title, description = @description,
               status = @status, priority = @priority,
-              updated_at = datetime('now')
+              updated_at = NOW()
           WHERE id = @internal_id
       - type: response
         condition: "valid_id && exists"
@@ -517,7 +527,7 @@ workflows:
               description = COALESCE(NULLIF(@description, ''), description),
               status = COALESCE(NULLIF(@status, ''), status),
               priority = CASE WHEN @priority >= 0 THEN @priority ELSE priority END,
-              updated_at = datetime('now')
+              updated_at = NOW()
           WHERE id = @internal_id
       - type: response
         condition: "valid_id && exists"
@@ -713,7 +723,7 @@ workflows:
             SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
             SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress,
             SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
-            SUM(CASE WHEN due_date < date('now') AND status != 'completed' THEN 1 ELSE 0 END) as overdue
+            SUM(CASE WHEN due_date < CURDATE() AND status != 'completed' THEN 1 ELSE 0 END) as overdue
           FROM tasks
       - name: priority_stats
         type: query
@@ -742,7 +752,7 @@ workflows:
               "completion_rate": "{{formatPercent (div (float64 .steps.counts.row.completed) (max 1.0 (float64 .steps.counts.row.total))) 1}}"
             },
             "priority": {
-              "average": {{.steps.priority_stats.row.avg_priority | default 0 | printf "%.2f"}},
+              "average": {{.steps.priority_stats.row.avg_priority | default 0 | float | printf "%.2f"}},
               "max": {{.steps.priority_stats.row.max_priority | default 0}},
               "min": {{.steps.priority_stats.row.min_priority | default 0}}
             },
@@ -786,10 +796,10 @@ workflows:
           FROM tasks
           WHERE
             CASE WHEN @case_sensitive THEN
-              title LIKE '%' || @q || '%' OR description LIKE '%' || @q || '%'
+              title LIKE CONCAT('%', @q, '%') OR description LIKE CONCAT('%', @q, '%')
             ELSE
-              LOWER(title) LIKE '%' || LOWER(@q) || '%' OR
-              LOWER(description) LIKE '%' || LOWER(@q) || '%'
+              LOWER(title) LIKE CONCAT('%', LOWER(@q), '%') OR
+              LOWER(description) LIKE CONCAT('%', LOWER(@q), '%')
             END
           ORDER BY priority DESC
       - type: response
@@ -844,7 +854,7 @@ workflows:
         condition: "valid_id && exists"
         params:
           internal_id: '{{privateID "task" .trigger.params.id}}'
-        sql: "UPDATE tasks SET status = 'completed', updated_at = datetime('now') WHERE id = @internal_id"
+        sql: "UPDATE tasks SET status = 'completed', updated_at = NOW() WHERE id = @internal_id"
       - name: audit
         type: query
         database: "main"
@@ -854,7 +864,7 @@ workflows:
           internal_id: '{{privateID "task" .trigger.params.id}}'
         sql: |
           INSERT INTO audit_log (task_id, action, timestamp)
-          VALUES (@internal_id, 'completed', datetime('now'))
+          VALUES (@internal_id, 'completed', NOW())
       - type: response
         condition: "valid_id && exists"
         template: |
@@ -1276,10 +1286,10 @@ workflows:
         database: "main"
         sql: |
           INSERT INTO cron_status (id, execution_count, last_run, message)
-          VALUES (1, 1, datetime('now'), 'cron executed')
-          ON CONFLICT(id) DO UPDATE SET
+          VALUES (1, 1, NOW(), 'cron executed')
+          ON DUPLICATE KEY UPDATE
             execution_count = execution_count + 1,
-            last_run = datetime('now'),
+            last_run = NOW(),
             message = 'cron executed'
 
   # GET /api/cron/status - Read cron execution status
@@ -1317,7 +1327,7 @@ workflows:
         sql: |
           UPDATE cron_status
           SET execution_count = execution_count + 1,
-              last_run = datetime('now'),
+              last_run = NOW(),
               message = 'manually triggered'
           WHERE id = 1
       - name: result

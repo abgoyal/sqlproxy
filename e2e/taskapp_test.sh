@@ -47,12 +47,14 @@ parse_args "$@"
 # Set up test environment
 setup_test_env "$APP_NAME"
 
-# Config template (uses PROJECT_ROOT from setup_test_env)
-CONFIG_TEMPLATE="$PROJECT_ROOT/testdata/taskapp.yaml"
+# Config template (overridable via TASKAPP_CONFIG env var)
+CONFIG_TEMPLATE="${TASKAPP_CONFIG:-$PROJECT_ROOT/testdata/taskapp.yaml}"
 
-# Database path substitution
+# Database path substitution (only needed for SQLite configs)
 declare -A DB_VARS
-DB_VARS[DB_PATH]="$TEMP_DIR/taskapp.db"
+if [[ "$CONFIG_TEMPLATE" != *mysql* ]]; then
+    DB_VARS[DB_PATH]="${DB_PATH:-$TEMP_DIR/taskapp.db}"
+fi
 
 # Store public IDs for use across tests
 TASK_PUBLIC_ID_1=""
@@ -684,8 +686,9 @@ test_httpcall_functionality() {
     expect_json '.httpbin_response.status_code' '200' "HTTPbin returned 200"
 
     # Verify args were passed through (APP_NAME variable is "TaskApp")
-    expect_json '.httpbin_response.args_received.demo' 'true' "Query param 'demo' passed through"
-    expect_json '.httpbin_response.args_received.app' 'TaskApp' "Query param 'app' passed through"
+    # go-httpbin returns args as arrays, httpbin.org returns strings - handle both
+    expect_json '(.httpbin_response.args_received.demo | if type == "array" then .[0] else . end)' 'true' "Query param 'demo' passed through"
+    expect_json '(.httpbin_response.args_received.app | if type == "array" then .[0] else . end)' 'TaskApp' "Query param 'app' passed through"
 
     # Test POST request to echo endpoint
     POST /api/demo/httpcall/echo message="Hello HTTPCall"

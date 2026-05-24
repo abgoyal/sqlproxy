@@ -36,7 +36,6 @@ func TestBuildMySQLDSN_Default(t *testing.T) {
 		"writeTimeout=10s",
 		"tls=false",
 		"collation=utf8mb4_general_ci",
-		"multiStatements=true",
 	}
 
 	for _, part := range expected {
@@ -249,10 +248,10 @@ func TestMySQLIsolationToSQL(t *testing.T) {
 // TestMySQLDriver_ConfigurePool verifies connection pool settings are applied
 func TestMySQLDriver_ConfigurePool(t *testing.T) {
 	tests := []struct {
-		name         string
-		cfg          config.DatabaseConfig
-		wantMaxOpen  int
-		wantMaxIdle  int
+		name        string
+		cfg         config.DatabaseConfig
+		wantMaxOpen int
+		wantMaxIdle int
 	}{
 		{
 			name:        "defaults",
