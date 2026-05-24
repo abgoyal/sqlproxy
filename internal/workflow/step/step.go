@@ -71,6 +71,11 @@ type QueryOptions struct {
 	LockTimeoutMs    *int
 	DeadlockPriority string
 	JSONColumns      []string
+
+	// IsWrite and HasReturning are precomputed SQL classification hints.
+	// When non-nil, drivers use these instead of re-parsing the SQL at request time.
+	IsWrite      *bool
+	HasReturning *bool
 }
 
 // HTTPClient interface for HTTP operations.

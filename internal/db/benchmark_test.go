@@ -38,7 +38,7 @@ func setupBenchmarkDB(b *testing.B) (*SQLiteDriver, func()) {
 			status TEXT DEFAULT 'active',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)
-	`, nil)
+	`, nil, nil)
 	if err != nil {
 		driver.Close()
 		b.Fatalf("failed to create table: %v", err)
@@ -49,6 +49,7 @@ func setupBenchmarkDB(b *testing.B) (*SQLiteDriver, func()) {
 		_, err = driver.Query(ctx, sessCfg,
 			"INSERT INTO users (name, email) VALUES (@name, @email)",
 			map[string]any{"name": fmt.Sprintf("User%d", i), "email": fmt.Sprintf("user%d@test.com", i)},
+			nil,
 		)
 		if err != nil {
 			driver.Close()
@@ -69,7 +70,7 @@ func BenchmarkSQLiteDriver_SimpleQuery(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := driver.Query(ctx, sessCfg, "SELECT 1", nil)
+		_, err := driver.Query(ctx, sessCfg, "SELECT 1", nil, nil)
 		if err != nil {
 			b.Fatalf("query failed: %v", err)
 		}
@@ -86,7 +87,7 @@ func BenchmarkSQLiteDriver_SelectAll(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		results, err := driver.Query(ctx, sessCfg, "SELECT * FROM users", nil)
+		results, err := driver.Query(ctx, sessCfg, "SELECT * FROM users", nil, nil)
 		if err != nil {
 			b.Fatalf("query failed: %v", err)
 		}
@@ -109,6 +110,7 @@ func BenchmarkSQLiteDriver_SelectWithParam(b *testing.B) {
 		_, err := driver.Query(ctx, sessCfg,
 			"SELECT * FROM users WHERE id = @id",
 			map[string]any{"id": i%1000 + 1},
+			nil,
 		)
 		if err != nil {
 			b.Fatalf("query failed: %v", err)
@@ -129,6 +131,7 @@ func BenchmarkSQLiteDriver_SelectWithMultipleParams(b *testing.B) {
 		_, err := driver.Query(ctx, sessCfg,
 			"SELECT * FROM users WHERE id >= @min AND id <= @max AND status = @status",
 			map[string]any{"min": 1, "max": 100, "status": "active"},
+			nil,
 		)
 		if err != nil {
 			b.Fatalf("query failed: %v", err)
@@ -160,7 +163,7 @@ func BenchmarkSQLiteDriver_Insert(b *testing.B) {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL
 		)
-	`, nil)
+	`, nil, nil)
 	if err != nil {
 		b.Fatalf("failed to create table: %v", err)
 	}
@@ -170,6 +173,7 @@ func BenchmarkSQLiteDriver_Insert(b *testing.B) {
 		_, err := driver.Query(ctx, sessCfg,
 			"INSERT INTO bench_insert (name) VALUES (@name)",
 			map[string]any{"name": fmt.Sprintf("BenchUser%d", i)},
+			nil,
 		)
 		if err != nil {
 			b.Fatalf("insert failed: %v", err)
@@ -206,7 +210,7 @@ func BenchmarkSQLiteDriver_ConcurrentReads(b *testing.B) {
 			name TEXT NOT NULL,
 			email TEXT NOT NULL
 		)
-	`, nil)
+	`, nil, nil)
 	if err != nil {
 		b.Fatalf("failed to create table: %v", err)
 	}
@@ -215,6 +219,7 @@ func BenchmarkSQLiteDriver_ConcurrentReads(b *testing.B) {
 		_, err = driver.Query(ctx, sessCfg,
 			"INSERT INTO users (name, email) VALUES (@name, @email)",
 			map[string]any{"name": fmt.Sprintf("User%d", i), "email": fmt.Sprintf("user%d@test.com", i)},
+			nil,
 		)
 		if err != nil {
 			b.Fatalf("failed to insert: %v", err)
@@ -228,6 +233,7 @@ func BenchmarkSQLiteDriver_ConcurrentReads(b *testing.B) {
 			_, err := driver.Query(ctx, sessCfg,
 				"SELECT * FROM users WHERE id = @id",
 				map[string]any{"id": i%1000 + 1},
+				nil,
 			)
 			if err != nil {
 				b.Errorf("query failed: %v", err)
@@ -363,7 +369,7 @@ func benchmarkLargeResult(b *testing.B, rowCount int) {
 	sessCfg := config.SessionConfig{}
 
 	// Create table with many rows
-	_, err = driver.Query(ctx, sessCfg, "CREATE TABLE large (id INTEGER, data TEXT)", nil)
+	_, err = driver.Query(ctx, sessCfg, "CREATE TABLE large (id INTEGER, data TEXT)", nil, nil)
 	if err != nil {
 		b.Fatalf("failed to create table: %v", err)
 	}
@@ -372,6 +378,7 @@ func benchmarkLargeResult(b *testing.B, rowCount int) {
 		_, err = driver.Query(ctx, sessCfg,
 			"INSERT INTO large (id, data) VALUES (@id, @data)",
 			map[string]any{"id": i, "data": fmt.Sprintf("data%d", i)},
+			nil,
 		)
 		if err != nil {
 			b.Fatalf("failed to insert: %v", err)
@@ -380,7 +387,7 @@ func benchmarkLargeResult(b *testing.B, rowCount int) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		results, err := driver.Query(ctx, sessCfg, "SELECT * FROM large", nil)
+		results, err := driver.Query(ctx, sessCfg, "SELECT * FROM large", nil, nil)
 		if err != nil {
 			b.Fatalf("query failed: %v", err)
 		}
@@ -416,7 +423,7 @@ func BenchmarkSQLiteDriver_ConcurrentWrites(b *testing.B) {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL
 		)
-	`, nil)
+	`, nil, nil)
 	if err != nil {
 		b.Fatalf("failed to create table: %v", err)
 	}
@@ -430,6 +437,7 @@ func BenchmarkSQLiteDriver_ConcurrentWrites(b *testing.B) {
 			_, err := driver.Query(ctx, sessCfg,
 				"INSERT INTO concurrent_write (name) VALUES (@name)",
 				map[string]any{"name": fmt.Sprintf("User%d", i)},
+				nil,
 			)
 			mu.Unlock()
 			if err != nil {

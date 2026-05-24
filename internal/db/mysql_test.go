@@ -424,7 +424,7 @@ func TestMySQLDriver_Query_Simple(t *testing.T) {
 		LockTimeoutMs: 5000,
 	}
 
-	results, err := driver.Query(ctx, sessCfg, "SELECT 1 as num, 'hello' as msg", nil)
+	results, err := driver.Query(ctx, sessCfg, "SELECT 1 as num, 'hello' as msg", nil, nil)
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -458,6 +458,7 @@ func TestMySQLDriver_Query_WithParams(t *testing.T) {
 	results, err := driver.Query(ctx, sessCfg,
 		"SELECT * FROM test_users WHERE status = @status AND id > @minId ORDER BY id",
 		map[string]any{"status": "active", "minId": 1},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
@@ -489,6 +490,7 @@ func TestMySQLDriver_Query_NullParams(t *testing.T) {
 	results, err := driver.Query(ctx, sessCfg,
 		"SELECT * FROM test_users WHERE (@status IS NULL OR status = @status)",
 		map[string]any{"status": nil},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
@@ -513,7 +515,7 @@ func TestMySQLDriver_Query_EmptyResult(t *testing.T) {
 		LockTimeoutMs: 5000,
 	}
 
-	results, err := driver.Query(ctx, sessCfg, "SELECT * FROM test_users", nil)
+	results, err := driver.Query(ctx, sessCfg, "SELECT * FROM test_users", nil, nil)
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -539,7 +541,7 @@ func TestMySQLDriver_Query_Timeout(t *testing.T) {
 		Isolation:     "read_committed",
 		LockTimeoutMs: 5000,
 	}
-	_, err := driver.Query(ctx, sessCfg, "SELECT 1", nil)
+	_, err := driver.Query(ctx, sessCfg, "SELECT 1", nil, nil)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -563,6 +565,7 @@ func TestMySQLDriver_Query_SpecialCharacters(t *testing.T) {
 	_, err := driver.Query(ctx, sessCfg,
 		"INSERT INTO test_users (name, email, status) VALUES (@name, @email, @status)",
 		map[string]any{"name": specialChars, "email": "test@test.com", "status": "active"},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("insert failed: %v", err)
@@ -572,6 +575,7 @@ func TestMySQLDriver_Query_SpecialCharacters(t *testing.T) {
 	results, err := driver.Query(ctx, sessCfg,
 		"SELECT name FROM test_users WHERE name = @name",
 		map[string]any{"name": specialChars},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
@@ -609,6 +613,7 @@ func TestMySQLDriver_Query_Unicode(t *testing.T) {
 		_, err := driver.Query(ctx, sessCfg,
 			"INSERT INTO test_users (name, email, status) VALUES (@name, @email, @status)",
 			map[string]any{"name": name, "email": "test@test.com", "status": "active"},
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("insert %d failed: %v", i, err)
@@ -616,7 +621,7 @@ func TestMySQLDriver_Query_Unicode(t *testing.T) {
 	}
 
 	// Query back
-	results, err := driver.Query(ctx, sessCfg, "SELECT name FROM test_users ORDER BY id", nil)
+	results, err := driver.Query(ctx, sessCfg, "SELECT name FROM test_users ORDER BY id", nil, nil)
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -649,7 +654,7 @@ func TestMySQLDriver_WriteOperations_RowsAffected(t *testing.T) {
 			id INT AUTO_INCREMENT PRIMARY KEY,
 			name VARCHAR(255) NOT NULL
 		)
-	`, nil)
+	`, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to create table: %v", err)
 	}
@@ -660,7 +665,7 @@ func TestMySQLDriver_WriteOperations_RowsAffected(t *testing.T) {
 	// Insert multiple rows
 	result, err = driver.Query(ctx, sessCfg, `
 		INSERT INTO test_rows (name) VALUES ('Alice'), ('Bob'), ('Charlie')
-	`, nil)
+	`, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to insert: %v", err)
 	}
@@ -674,7 +679,7 @@ func TestMySQLDriver_WriteOperations_RowsAffected(t *testing.T) {
 	// Update some rows
 	result, err = driver.Query(ctx, sessCfg, `
 		UPDATE test_rows SET name = 'Updated' WHERE id <= 2
-	`, nil)
+	`, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to update: %v", err)
 	}
@@ -685,7 +690,7 @@ func TestMySQLDriver_WriteOperations_RowsAffected(t *testing.T) {
 	// Delete one row
 	result, err = driver.Query(ctx, sessCfg, `
 		DELETE FROM test_rows WHERE id = 1
-	`, nil)
+	`, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to delete: %v", err)
 	}
@@ -694,7 +699,7 @@ func TestMySQLDriver_WriteOperations_RowsAffected(t *testing.T) {
 	}
 
 	// Verify SELECT still works and returns rows (not rows affected)
-	result, err = driver.Query(ctx, sessCfg, `SELECT * FROM test_rows`, nil)
+	result, err = driver.Query(ctx, sessCfg, `SELECT * FROM test_rows`, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to select: %v", err)
 	}
@@ -728,7 +733,7 @@ func TestMySQLDriver_Query_Concurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := driver.Query(ctx, sessCfg, "SELECT * FROM test_users", nil)
+			_, err := driver.Query(ctx, sessCfg, "SELECT * FROM test_users", nil, nil)
 			if err != nil {
 				errors <- err
 			}
@@ -803,8 +808,8 @@ func createTestMySQLDriverRW(t *testing.T) *MySQLDriver {
 		Isolation:     "read_committed",
 		LockTimeoutMs: 5000,
 	}
-	driver.Query(ctx, sessCfg, "DROP TABLE IF EXISTS test_users", nil)
-	driver.Query(ctx, sessCfg, "DROP TABLE IF EXISTS test_rows", nil)
+	driver.Query(ctx, sessCfg, "DROP TABLE IF EXISTS test_users", nil, nil)
+	driver.Query(ctx, sessCfg, "DROP TABLE IF EXISTS test_rows", nil, nil)
 
 	return driver
 }
@@ -825,7 +830,7 @@ func createMySQLTestTable(t *testing.T, driver *MySQLDriver) {
 			email VARCHAR(255) NOT NULL,
 			status VARCHAR(50) DEFAULT 'active'
 		)
-	`, nil)
+	`, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to create table: %v", err)
 	}
@@ -852,6 +857,7 @@ func insertMySQLTestData(t *testing.T, driver *MySQLDriver) {
 		_, err := driver.Query(ctx, sessCfg,
 			"INSERT INTO test_users (name, email, status) VALUES (@name, @email, @status)",
 			map[string]any{"name": u.name, "email": u.email, "status": u.status},
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("failed to insert user %s: %v", u.name, err)

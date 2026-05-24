@@ -19,6 +19,8 @@ type QueryStep struct {
 	LockTimeoutMs    *int
 	DeadlockPriority string
 	JSONColumns      []string
+	IsWrite          *bool
+	HasReturning     *bool
 }
 
 // NewQueryStep creates a query step from configuration.
@@ -60,6 +62,8 @@ func (s *QueryStep) Execute(ctx context.Context, data ExecutionData) (*Result, e
 		LockTimeoutMs:    s.LockTimeoutMs,
 		DeadlockPriority: s.DeadlockPriority,
 		JSONColumns:      s.JSONColumns,
+		IsWrite:          s.IsWrite,
+		HasReturning:     s.HasReturning,
 	}
 
 	qr, err := data.DBManager.ExecuteQuery(ctx, s.Database, sql, params, opts)

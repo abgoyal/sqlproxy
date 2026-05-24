@@ -196,7 +196,7 @@ func TestDriverInterface_SQLite(t *testing.T) {
 	}
 
 	// Test Query
-	results, err := driver.Query(ctx, config.SessionConfig{}, "SELECT 1 as num", nil)
+	results, err := driver.Query(ctx, config.SessionConfig{}, "SELECT 1 as num", nil, nil)
 	if err != nil {
 		t.Errorf("query failed: %v", err)
 	}

@@ -316,9 +316,10 @@ func (d *SQLiteDriver) configureSession(ctx context.Context, conn *sql.Conn, ses
 // Query executes a SQL query and returns results.
 // SQL uses @param syntax which is translated to $param for SQLite.
 // params is a map of parameter name -> value.
+// hints carries precomputed SQL classification; falls back to parsing if nil.
 // For SELECT queries, returns rows in QueryResult.Rows.
 // For INSERT/UPDATE/DELETE, returns affected count in QueryResult.RowsAffected.
-func (d *SQLiteDriver) Query(ctx context.Context, sessCfg config.SessionConfig, query string, params map[string]any) (*QueryResult, error) {
+func (d *SQLiteDriver) Query(ctx context.Context, sessCfg config.SessionConfig, query string, params map[string]any, hints *QueryHints) (*QueryResult, error) {
 	// Get a dedicated connection from the pool
 	conn, err := d.conn.Conn(ctx)
 	if err != nil {
@@ -334,8 +335,13 @@ func (d *SQLiteDriver) Query(ctx context.Context, sessCfg config.SessionConfig, 
 	// Translate @param to $param and build args
 	translatedQuery, args := d.translateQuery(query, params)
 
-	// Use ExecContext for write operations, QueryContext for reads
-	if IsWriteQuery(query) {
+	// Resolve SQL classification from hints or by parsing
+	isWrite := resolveIsWrite(hints, query)
+	hasReturning := resolveHasReturning(hints, query)
+
+	// Route: writes without RETURNING use ExecContext (for RowsAffected),
+	// everything else uses QueryContext (SELECTs and writes with RETURNING).
+	if isWrite && !hasReturning {
 		result, err := conn.ExecContext(ctx, translatedQuery, args...)
 		if err != nil {
 			return nil, fmt.Errorf("exec failed: %w", err)
@@ -344,7 +350,6 @@ func (d *SQLiteDriver) Query(ctx context.Context, sessCfg config.SessionConfig, 
 		return &QueryResult{RowsAffected: rowsAffected}, nil
 	}
 
-	// Execute the query
 	rows, err := conn.QueryContext(ctx, translatedQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query failed: %w", err)
@@ -355,7 +360,11 @@ func (d *SQLiteDriver) Query(ctx context.Context, sessCfg config.SessionConfig, 
 	if err != nil {
 		return nil, err
 	}
-	return &QueryResult{Rows: scannedRows}, nil
+	qr := &QueryResult{Rows: scannedRows}
+	if isWrite {
+		qr.RowsAffected = int64(len(scannedRows))
+	}
+	return qr, nil
 }
 
 // translateQuery keeps @param syntax for SQLite and builds args.

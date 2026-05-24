@@ -3,14 +3,14 @@ package db
 import (
 	"database/sql"
 	"fmt"
-	"regexp"
-	"strings"
 	"time"
+
+	"sql-proxy/internal/sqlutil"
 )
 
 // ParamRegex matches @param style named parameters in SQL queries.
 // Exported for use by other packages (e.g., validation).
-var ParamRegex = regexp.MustCompile(`@(\w+)`)
+var ParamRegex = sqlutil.ParamRegex
 
 // QueryResult contains the results of a database query execution.
 // For SELECT queries, Rows contains the returned data.
@@ -20,43 +20,26 @@ type QueryResult struct {
 	RowsAffected int64
 }
 
-// IsWriteQuery returns true if the SQL appears to be a write operation.
-// This is used to determine whether to use QueryContext or ExecContext.
-func IsWriteQuery(sql string) bool {
-	trimmed := strings.TrimSpace(sql)
-	if trimmed == "" {
-		return false
-	}
+// IsWriteQuery returns true if the SQL is a write operation.
+var IsWriteQuery = sqlutil.IsWriteQuery
 
-	upper := strings.ToUpper(trimmed)
+// HasReturningClause returns true if a write query has OUTPUT/RETURNING.
+var HasReturningClause = sqlutil.HasReturningClause
 
-	// Handle CTEs: WITH ... AS (...) INSERT/UPDATE/DELETE
-	// Skip past the WITH clause to find the actual operation
-	if strings.HasPrefix(upper, "WITH ") {
-		// Find the main query after all CTEs
-		// CTEs can be nested, so look for write keywords anywhere after WITH
-		// Write operations in CTEs themselves would also make this a write query
-		for _, keyword := range []string{"INSERT ", "UPDATE ", "DELETE ", "CREATE ", "DROP ", "ALTER ", "TRUNCATE ", "MERGE "} {
-			if strings.Contains(upper, keyword) {
-				return true
-			}
-		}
-		return false
+// resolveIsWrite returns the precomputed hint if available, otherwise parses the query.
+func resolveIsWrite(hints *QueryHints, query string) bool {
+	if hints != nil && hints.IsWrite != nil {
+		return *hints.IsWrite
 	}
+	return IsWriteQuery(query)
+}
 
-	// Get first word (uppercase for comparison)
-	fields := strings.Fields(trimmed)
-	if len(fields) == 0 {
-		return false
+// resolveHasReturning returns the precomputed hint if available, otherwise parses the query.
+func resolveHasReturning(hints *QueryHints, query string) bool {
+	if hints != nil && hints.HasReturning != nil {
+		return *hints.HasReturning
 	}
-	firstWord := strings.ToUpper(fields[0])
-
-	switch firstWord {
-	case "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "TRUNCATE", "MERGE":
-		return true
-	default:
-		return false
-	}
+	return HasReturningClause(query)
 }
 
 // ScanRows converts sql.Rows to []map[string]any.

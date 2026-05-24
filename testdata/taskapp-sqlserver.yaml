@@ -306,22 +306,19 @@ workflows:
         database: "main"
         sql: |
           INSERT INTO tasks (title, description, status, priority, due_date, tags)
+          OUTPUT INSERTED.*
           VALUES (@title, @description, @status, @priority, NULLIF(@due_date, ''), @tags)
-      - name: get_created
-        type: query
-        database: "main"
-        sql: "SELECT TOP (1) * FROM tasks ORDER BY id DESC"
       - type: response
         status_code: 201
         template: |
           {
             "success": true,
             "task": {
-              "public_id": "{{publicID "task" (int64 .steps.get_created.row.id)}}",
-              "title": {{json .steps.get_created.row.title}},
-              "status": {{json .steps.get_created.row.status}},
-              "priority": {{.steps.get_created.row.priority}},
-              "created_at": {{json .steps.get_created.row.created_at}}
+              "public_id": "{{publicID "task" (int64 .steps.insert.row.id)}}",
+              "title": {{json .steps.insert.row.title}},
+              "status": {{json .steps.insert.row.status}},
+              "priority": {{.steps.insert.row.priority}},
+              "created_at": {{json .steps.insert.row.created_at}}
             }
           }
 

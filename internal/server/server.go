@@ -943,7 +943,15 @@ func (s *Server) initWorkflows(cfg *config.Config) error {
 			session.LockTimeoutMs = *opts.LockTimeoutMs
 		}
 
-		dbResult, err := driver.Query(ctx, session, sqlQuery, params)
+		var hints *db.QueryHints
+		if opts.IsWrite != nil || opts.HasReturning != nil {
+			hints = &db.QueryHints{
+				IsWrite:      opts.IsWrite,
+				HasReturning: opts.HasReturning,
+			}
+		}
+
+		dbResult, err := driver.Query(ctx, session, sqlQuery, params, hints)
 		if err != nil {
 			return nil, err
 		}

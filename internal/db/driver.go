@@ -7,6 +7,13 @@ import (
 	"sql-proxy/internal/config"
 )
 
+// QueryHints carries precomputed SQL classification so drivers can skip re-parsing.
+// When nil pointers are provided, drivers fall back to runtime parsing.
+type QueryHints struct {
+	IsWrite      *bool // SQL is INSERT/UPDATE/DELETE/etc.
+	HasReturning *bool // SQL has OUTPUT INSERTED/DELETED or RETURNING
+}
+
 // Driver is the interface all database implementations must satisfy.
 // Each driver handles its own parameter translation from @param syntax
 // to the native syntax of the database.
@@ -14,8 +21,9 @@ type Driver interface {
 	// Query executes a query with named parameters.
 	// SQL uses @param syntax; driver translates to native syntax.
 	// params is a map of parameter name -> value.
+	// hints carries precomputed SQL classification; drivers fall back to parsing if nil.
 	// Returns QueryResult with Rows for SELECT, RowsAffected for writes.
-	Query(ctx context.Context, sessCfg config.SessionConfig, query string, params map[string]any) (*QueryResult, error)
+	Query(ctx context.Context, sessCfg config.SessionConfig, query string, params map[string]any, hints *QueryHints) (*QueryResult, error)
 
 	// Ping checks database connectivity
 	Ping(ctx context.Context) error

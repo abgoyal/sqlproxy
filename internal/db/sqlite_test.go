@@ -95,7 +95,7 @@ func TestNewSQLiteDriver_CustomSettings(t *testing.T) {
 	sessCfg := config.SessionConfig{}
 
 	// Check busy_timeout
-	results, err := driver.Query(ctx, sessCfg, "PRAGMA busy_timeout", nil)
+	results, err := driver.Query(ctx, sessCfg, "PRAGMA busy_timeout", nil, nil)
 	if err != nil {
 		t.Fatalf("failed to query busy_timeout: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestNewSQLiteDriver_CustomSettings(t *testing.T) {
 	}
 
 	// Check journal_mode
-	results, err = driver.Query(ctx, sessCfg, "PRAGMA journal_mode", nil)
+	results, err = driver.Query(ctx, sessCfg, "PRAGMA journal_mode", nil, nil)
 	if err != nil {
 		t.Fatalf("failed to query journal_mode: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestSQLiteDriver_Query_Simple(t *testing.T) {
 	ctx := context.Background()
 	sessCfg := config.SessionConfig{}
 
-	results, err := driver.Query(ctx, sessCfg, "SELECT 1 as num, 'hello' as msg", nil)
+	results, err := driver.Query(ctx, sessCfg, "SELECT 1 as num, 'hello' as msg", nil, nil)
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -152,6 +152,7 @@ func TestSQLiteDriver_Query_WithParams(t *testing.T) {
 	results, err := driver.Query(ctx, sessCfg,
 		"SELECT * FROM test_users WHERE status = @status AND id > @minId ORDER BY id",
 		map[string]any{"status": "active", "minId": 1},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
@@ -180,6 +181,7 @@ func TestSQLiteDriver_Query_NullParams(t *testing.T) {
 	results, err := driver.Query(ctx, sessCfg,
 		"SELECT * FROM test_users WHERE (@status IS NULL OR status = @status)",
 		map[string]any{"status": nil},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
@@ -201,7 +203,7 @@ func TestSQLiteDriver_Query_EmptyResult(t *testing.T) {
 	ctx := context.Background()
 	sessCfg := config.SessionConfig{}
 
-	results, err := driver.Query(ctx, sessCfg, "SELECT * FROM test_users", nil)
+	results, err := driver.Query(ctx, sessCfg, "SELECT * FROM test_users", nil, nil)
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -221,7 +223,7 @@ func TestSQLiteDriver_Query_DateTimeHandling(t *testing.T) {
 
 	// Create table with datetime
 	_, err := driver.Query(ctx, sessCfg,
-		"CREATE TABLE events (id INTEGER PRIMARY KEY, name TEXT, event_time DATETIME)", nil)
+		"CREATE TABLE events (id INTEGER PRIMARY KEY, name TEXT, event_time DATETIME)", nil, nil)
 	if err != nil {
 		t.Fatalf("create table failed: %v", err)
 	}
@@ -231,13 +233,14 @@ func TestSQLiteDriver_Query_DateTimeHandling(t *testing.T) {
 	_, err = driver.Query(ctx, sessCfg,
 		"INSERT INTO events (name, event_time) VALUES (@name, @time)",
 		map[string]any{"name": "test", "time": now},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("insert failed: %v", err)
 	}
 
 	// Query back
-	results, err := driver.Query(ctx, sessCfg, "SELECT * FROM events", nil)
+	results, err := driver.Query(ctx, sessCfg, "SELECT * FROM events", nil, nil)
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -262,6 +265,7 @@ func TestSQLiteDriver_Query_SpecialCharacters(t *testing.T) {
 	_, err := driver.Query(ctx, sessCfg,
 		"INSERT INTO test_users (name, email, status) VALUES (@name, @email, @status)",
 		map[string]any{"name": specialChars, "email": "test@test.com", "status": "active"},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("insert failed: %v", err)
@@ -271,6 +275,7 @@ func TestSQLiteDriver_Query_SpecialCharacters(t *testing.T) {
 	results, err := driver.Query(ctx, sessCfg,
 		"SELECT name FROM test_users WHERE name = @name",
 		map[string]any{"name": specialChars},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
@@ -306,6 +311,7 @@ func TestSQLiteDriver_Query_Unicode(t *testing.T) {
 		_, err := driver.Query(ctx, sessCfg,
 			"INSERT INTO test_users (name, email, status) VALUES (@name, @email, @status)",
 			map[string]any{"name": name, "email": "test@test.com", "status": "active"},
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("insert %d failed: %v", i, err)
@@ -313,7 +319,7 @@ func TestSQLiteDriver_Query_Unicode(t *testing.T) {
 	}
 
 	// Query back
-	results, err := driver.Query(ctx, sessCfg, "SELECT name FROM test_users", nil)
+	results, err := driver.Query(ctx, sessCfg, "SELECT name FROM test_users", nil, nil)
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -339,7 +345,7 @@ func TestSQLiteDriver_Query_LargeResult(t *testing.T) {
 
 	// Create table
 	_, err := driver.Query(ctx, sessCfg,
-		"CREATE TABLE large_test (id INTEGER PRIMARY KEY, data TEXT)", nil)
+		"CREATE TABLE large_test (id INTEGER PRIMARY KEY, data TEXT)", nil, nil)
 	if err != nil {
 		t.Fatalf("create table failed: %v", err)
 	}
@@ -350,6 +356,7 @@ func TestSQLiteDriver_Query_LargeResult(t *testing.T) {
 		_, err := driver.Query(ctx, sessCfg,
 			"INSERT INTO large_test (data) VALUES (@data)",
 			map[string]any{"data": "row data " + string(rune(i%26+'a'))},
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("insert failed at %d: %v", i, err)
@@ -357,7 +364,7 @@ func TestSQLiteDriver_Query_LargeResult(t *testing.T) {
 	}
 
 	// Query all
-	results, err := driver.Query(ctx, sessCfg, "SELECT COUNT(*) as cnt FROM large_test", nil)
+	results, err := driver.Query(ctx, sessCfg, "SELECT COUNT(*) as cnt FROM large_test", nil, nil)
 	if err != nil {
 		t.Fatalf("count query failed: %v", err)
 	}
@@ -381,7 +388,7 @@ func TestSQLiteDriver_Query_Timeout(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	sessCfg := config.SessionConfig{}
-	_, err := driver.Query(ctx, sessCfg, "SELECT 1", nil)
+	_, err := driver.Query(ctx, sessCfg, "SELECT 1", nil, nil)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -420,7 +427,7 @@ func TestSQLiteDriver_Query_Concurrent(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			_, err := driver.Query(ctx, sessCfg, "SELECT * FROM test_users", nil)
+			_, err := driver.Query(ctx, sessCfg, "SELECT * FROM test_users", nil, nil)
 			if err != nil {
 				errors <- err
 			}
@@ -600,7 +607,7 @@ func TestSQLiteDriver_WriteOperations_RowsAffected(t *testing.T) {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL
 		)
-	`, nil)
+	`, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to create table: %v", err)
 	}
@@ -612,7 +619,7 @@ func TestSQLiteDriver_WriteOperations_RowsAffected(t *testing.T) {
 	// Insert multiple rows
 	result, err = driver.Query(ctx, sessCfg, `
 		INSERT INTO test_rows (name) VALUES ('Alice'), ('Bob'), ('Charlie')
-	`, nil)
+	`, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to insert: %v", err)
 	}
@@ -626,7 +633,7 @@ func TestSQLiteDriver_WriteOperations_RowsAffected(t *testing.T) {
 	// Update some rows
 	result, err = driver.Query(ctx, sessCfg, `
 		UPDATE test_rows SET name = 'Updated' WHERE id <= 2
-	`, nil)
+	`, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to update: %v", err)
 	}
@@ -637,7 +644,7 @@ func TestSQLiteDriver_WriteOperations_RowsAffected(t *testing.T) {
 	// Delete one row
 	result, err = driver.Query(ctx, sessCfg, `
 		DELETE FROM test_rows WHERE id = 1
-	`, nil)
+	`, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to delete: %v", err)
 	}
@@ -646,7 +653,7 @@ func TestSQLiteDriver_WriteOperations_RowsAffected(t *testing.T) {
 	}
 
 	// Verify SELECT still works and returns rows (not rows affected)
-	result, err = driver.Query(ctx, sessCfg, `SELECT * FROM test_rows`, nil)
+	result, err = driver.Query(ctx, sessCfg, `SELECT * FROM test_rows`, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to select: %v", err)
 	}
@@ -692,7 +699,7 @@ func createTestTable(t *testing.T, driver *SQLiteDriver) {
 			email TEXT NOT NULL,
 			status TEXT DEFAULT 'active'
 		)
-	`, nil)
+	`, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to create table: %v", err)
 	}
@@ -716,6 +723,7 @@ func insertTestData(t *testing.T, driver *SQLiteDriver) {
 		_, err := driver.Query(ctx, sessCfg,
 			"INSERT INTO test_users (name, email, status) VALUES (@name, @email, @status)",
 			map[string]any{"name": u.name, "email": u.email, "status": u.status},
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("failed to insert user %s: %v", u.name, err)

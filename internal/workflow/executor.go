@@ -365,6 +365,8 @@ func (e *Executor) executeQueryStep(ctx context.Context, cs *CompiledStep, execD
 		cs.Config.DeadlockPriority,
 		cs.Config.JSONColumns,
 	)
+	qs.IsWrite = &cs.IsWrite
+	qs.HasReturning = &cs.HasReturning
 
 	result, err := qs.Execute(ctx, execData)
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"github.com/expr-lang/expr/parser"
 	"github.com/expr-lang/expr/vm"
 
+	"sql-proxy/internal/sqlutil"
 	"sql-proxy/internal/tmpl"
 )
 
@@ -54,8 +55,10 @@ type CompiledStep struct {
 	// Computed params templates (available for all step types)
 	ParamTmpls map[string]*template.Template
 
-	// Query step templates
-	SQLTmpl *template.Template
+	// Query step templates and classification
+	SQLTmpl        *template.Template
+	IsWrite        bool // Precomputed: SQL is INSERT/UPDATE/DELETE/etc.
+	HasReturning   bool // Precomputed: SQL has OUTPUT INSERTED/DELETED or RETURNING
 
 	// HTTPCall step templates
 	URLTmpl     *template.Template
@@ -363,6 +366,8 @@ func compileStep(cfg *StepConfig, index int, aliasASTs map[string]ast.Node) (*Co
 				return nil, fmt.Errorf("sql template: %w", err)
 			}
 			cs.SQLTmpl = tmpl
+			cs.IsWrite = sqlutil.IsWriteQuery(cfg.SQL)
+			cs.HasReturning = sqlutil.HasReturningClause(cfg.SQL)
 		}
 
 	case "httpcall":

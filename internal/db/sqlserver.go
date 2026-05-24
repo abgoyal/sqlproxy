@@ -213,9 +213,10 @@ func deadlockPriorityToSQL(priority string) string {
 // Query executes a SQL query and returns results.
 // SQL uses @param syntax which is native to SQL Server.
 // params is a map of parameter name -> value.
+// hints carries precomputed SQL classification; falls back to parsing if nil.
 // For SELECT queries, returns rows in QueryResult.Rows.
 // For INSERT/UPDATE/DELETE, returns affected count in QueryResult.RowsAffected.
-func (d *SQLServerDriver) Query(ctx context.Context, sessCfg config.SessionConfig, query string, params map[string]any) (*QueryResult, error) {
+func (d *SQLServerDriver) Query(ctx context.Context, sessCfg config.SessionConfig, query string, params map[string]any, hints *QueryHints) (*QueryResult, error) {
 	// Get a dedicated connection from the pool
 	conn, err := d.conn.Conn(ctx)
 	if err != nil {
@@ -232,8 +233,13 @@ func (d *SQLServerDriver) Query(ctx context.Context, sessCfg config.SessionConfi
 	// Find @params in SQL to maintain order
 	args := d.buildArgs(query, params)
 
-	// Use ExecContext for write operations, QueryContext for reads
-	if IsWriteQuery(query) {
+	// Resolve SQL classification from hints or by parsing
+	isWrite := resolveIsWrite(hints, query)
+	hasReturning := resolveHasReturning(hints, query)
+
+	// Route: writes without RETURNING use ExecContext (for RowsAffected),
+	// everything else uses QueryContext (SELECTs and writes with OUTPUT).
+	if isWrite && !hasReturning {
 		result, err := conn.ExecContext(ctx, query, args...)
 		if err != nil {
 			return nil, fmt.Errorf("exec failed: %w", err)
@@ -242,7 +248,6 @@ func (d *SQLServerDriver) Query(ctx context.Context, sessCfg config.SessionConfi
 		return &QueryResult{RowsAffected: rowsAffected}, nil
 	}
 
-	// Execute the query
 	rows, err := conn.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query failed: %w", err)
@@ -253,7 +258,11 @@ func (d *SQLServerDriver) Query(ctx context.Context, sessCfg config.SessionConfi
 	if err != nil {
 		return nil, err
 	}
-	return &QueryResult{Rows: scannedRows}, nil
+	qr := &QueryResult{Rows: scannedRows}
+	if isWrite {
+		qr.RowsAffected = int64(len(scannedRows))
+	}
+	return qr, nil
 }
 
 // buildArgs builds sql.Named arguments from the params map.
