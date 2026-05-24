@@ -316,10 +316,10 @@ test-clean:
 validate: build
 	./$(BINARY_NAME) -validate -config config.yaml
 
-# Validate all example configs
+# Validate all example configs (sqlite examples run without external dependencies)
 validate-examples: build
 	@echo "Validating example configs..."
-	@for f in examples/*.yaml; do \
+	@for f in examples/sqlite/*.yaml; do \
 		echo "=== $$f ===" && \
 		./$(BINARY_NAME) -validate -config "$$f" || exit 1; \
 	done

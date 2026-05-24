@@ -1,10 +1,10 @@
 # SQL Proxy Service
 
-A lightweight, production-grade Go service that exposes predefined SQL queries as HTTP endpoints. Supports **SQL Server** and **SQLite** databases. Runs as a system service on **Windows**, **Linux**, and **macOS** with **zero impact on the source database** and **zero maintenance** requirements.
+A lightweight, production-grade Go service that exposes predefined SQL queries as HTTP endpoints. Supports **SQL Server**, **MySQL**, and **SQLite** databases. Runs as a system service on **Windows**, **Linux**, and **macOS** with **zero impact on the source database** and **zero maintenance** requirements.
 
 ## Features
 
-- **Multi-Database Support** - SQL Server and SQLite (same query syntax)
+- **Multi-Database Support** - SQL Server, MySQL, and SQLite (same query syntax)
 - **Cross-Platform Service** - Windows Service, Linux systemd, macOS launchd
 - **YAML Configuration** - Easy query management, no code changes
 - **Read-only Safety** - Zero interference with production database
@@ -50,6 +50,19 @@ This service is designed to safely read from production databases without interf
 | Session | `IMPLICIT_TRANSACTIONS OFF` | No accidental open transactions |
 | Database | Read-only SQL user | Database enforces no writes possible |
 
+### MySQL Safety
+
+| Level | Setting | Purpose |
+|-------|---------|---------|
+| Connection | `parseTime=true` | Parses DATE/DATETIME as Go time.Time |
+| Connection | `collation=utf8mb4_general_ci` | Full Unicode support (utf8mb4 charset) |
+| Connection | `interpolateParams=false` | Prevents client-side parameter interpolation |
+| Connection | Max 5 connections, 5min lifetime | Conservative pool footprint |
+| Session | `innodb_lock_wait_timeout` | Fails fast (5s) if lock needed |
+| Session | `TRANSACTION READ ONLY` | Prevents writes when readonly is true |
+| Session | Configurable isolation level | Default: READ COMMITTED |
+| Database | Read-only MySQL user | Database enforces no writes possible |
+
 ### SQLite Safety
 
 | Level | Setting | Purpose |
@@ -85,6 +98,21 @@ DENY CREATE TABLE TO sqlproxy_reader;
 DENY CREATE VIEW TO sqlproxy_reader;
 DENY CREATE PROCEDURE TO sqlproxy_reader;
 DENY CREATE FUNCTION TO sqlproxy_reader;
+```
+
+## MySQL User Setup (REQUIRED)
+
+Create a dedicated read-only user in MySQL. Connect as admin and run:
+
+```sql
+-- Create a user with read-only access
+CREATE USER 'sqlproxy_reader'@'%' IDENTIFIED BY 'YourSecurePassword123!';
+
+-- Grant ONLY read access to your database
+GRANT SELECT ON YourDatabaseName.* TO 'sqlproxy_reader'@'%';
+
+-- Apply changes
+FLUSH PRIVILEGES;
 ```
 
 ## Building
@@ -292,7 +320,7 @@ server:
 
 databases:
   - name: "primary"
-    type: "sqlserver"             # sqlserver or sqlite (required)
+    type: "sqlserver"             # sqlserver, mysql, or sqlite (required)
     host: "your-server.rds.amazonaws.com"
     port: 1433
     user: "sqlproxy_reader"
@@ -415,6 +443,69 @@ workflows:
         template: '{"success": true}'
 ```
 
+### MySQL Support
+
+MySQL databases are supported as a production backend. Use `type: "mysql"` with standard host/port/user/password connection settings:
+
+```yaml
+databases:
+  - name: "primary"
+    type: "mysql"
+    host: "your-mysql-server.example.com"
+    port: 3306
+    user: "sqlproxy_reader"
+    password: "${DB_PASSWORD}"
+    database: "YourDB"
+    readonly: true                # Defaults to true if omitted
+    encrypt: "true"               # TLS: true, false, disable, skip-verify
+```
+
+#### MySQL Configuration Options
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `host` | (required) | MySQL server hostname |
+| `port` | `3306` | MySQL server port |
+| `user` | (required) | MySQL username |
+| `password` | (required) | MySQL password (supports `${ENV_VAR}` syntax) |
+| `database` | (required) | Database name |
+| `readonly` | `true` | Sets session to READ ONLY transaction mode |
+| `encrypt` | `false` | TLS mode: `true`, `false`, `disable`, `skip-verify` |
+
+#### MySQL Session Settings
+
+| Setting | Default (readonly) | Default (readwrite) | Description |
+|---------|-------------------|---------------------|-------------|
+| `isolation` | `read_committed` | `read_committed` | Transaction isolation level |
+| `lock_timeout_ms` | `5000` | `5000` | InnoDB lock wait timeout (converted to seconds) |
+
+#### MySQL Query Syntax
+
+All queries use `@param` syntax (the driver translates to `?` positional placeholders for MySQL):
+
+```sql
+-- Named parameters are translated automatically
+SELECT * FROM users WHERE status = @status AND age > @age
+-- Becomes: SELECT * FROM users WHERE status = ? AND age > ?
+
+-- Use LIMIT for pagination (MySQL style)
+SELECT * FROM items ORDER BY id LIMIT @limit OFFSET @offset
+
+-- Optional filter pattern (same as other databases)
+SELECT * FROM users WHERE (@status IS NULL OR status = @status)
+```
+
+#### MySQL Operational Considerations
+
+**When to use MySQL:**
+- Production deployments with MySQL/MariaDB infrastructure
+- Read-heavy workloads with connection pooling
+- Applications already running on MySQL/Aurora
+
+**When NOT to use MySQL:**
+- If you need SQL Server-specific features (AG routing, SNAPSHOT isolation)
+- If you need embedded/serverless (use SQLite instead)
+
 ### SQLite Support
 
 SQLite databases are supported for testing and lightweight deployments. Use `type: "sqlite"` with a `path` instead of host/port/user/password:
@@ -527,13 +618,13 @@ The driver automatically configures SQLite for optimal concurrent performance:
 | In-memory | `:memory:` | Lost on restart | Testing |
 
 **Query Syntax:**
-- All queries use `@param` syntax (driver translates to `$param` for SQLite)
+- All queries use `@param` syntax (driver translates to `$param` for SQLite, `?` for MySQL)
 - Use `LIMIT` instead of `TOP` for pagination:
   ```sql
   -- SQL Server style (works on SQL Server)
   SELECT TOP (@limit) * FROM items
 
-  -- SQLite style (works on SQLite)
+  -- MySQL/SQLite style (works on MySQL and SQLite)
   SELECT * FROM items LIMIT @limit
   ```
 
@@ -543,11 +634,11 @@ Session settings control database behavior at query execution time. Settings can
 
 **Database-Specific Behavior:**
 
-| Setting | SQL Server | SQLite |
-|---------|------------|--------|
-| `isolation` | Sets transaction isolation level | Ignored (SQLite has limited isolation) |
-| `lock_timeout_ms` | `SET LOCK_TIMEOUT` | Maps to `busy_timeout` pragma |
-| `deadlock_priority` | `SET DEADLOCK_PRIORITY` | Ignored (SQLite handles differently) |
+| Setting | SQL Server | MySQL | SQLite |
+|---------|------------|-------|--------|
+| `isolation` | Sets transaction isolation level | Sets transaction isolation level | Ignored (SQLite has limited isolation) |
+| `lock_timeout_ms` | `SET LOCK_TIMEOUT` | `innodb_lock_wait_timeout` (seconds) | Maps to `busy_timeout` pragma |
+| `deadlock_priority` | `SET DEADLOCK_PRIORITY` | Ignored (InnoDB handles internally) | Ignored (SQLite handles differently) |
 
 **SQL Server Implicit Defaults (based on `readonly` flag):**
 
@@ -631,7 +722,7 @@ curl "http://localhost:8081/api/checkins?_timeout=120"
 
 Pagination is handled at the query level using database-native syntax. This is more efficient than service-level truncation because the database stops scanning once the limit is reached.
 
-> **Note:** SQL Server uses `TOP`, SQLite uses `LIMIT`. Write queries for your specific database type.
+> **Note:** SQL Server uses `TOP`, MySQL and SQLite use `LIMIT`. Write queries for your specific database type.
 
 #### Simple Limit (SQL Server: TOP, SQLite: LIMIT)
 
@@ -2317,6 +2408,16 @@ Status values:
 }
 ```
 
+MySQL example:
+```json
+{
+  "database": "analytics",
+  "status": "connected",
+  "type": "mysql",
+  "readonly": true
+}
+```
+
 Returns 404 only if the database name doesn't exist in configuration.
 
 ### OpenAPI / Swagger
@@ -2449,6 +2550,12 @@ your-domain.com {
 8. **Low deadlock priority** - Always yields to production app
 9. **ApplicationIntent=ReadOnly** - Enables AG read routing
 
+**MySQL Specific:**
+5. **Read-only MySQL user** - `SELECT` privilege only, no write grants
+6. **TLS encryption** - `encrypt: "true"` for production connections
+7. **Session READ ONLY** - `readonly: true` sets transaction to read-only mode
+8. **Lock timeout (5s)** - Fails fast via `innodb_lock_wait_timeout`
+
 **SQLite Specific:**
 5. **Read-only mode** - `readonly: true` opens DB in read-only mode
 6. **File permissions** - Ensure appropriate filesystem permissions
@@ -2481,6 +2588,13 @@ your-domain.com {
 - Look for `health_check_failed` in logs
 - Verify security group allows port 1433
 - Check credentials in config
+
+### Database connection issues (MySQL)
+- Check `/_/health` endpoint for status
+- Verify security group/firewall allows port 3306
+- Check credentials and database name in config
+- Verify TLS settings match server configuration (`encrypt: "true"` or `"skip-verify"`)
+- Check `max_connections` on MySQL server if getting connection pool exhaustion
 
 ### Database issues (SQLite)
 
@@ -2710,7 +2824,7 @@ All unit and integration tests use SQLite in-memory databases (`:memory:`) to av
 
 Planned features for future releases:
 
-- [ ] **MySQL Support** - Add MySQL/MariaDB as a database backend option alongside SQL Server and SQLite.
+- [x] **MySQL Support** - Add MySQL/MariaDB as a database backend option alongside SQL Server and SQLite.
 - [ ] **PostgreSQL Support** - Add PostgreSQL as a database backend option.
 - [ ] **TLS Support** - Native HTTPS termination without requiring a reverse proxy (Caddy/nginx). Will support configurable certificate paths and automatic Let's Encrypt integration.
 - [x] **Rate Limiting** - Per-endpoint and per-client rate limiting to protect database resources from excessive requests.

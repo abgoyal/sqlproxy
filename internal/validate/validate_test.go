@@ -189,7 +189,7 @@ func TestValidateDatabase_Duplicate(t *testing.T) {
 func TestValidateDatabase_InvalidType(t *testing.T) {
 	cfg := &config.Config{
 		Databases: []config.DatabaseConfig{
-			{Name: "db1", Type: "mysql"},
+			{Name: "db1", Type: "mongodb"},
 		},
 	}
 
@@ -303,6 +303,121 @@ func TestValidateDatabase_SQLServer(t *testing.T) {
 			dbCfg: config.DatabaseConfig{
 				Name: "test", Type: "sqlserver",
 				Host: "localhost", Port: 1433, User: "sa", Password: "pass", Database: "testdb",
+				LockTimeoutMs: intPtr(-1),
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{
+				Databases: []config.DatabaseConfig{tt.dbCfg},
+			}
+
+			r := &Result{Valid: true}
+			validateDatabase(cfg, r)
+
+			if tt.wantErr {
+				if r.Valid {
+					t.Error("expected validation to fail")
+				}
+			} else {
+				if !r.Valid {
+					t.Errorf("expected validation to pass, got errors: %v", r.Errors)
+				}
+			}
+		})
+	}
+}
+
+// TestValidateDatabase_MySQL tests MySQL-specific validation: host, port, user, password, database, isolation
+func TestValidateDatabase_MySQL(t *testing.T) {
+	tests := []struct {
+		name    string
+		dbCfg   config.DatabaseConfig
+		wantErr bool
+	}{
+		{
+			name: "valid",
+			dbCfg: config.DatabaseConfig{
+				Name: "test", Type: "mysql",
+				Host: "localhost", Port: 3306, User: "root", Password: "pass", Database: "testdb",
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing host",
+			dbCfg: config.DatabaseConfig{
+				Name: "test", Type: "mysql",
+				Port: 3306, User: "root", Password: "pass", Database: "testdb",
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing port",
+			dbCfg: config.DatabaseConfig{
+				Name: "test", Type: "mysql",
+				Host: "localhost", User: "root", Password: "pass", Database: "testdb",
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing user",
+			dbCfg: config.DatabaseConfig{
+				Name: "test", Type: "mysql",
+				Host: "localhost", Port: 3306, Password: "pass", Database: "testdb",
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing password",
+			dbCfg: config.DatabaseConfig{
+				Name: "test", Type: "mysql",
+				Host: "localhost", Port: 3306, User: "root", Database: "testdb",
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing database",
+			dbCfg: config.DatabaseConfig{
+				Name: "test", Type: "mysql",
+				Host: "localhost", Port: 3306, User: "root", Password: "pass",
+			},
+			wantErr: true,
+		},
+		{
+			name: "snapshot isolation rejected",
+			dbCfg: config.DatabaseConfig{
+				Name: "test", Type: "mysql",
+				Host: "localhost", Port: 3306, User: "root", Password: "pass", Database: "testdb",
+				Isolation: "snapshot",
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid isolation read_committed",
+			dbCfg: config.DatabaseConfig{
+				Name: "test", Type: "mysql",
+				Host: "localhost", Port: 3306, User: "root", Password: "pass", Database: "testdb",
+				Isolation: "read_committed",
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid isolation repeatable_read",
+			dbCfg: config.DatabaseConfig{
+				Name: "test", Type: "mysql",
+				Host: "localhost", Port: 3306, User: "root", Password: "pass", Database: "testdb",
+				Isolation: "repeatable_read",
+			},
+			wantErr: false,
+		},
+		{
+			name: "negative lock timeout",
+			dbCfg: config.DatabaseConfig{
+				Name: "test", Type: "mysql",
+				Host: "localhost", Port: 3306, User: "root", Password: "pass", Database: "testdb",
 				LockTimeoutMs: intPtr(-1),
 			},
 			wantErr: true,

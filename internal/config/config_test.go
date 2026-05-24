@@ -247,7 +247,7 @@ metrics:
 	expectLoadError(t, content, "duplicate database name")
 }
 
-// TestLoad_InvalidDatabaseType rejects unsupported database types like mysql
+// TestLoad_InvalidDatabaseType rejects unsupported database types
 func TestLoad_InvalidDatabaseType(t *testing.T) {
 	content := `
 server:
@@ -258,7 +258,7 @@ server:
 
 databases:
   - name: "primary"
-    type: "mysql"
+    type: "mongodb"
     path: ":memory:"
 
 logging:
@@ -271,7 +271,7 @@ logging:
 metrics:
   enabled: true
 `
-	expectLoadError(t, content, "invalid type 'mysql'")
+	expectLoadError(t, content, "invalid type 'mongodb'")
 }
 
 // TestLoad_SQLiteMissingPath ensures SQLite databases require a path field
@@ -403,26 +403,53 @@ func TestDatabaseConfig_IsReadOnly(t *testing.T) {
 	}
 }
 
-// TestDatabaseConfig_DefaultSessionConfig checks implicit defaults based on readonly flag
+// TestDatabaseConfig_DefaultSessionConfig checks implicit defaults based on type and readonly flag
 func TestDatabaseConfig_DefaultSessionConfig(t *testing.T) {
 	tests := []struct {
 		name     string
+		dbType   string
 		readonly *bool
 		wantIso  string
 		wantLock int
 		wantDead string
 	}{
 		{
-			"readonly defaults",
+			"sqlserver readonly defaults",
+			"sqlserver",
 			boolPtr(true),
 			"read_uncommitted",
 			5000,
 			"low",
 		},
 		{
-			"readwrite defaults",
+			"sqlserver readwrite defaults",
+			"sqlserver",
 			boolPtr(false),
 			"read_committed",
+			5000,
+			"low",
+		},
+		{
+			"mysql readonly defaults",
+			"mysql",
+			boolPtr(true),
+			"read_committed",
+			5000,
+			"low",
+		},
+		{
+			"mysql readwrite defaults",
+			"mysql",
+			boolPtr(false),
+			"read_committed",
+			5000,
+			"low",
+		},
+		{
+			"sqlite readonly defaults",
+			"sqlite",
+			boolPtr(true),
+			"read_uncommitted",
 			5000,
 			"low",
 		},
@@ -430,7 +457,7 @@ func TestDatabaseConfig_DefaultSessionConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := config.DatabaseConfig{ReadOnly: tt.readonly}
+			cfg := config.DatabaseConfig{Type: tt.dbType, ReadOnly: tt.readonly}
 			sess := cfg.DefaultSessionConfig()
 
 			if sess.Isolation != tt.wantIso {
@@ -497,10 +524,10 @@ func TestValidJournalModes(t *testing.T) {
 	}
 }
 
-// TestValidDatabaseTypes checks ValidDatabaseTypes contains sqlserver and sqlite only
+// TestValidDatabaseTypes checks ValidDatabaseTypes contains expected database types
 func TestValidDatabaseTypes(t *testing.T) {
-	valid := []string{"sqlserver", "sqlite"}
-	invalid := []string{"", "mysql", "postgres", "SQLite", "SQLSERVER"}
+	valid := []string{"sqlserver", "mysql", "sqlite"}
+	invalid := []string{"", "postgres", "SQLite", "SQLSERVER", "MySQL"}
 
 	for _, typ := range valid {
 		if !config.ValidDatabaseTypes[typ] {

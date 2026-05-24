@@ -484,7 +484,7 @@ func buildComponents() map[string]any {
 					},
 					"type": map[string]any{
 						"type":        "string",
-						"description": "Database type (sqlserver, sqlite)",
+						"description": "Database type (sqlserver, mysql, sqlite)",
 					},
 					"readonly": map[string]any{
 						"type":        "boolean",

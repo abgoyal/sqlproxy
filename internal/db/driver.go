@@ -48,7 +48,7 @@ func NewDriver(cfg config.DatabaseConfig) (Driver, error) {
 	case "sqlite":
 		return NewSQLiteDriver(cfg)
 	case "mysql":
-		return nil, fmt.Errorf("mysql support not yet implemented")
+		return NewMySQLDriver(cfg)
 	case "postgres":
 		return nil, fmt.Errorf("postgres support not yet implemented")
 	default:

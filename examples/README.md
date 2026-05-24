@@ -1,29 +1,38 @@
 # SQL Proxy Configuration Examples
 
 This directory contains example configurations demonstrating all features of SQL Proxy.
-Each file focuses on a specific feature area with detailed comments explaining usage.
+Examples are organized by database type:
 
-## Example Files
+- `sqlite/` - SQLite examples (no external dependencies, used for feature demos)
+- `mysql/` - MySQL examples (requires a running MySQL instance)
+
+## SQLite Examples
 
 | File | Description |
 |------|-------------|
-| `01-basic.yaml` | Minimal setup, basic HTTP workflows |
-| `02-parameters.yaml` | Parameter types, validation, defaults |
-| `03-caching.yaml` | Trigger-level and step-level caching |
-| `04-rate-limiting.yaml` | Named pools and inline rate limits |
-| `05-scheduling.yaml` | Cron triggers, dynamic dates |
-| `06-httpcall.yaml` | External API calls, webhooks, retries |
-| `07-blocks.yaml` | Iteration over results, batch processing |
-| `08-conditions.yaml` | Conditional step execution |
-| `09-advanced.yaml` | Complex multi-feature workflows |
-| `10-rest-crud.yaml` | RESTful CRUD patterns, path parameters, all HTTP methods |
+| `sqlite/01-basic.yaml` | Minimal setup, basic HTTP workflows |
+| `sqlite/02-parameters.yaml` | Parameter types, validation, defaults |
+| `sqlite/03-caching.yaml` | Trigger-level and step-level caching |
+| `sqlite/04-rate-limiting.yaml` | Named pools and inline rate limits |
+| `sqlite/05-scheduling.yaml` | Cron triggers, dynamic dates |
+| `sqlite/06-httpcall.yaml` | External API calls, webhooks, retries |
+| `sqlite/07-blocks.yaml` | Iteration over results, batch processing |
+| `sqlite/08-conditions.yaml` | Conditional step execution |
+| `sqlite/09-advanced.yaml` | Complex multi-feature workflows |
+| `sqlite/10-rest-crud.yaml` | RESTful CRUD patterns, path parameters, all HTTP methods |
+
+## MySQL Examples
+
+| File | Description |
+|------|-------------|
+| `mysql/01-basic.yaml` | MySQL connection, basic queries, named parameters |
 
 ## Quick Start
 
 Copy one of these examples and modify for your needs:
 
 ```bash
-cp examples/01-basic.yaml config.yaml
+cp examples/sqlite/01-basic.yaml config.yaml
 # Edit config.yaml with your database settings
 ./sql-proxy -config config.yaml
 ```

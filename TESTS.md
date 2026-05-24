@@ -22,17 +22,17 @@ Run `make test-cover` for current coverage statistics.
 - **TestLoad_InvalidTimeout**: TestLoad_InvalidTimeout checks timeout validation: positive values, max >= default
 - **TestLoad_NoDatabases**: TestLoad_NoDatabases ensures at least one database connection is required
 - **TestLoad_DuplicateDatabaseNames**: TestLoad_DuplicateDatabaseNames ensures database names must be unique across connections
-- **TestLoad_InvalidDatabaseType**: TestLoad_InvalidDatabaseType rejects unsupported database types like mysql
+- **TestLoad_InvalidDatabaseType**: TestLoad_InvalidDatabaseType rejects unsupported database types
 - **TestLoad_SQLiteMissingPath**: TestLoad_SQLiteMissingPath ensures SQLite databases require a path field
 - **TestLoad_SQLServerMissingFields**: TestLoad_SQLServerMissingFields validates SQL Server requires host, port, user, password, database
 - **TestLoad_InvalidLogLevel**: TestLoad_InvalidLogLevel rejects log levels other than debug/info/warn/error
 - **TestLoad_InvalidIsolationLevel**: TestLoad_InvalidIsolationLevel rejects invalid SQL Server isolation level names
 - **TestDatabaseConfig_IsReadOnly**: TestDatabaseConfig_IsReadOnly verifies readonly defaults to true when nil
-- **TestDatabaseConfig_DefaultSessionConfig**: TestDatabaseConfig_DefaultSessionConfig checks implicit defaults based on readonly flag
+- **TestDatabaseConfig_DefaultSessionConfig**: TestDatabaseConfig_DefaultSessionConfig checks implicit defaults based on type and readonly flag
 - **TestValidIsolationLevels**: TestValidIsolationLevels checks the ValidIsolationLevels map contains correct entries
 - **TestValidDeadlockPriorities**: TestValidDeadlockPriorities checks the ValidDeadlockPriorities map for low/normal/high
 - **TestValidJournalModes**: TestValidJournalModes checks ValidJournalModes for SQLite: wal/delete/truncate/memory/off
-- **TestValidDatabaseTypes**: TestValidDatabaseTypes checks ValidDatabaseTypes contains sqlserver and sqlite only
+- **TestValidDatabaseTypes**: TestValidDatabaseTypes checks ValidDatabaseTypes contains expected database types
 - **TestLoad_VariablesSection**: TestLoad_VariablesSection verifies the variables section with values
 - **TestLoad_VariablesDefaultValues**: TestLoad_VariablesDefaultValues verifies ${VAR:default} syntax works correctly
 - **TestLoad_VariablesEnvFileSupport**: TestLoad_VariablesEnvFileSupport verifies loading variables from env file
@@ -74,7 +74,7 @@ Run `make test-cover` for current coverage statistics.
 - **TestNewDriver_SQLite**: TestNewDriver_SQLite verifies factory creates SQLite driver with :memory: path
 - **TestNewDriver_SQLiteExplicit**: TestNewDriver_SQLiteExplicit confirms returned driver is *SQLiteDriver type
 - **TestNewDriver_EmptyTypeReturnsError**: TestNewDriver_EmptyTypeReturnsError ensures empty type is rejected
-- **TestNewDriver_MySQL_NotImplemented**: TestNewDriver_MySQL_NotImplemented confirms mysql type returns not-implemented error
+- **TestNewDriver_MySQL**: TestNewDriver_MySQL verifies factory creates MySQL driver (requires running MySQL)
 - **TestNewDriver_Postgres_NotImplemented**: TestNewDriver_Postgres_NotImplemented confirms postgres type returns not-implemented error
 - **TestNewDriver_UnknownType**: TestNewDriver_UnknownType rejects unrecognized database types like oracle
 - **TestNewDriver_SQLiteInvalidPath**: TestNewDriver_SQLiteInvalidPath ensures SQLite driver requires non-empty path
@@ -99,6 +99,33 @@ Run `make test-cover` for current coverage statistics.
 - **TestManager_ConcurrentReconnect**: TestManager_ConcurrentReconnect tests concurrent Reconnect calls to prevent race conditions
 - **TestManager_ConcurrentReconnectAll**: TestManager_ConcurrentReconnectAll tests concurrent ReconnectAll calls
 - **TestManager_MixedDatabaseTypes**: TestManager_MixedDatabaseTypes manages SQLite connections with different readonly/settings
+
+### mysql_test.go
+
+- **TestBuildMySQLDSN_Default**: TestBuildMySQLDSN_Default verifies DSN construction with default port and settings
+- **TestBuildMySQLDSN_CustomPort**: TestBuildMySQLDSN_CustomPort verifies custom port is used in DSN
+- **TestBuildMySQLDSN_TLSOptions**: TestBuildMySQLDSN_TLSOptions tests all TLS/encrypt configuration variants
+- **TestBuildMySQLDSN_SpecialCharsInPassword**: TestBuildMySQLDSN_SpecialCharsInPassword verifies password with special chars is included as-is
+- **TestMySQLDriver_TranslateQuery**: TestMySQLDriver_TranslateQuery tests @param to ? positional placeholder translation
+- **TestMySQLDriver_TranslateQuery_Values**: TestMySQLDriver_TranslateQuery_Values verifies parameter values are correctly ordered
+- **TestMySQLDriver_TranslateQuery_NilValue**: TestMySQLDriver_TranslateQuery_NilValue verifies nil values are passed through
+- **TestMySQLIsolationToSQL**: TestMySQLIsolationToSQL tests conversion of config isolation strings to MySQL syntax
+- **TestMySQLDriver_ConfigurePool**: TestMySQLDriver_ConfigurePool verifies connection pool settings are applied
+- **TestMySQLDriver_ConfigValidation**: TestMySQLDriver_ConfigValidation tests that invalid configs produce errors
+- **TestNewMySQLDriver_Integration**: TestNewMySQLDriver_Integration verifies driver creation against a real MySQL instance
+- **TestNewMySQLDriver_ReadWrite**: TestNewMySQLDriver_ReadWrite confirms explicit readonly=false enables write mode
+- **TestMySQLDriver_Ping**: TestMySQLDriver_Ping confirms Ping returns nil for healthy connection
+- **TestMySQLDriver_Reconnect**: TestMySQLDriver_Reconnect tests connection re-establishment after close
+- **TestMySQLDriver_Config**: TestMySQLDriver_Config verifies Config() returns original configuration
+- **TestMySQLDriver_Query_Simple**: TestMySQLDriver_Query_Simple executes basic SELECT and validates returned columns
+- **TestMySQLDriver_Query_WithParams**: TestMySQLDriver_Query_WithParams verifies @param named parameters work correctly
+- **TestMySQLDriver_Query_NullParams**: TestMySQLDriver_Query_NullParams tests NULL parameter handling for optional filters
+- **TestMySQLDriver_Query_EmptyResult**: TestMySQLDriver_Query_EmptyResult confirms empty result set returns zero-length slice
+- **TestMySQLDriver_Query_Timeout**: TestMySQLDriver_Query_Timeout verifies context deadline expiration stops query
+- **TestMySQLDriver_Query_SpecialCharacters**: TestMySQLDriver_Query_SpecialCharacters ensures SQL injection strings are safely escaped
+- **TestMySQLDriver_Query_Unicode**: TestMySQLDriver_Query_Unicode validates CJK, Cyrillic, Arabic, and emoji preservation
+- **TestMySQLDriver_WriteOperations_RowsAffected**: TestMySQLDriver_WriteOperations_RowsAffected tests that write operations return correct rows affected
+- **TestMySQLDriver_Query_Concurrent**: TestMySQLDriver_Query_Concurrent runs parallel queries against MySQL
 
 ### sqlite_test.go
 
@@ -148,6 +175,7 @@ Run `make test-cover` for current coverage statistics.
 - **TestValidateDatabase_InvalidType**: TestValidateDatabase_InvalidType ensures unsupported database types are rejected
 - **TestValidateDatabase_SQLite**: TestValidateDatabase_SQLite tests SQLite-specific validation: path, journal mode, timeout
 - **TestValidateDatabase_SQLServer**: TestValidateDatabase_SQLServer tests SQL Server validation: host, port, isolation, timeout
+- **TestValidateDatabase_MySQL**: TestValidateDatabase_MySQL tests MySQL-specific validation: host, port, user, password, database, isolation
 - **TestValidateDatabase_EnvVarWarning**: TestValidateDatabase_EnvVarWarning tests unresolved env vars generate warnings
 - **TestValidateLogging**: TestValidateLogging tests log level and rotation settings validation
 - **TestValidateDebug**: TestValidateDebug tests debug config validation rules

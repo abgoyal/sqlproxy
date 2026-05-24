@@ -116,11 +116,11 @@ func validateDatabase(cfg *config.Config, r *Result) {
 
 		// Validate database type
 		if dbCfg.Type == "" {
-			r.addError("%s: type is required (must be sqlserver or sqlite)", prefix)
+			r.addError("%s: type is required (must be sqlserver, mysql, or sqlite)", prefix)
 			continue
 		}
 		if !config.ValidDatabaseTypes[dbCfg.Type] {
-			r.addError("%s: invalid type '%s' (must be sqlserver or sqlite)", prefix, dbCfg.Type)
+			r.addError("%s: invalid type '%s' (must be sqlserver, mysql, or sqlite)", prefix, dbCfg.Type)
 			continue
 		}
 
@@ -157,6 +157,47 @@ func validateDatabase(cfg *config.Config, r *Result) {
 			}
 			if dbCfg.DeadlockPriority != "" && !config.ValidDeadlockPriorities[dbCfg.DeadlockPriority] {
 				r.addError("%s: invalid deadlock_priority '%s' (must be low, normal, or high)", prefix, dbCfg.DeadlockPriority)
+			}
+			if dbCfg.LockTimeoutMs != nil && *dbCfg.LockTimeoutMs < 0 {
+				r.addError("%s: lock_timeout_ms cannot be negative", prefix)
+			}
+
+		case "mysql":
+			if dbCfg.Host == "" {
+				r.addError("%s: host is required for mysql", prefix)
+			}
+			if dbCfg.Port == 0 {
+				r.addError("%s: port is required for mysql", prefix)
+			}
+			if dbCfg.User == "" {
+				r.addError("%s: user is required for mysql", prefix)
+			}
+			if dbCfg.Password == "" {
+				r.addError("%s: password is required for mysql", prefix)
+			}
+			if dbCfg.Database == "" {
+				r.addError("%s: database is required for mysql", prefix)
+			}
+
+			// Check for unresolved env vars
+			if strings.HasPrefix(dbCfg.Host, "${") {
+				r.addWarning("%s: host appears to be an unresolved env var: %s", prefix, dbCfg.Host)
+			}
+			if strings.HasPrefix(dbCfg.Password, "${") {
+				r.addWarning("%s: password appears to be an unresolved env var", prefix)
+			}
+
+			// Validate MySQL session settings
+			if dbCfg.Isolation != "" {
+				validMySQLIsolation := map[string]bool{
+					"read_uncommitted": true,
+					"read_committed":   true,
+					"repeatable_read":  true,
+					"serializable":     true,
+				}
+				if !validMySQLIsolation[dbCfg.Isolation] {
+					r.addError("%s: invalid isolation level '%s' for mysql (must be read_uncommitted, read_committed, repeatable_read, or serializable)", prefix, dbCfg.Isolation)
+				}
 			}
 			if dbCfg.LockTimeoutMs != nil && *dbCfg.LockTimeoutMs < 0 {
 				r.addError("%s: lock_timeout_ms cannot be negative", prefix)

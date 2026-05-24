@@ -1,11 +1,20 @@
 package db
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 
 	"sql-proxy/internal/config"
 )
+
+func envOrDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
 
 // TestNewDriver_SQLite verifies factory creates SQLite driver with :memory: path
 func TestNewDriver_SQLite(t *testing.T) {
@@ -66,19 +75,45 @@ func TestNewDriver_EmptyTypeReturnsError(t *testing.T) {
 	}
 }
 
-// TestNewDriver_MySQL_NotImplemented confirms mysql type returns not-implemented error
-func TestNewDriver_MySQL_NotImplemented(t *testing.T) {
-	cfg := config.DatabaseConfig{
-		Name: "test",
-		Type: "mysql",
+// TestNewDriver_MySQL verifies factory creates MySQL driver (requires running MySQL)
+func TestNewDriver_MySQL(t *testing.T) {
+	host := os.Getenv("MYSQL_HOST")
+	if host == "" {
+		t.Skip("MYSQL_HOST not set, skipping MySQL integration test")
 	}
 
-	_, err := NewDriver(cfg)
-	if err == nil {
-		t.Fatal("expected error for mysql")
+	port := 3306
+	if p := os.Getenv("MYSQL_PORT"); p != "" {
+		fmt.Sscanf(p, "%d", &port)
 	}
-	if !strings.Contains(err.Error(), "mysql support not yet implemented") {
-		t.Errorf("unexpected error: %v", err)
+
+	cfg := config.DatabaseConfig{
+		Name:     "test",
+		Type:     "mysql",
+		Host:     host,
+		Port:     port,
+		User:     envOrDefault("MYSQL_USER", "root"),
+		Password: envOrDefault("MYSQL_PASSWORD", "testpass"),
+		Database: envOrDefault("MYSQL_DATABASE", "testdb"),
+	}
+
+	driver, err := NewDriver(cfg)
+	if err != nil {
+		t.Fatalf("failed to create driver: %v", err)
+	}
+	defer driver.Close()
+
+	if driver.Type() != "mysql" {
+		t.Errorf("expected type mysql, got %s", driver.Type())
+	}
+	if driver.Name() != "test" {
+		t.Errorf("expected name test, got %s", driver.Name())
+	}
+
+	// Verify it's actually a MySQL driver
+	_, ok := driver.(*MySQLDriver)
+	if !ok {
+		t.Error("expected *MySQLDriver")
 	}
 }
 
@@ -238,10 +273,10 @@ func TestNewDriver_AllTypes(t *testing.T) {
 			errorMsg:    "path is required",
 		},
 		{
-			name:        "mysql not implemented",
+			name:        "mysql requires connection",
 			dbType:      "mysql",
 			expectError: true,
-			errorMsg:    "not yet implemented",
+			errorMsg:    "failed to ping mysql database",
 		},
 		{
 			name:        "postgres not implemented",

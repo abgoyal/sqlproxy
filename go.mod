@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/dgraph-io/ristretto v0.2.0
 	github.com/expr-lang/expr v1.17.7
+	github.com/go-sql-driver/mysql v1.8.1
 	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
 	github.com/microsoft/go-mssqldb v1.7.0
@@ -19,6 +20,7 @@ require (
 )
 
 require (
+	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect

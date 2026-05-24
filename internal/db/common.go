@@ -60,7 +60,7 @@ func IsWriteQuery(sql string) bool {
 }
 
 // ScanRows converts sql.Rows to []map[string]any.
-// This is shared between SQLite and SQL Server drivers.
+// Shared across database drivers.
 func ScanRows(rows *sql.Rows) ([]map[string]any, error) {
 	columns, err := rows.Columns()
 	if err != nil {

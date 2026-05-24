@@ -1,0 +1,74 @@
+# Basic MySQL Configuration
+# Demonstrates: MySQL database connection, simple HTTP workflows
+
+variables:
+  values:
+    mysql_password: "${MYSQL_PASSWORD}"
+
+server:
+  host: "127.0.0.1"
+  port: 8080
+  default_timeout_sec: 30
+  max_timeout_sec: 300
+
+databases:
+  - name: "main"
+    type: "mysql"
+    host: "127.0.0.1"
+    port: 3306
+    user: "root"
+    password: "{{.vars.mysql_password}}"
+    database: "testdb"
+    readonly: true
+
+logging:
+  level: "info"
+  file_path: ""
+  max_size_mb: 100
+  max_backups: 5
+  max_age_days: 30
+
+metrics:
+  enabled: true
+
+workflows:
+  - name: "health_check"
+    triggers:
+      - type: http
+        path: "/api/health"
+        method: GET
+    steps:
+      - name: check
+        type: query
+        database: "main"
+        sql: "SELECT 'ok' AS status, NOW() AS timestamp"
+      - type: response
+        template: |
+          {"success": true, "status": "{{index .steps.check.data 0 \"status\"}}", "timestamp": "{{index .steps.check.data 0 \"timestamp\"}}"}
+
+  - name: "list_users"
+    triggers:
+      - type: http
+        path: "/api/users"
+        method: GET
+        parameters:
+          - name: "status"
+            type: "string"
+            required: false
+            default: "active"
+          - name: "limit"
+            type: "int"
+            required: false
+            default: "20"
+    steps:
+      - name: fetch
+        type: query
+        database: "main"
+        sql: |
+          SELECT id, name, email, status
+          FROM users
+          WHERE (@status IS NULL OR status = @status)
+          ORDER BY id
+          LIMIT @limit
+      - type: response
+        template: '{{json .steps.fetch.data}}'

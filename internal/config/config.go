@@ -207,8 +207,8 @@ var ValidJournalModes = map[string]bool{
 // Valid database types
 var ValidDatabaseTypes = map[string]bool{
 	"sqlserver": true,
+	"mysql":     true,
 	"sqlite":    true,
-	// Future: "mysql", "postgres"
 }
 
 // ValidParameterTypes is re-exported from internal/types
@@ -220,17 +220,27 @@ var IsArrayType = types.IsArrayType
 // ArrayBaseType is re-exported from internal/types
 var ArrayBaseType = types.ArrayBaseType
 
-// DefaultSessionConfig returns implicit defaults based on readonly flag
+// DefaultSessionConfig returns implicit defaults based on database type and readonly flag.
 func (d *DatabaseConfig) DefaultSessionConfig() SessionConfig {
 	cfg := SessionConfig{
 		LockTimeoutMs:    5000,
 		DeadlockPriority: "low",
 	}
-	if d.IsReadOnly() {
-		cfg.Isolation = "read_uncommitted"
-	} else {
+
+	switch d.Type {
+	case "mysql":
+		// InnoDB uses MVCC so read_committed gives consistent reads with zero
+		// lock contention. read_uncommitted provides no performance benefit.
 		cfg.Isolation = "read_committed"
+	default:
+		// SQL Server: read_uncommitted avoids lock contention with production workload
+		if d.IsReadOnly() {
+			cfg.Isolation = "read_uncommitted"
+		} else {
+			cfg.Isolation = "read_committed"
+		}
 	}
+
 	return cfg
 }
 
