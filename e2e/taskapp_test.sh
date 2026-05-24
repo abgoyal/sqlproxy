@@ -52,7 +52,7 @@ CONFIG_TEMPLATE="${TASKAPP_CONFIG:-$PROJECT_ROOT/testdata/taskapp.yaml}"
 
 # Database path substitution (only needed for SQLite configs)
 declare -A DB_VARS
-if [[ "$CONFIG_TEMPLATE" != *mysql* ]]; then
+if [[ "$CONFIG_TEMPLATE" != *mysql* && "$CONFIG_TEMPLATE" != *sqlserver* ]]; then
     DB_VARS[DB_PATH]="${DB_PATH:-$TEMP_DIR/taskapp.db}"
 fi
 
