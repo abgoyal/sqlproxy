@@ -60,7 +60,7 @@ func TestCache_GetSet(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
+	_ = c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	data := []map[string]any{
 		{"id": 1, "name": "test"},
@@ -97,7 +97,7 @@ func TestCache_Delete(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
+	_ = c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	data := []map[string]any{{"id": 1}}
 	c.Set(endpoint, "key1", data, 5*time.Minute)
@@ -119,7 +119,7 @@ func TestCache_Clear(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
+	_ = c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	// Add multiple entries
 	for i := 0; i < 5; i++ {
@@ -145,8 +145,8 @@ func TestCache_ClearAll(t *testing.T) {
 	defer c.Close()
 
 	ep1, ep2 := "/api/one", "/api/two"
-	c.RegisterEndpoint(ep1, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
-	c.RegisterEndpoint(ep2, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
+	_ = c.RegisterEndpoint(ep1, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
+	_ = c.RegisterEndpoint(ep2, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	c.Set(ep1, "key1", []map[string]any{{"id": 1}}, 5*time.Minute)
 	c.Set(ep2, "key2", []map[string]any{{"id": 2}}, 5*time.Minute)
@@ -171,7 +171,7 @@ func TestCache_TTL(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
+	_ = c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	c.Set(endpoint, "key1", []map[string]any{{"id": 1}}, 100*time.Millisecond)
 	time.Sleep(10 * time.Millisecond)
@@ -199,7 +199,7 @@ func TestCache_GetSnapshot(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
+	_ = c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	// Generate some traffic
 	c.Set(endpoint, "key1", []map[string]any{{"id": 1}}, 5*time.Minute)
@@ -245,7 +245,7 @@ func TestCache_GetTTLRemaining(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
+	_ = c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	c.Set(endpoint, "key1", []map[string]any{{"id": 1}}, 5*time.Second)
 	time.Sleep(10 * time.Millisecond)
@@ -258,67 +258,6 @@ func TestCache_GetTTLRemaining(t *testing.T) {
 	// Non-existent key
 	if ttl := c.GetTTLRemaining(endpoint, "nonexistent"); ttl != 0 {
 		t.Errorf("expected 0 TTL for nonexistent key, got %v", ttl)
-	}
-}
-
-// TestBuildKey tests cache key template execution
-func TestBuildKey(t *testing.T) {
-	tests := []struct {
-		name     string
-		template string
-		params   map[string]any
-		want     string
-		wantErr  bool
-	}{
-		{
-			name:     "simple parameter",
-			template: "user:{{.id}}",
-			params:   map[string]any{"id": 123},
-			want:     "user:123",
-		},
-		{
-			name:     "multiple parameters",
-			template: "report:{{.from}}:{{.to}}",
-			params:   map[string]any{"from": "2024-01-01", "to": "2024-01-31"},
-			want:     "report:2024-01-01:2024-01-31",
-		},
-		{
-			name:     "default function",
-			template: "items:{{.status | default \"all\"}}",
-			params:   map[string]any{},
-			want:     "items:all",
-		},
-		{
-			name:     "default not used when value exists",
-			template: "items:{{.status | default \"all\"}}",
-			params:   map[string]any{"status": "active"},
-			want:     "items:active",
-		},
-		{
-			name:     "empty template",
-			template: "",
-			params:   map[string]any{},
-			wantErr:  true,
-		},
-		{
-			name:     "invalid template",
-			template: "{{.invalid",
-			params:   map[string]any{},
-			wantErr:  true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := BuildKey(tt.template, tt.params)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("BuildKey() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if got != tt.want {
-				t.Errorf("BuildKey() = %q, want %q", got, tt.want)
-			}
-		})
 	}
 }
 
@@ -359,8 +298,8 @@ func TestCache_MultipleEndpoints(t *testing.T) {
 	defer c.Close()
 
 	ep1, ep2 := "/api/users", "/api/orders"
-	c.RegisterEndpoint(ep1, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
-	c.RegisterEndpoint(ep2, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
+	_ = c.RegisterEndpoint(ep1, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
+	_ = c.RegisterEndpoint(ep2, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	// Set same key on different endpoints
 	c.Set(ep1, "key1", []map[string]any{{"type": "user"}}, 5*time.Minute)
@@ -402,7 +341,7 @@ func TestCache_PerEndpointSizeLimit(t *testing.T) {
 	// through the size tracking mechanism
 
 	// Register with a small limit - we'll use internal tracking to verify
-	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{
+	_ = c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{
 		Enabled:   true,
 		Key:       "{{.id}}",
 		MaxSizeMB: 1, // 1MB limit
@@ -480,7 +419,7 @@ func TestCache_UpdateExistingKey(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
+	_ = c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	// Set initial value
 	initialData := []map[string]any{{"id": 1, "value": "initial"}}
@@ -528,7 +467,7 @@ func TestCache_DefaultTTL(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
+	_ = c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	// Set with TTL=0 (should use default)
 	c.Set(endpoint, "key1", []map[string]any{{"id": 1}}, 0)
@@ -631,7 +570,7 @@ func TestGetOrCompute(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
+	_ = c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	// First call - should compute and cache
 	data, hit, err := c.GetOrCompute(endpoint, "key1", 5*time.Minute, func() ([]map[string]any, error) {
@@ -679,7 +618,7 @@ func TestGetOrCompute_Error(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
+	_ = c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	expectedErr := errors.New("compute error")
 	data, hit, err := c.GetOrCompute(endpoint, "key1", 5*time.Minute, func() ([]map[string]any, error) {
@@ -729,7 +668,7 @@ func TestGetOrCompute_Singleflight(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
+	_ = c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	// Track how many times compute is called
 	var computeCount atomic.Int32
@@ -826,7 +765,7 @@ func TestCache_EvictionMetrics(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
+	_ = c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	// Add entries
 	for i := 0; i < 5; i++ {
@@ -908,7 +847,7 @@ func TestCache_ClearTriggersEvictionMetric(t *testing.T) {
 	defer c.Close()
 
 	endpoint := "/api/test"
-	c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
+	_ = c.RegisterEndpoint(endpoint, &config.EndpointCacheConfig{Enabled: true, Key: "{{.id}}"})
 
 	// Add entries
 	for i := 0; i < 5; i++ {

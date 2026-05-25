@@ -28,7 +28,7 @@ func TestNewDriver_SQLite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create driver: %v", err)
 	}
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	if driver.Type() != "sqlite" {
 		t.Errorf("expected type sqlite, got %s", driver.Type())
@@ -50,7 +50,7 @@ func TestNewDriver_SQLiteExplicit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create driver: %v", err)
 	}
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	// Verify it's actually a SQLite driver
 	_, ok := driver.(*SQLiteDriver)
@@ -84,7 +84,7 @@ func TestNewDriver_MySQL(t *testing.T) {
 
 	port := 3306
 	if p := os.Getenv("MYSQL_PORT"); p != "" {
-		fmt.Sscanf(p, "%d", &port)
+		_, _ = fmt.Sscanf(p, "%d", &port)
 	}
 
 	cfg := config.DatabaseConfig{
@@ -101,7 +101,7 @@ func TestNewDriver_MySQL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create driver: %v", err)
 	}
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	if driver.Type() != "mysql" {
 		t.Errorf("expected type mysql, got %s", driver.Type())
@@ -181,7 +181,7 @@ func TestDriverInterface_SQLite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create driver: %v", err)
 	}
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	// All interface methods should be callable
 	_ = driver.Name()
@@ -234,7 +234,7 @@ func TestDriverInterface_Polymorphism(t *testing.T) {
 	// Close all drivers at end
 	defer func() {
 		for _, d := range drivers {
-			d.Close()
+			_ = d.Close()
 		}
 	}()
 
@@ -305,7 +305,7 @@ func TestNewDriver_AllTypes(t *testing.T) {
 				if err == nil {
 					t.Error("expected error, got nil")
 					if driver != nil {
-						driver.Close()
+						_ = driver.Close()
 					}
 				} else if !strings.Contains(err.Error(), tt.errorMsg) {
 					t.Errorf("expected error containing %q, got: %v", tt.errorMsg, err)
@@ -315,7 +315,7 @@ func TestNewDriver_AllTypes(t *testing.T) {
 					t.Errorf("unexpected error: %v", err)
 				}
 				if driver != nil {
-					driver.Close()
+					_ = driver.Close()
 				}
 			}
 		})

@@ -68,10 +68,10 @@ workflows:
 // Note: ${VAR} syntax is ONLY valid in variables.values section.
 // Use {{.vars.X}} elsewhere to access imported variables.
 func TestLoad_EnvironmentVariables(t *testing.T) {
-	os.Setenv("TEST_DB_HOST", "testhost.example.com")
-	os.Setenv("TEST_DB_PORT", "1433")
-	defer os.Unsetenv("TEST_DB_HOST")
-	defer os.Unsetenv("TEST_DB_PORT")
+	_ = os.Setenv("TEST_DB_HOST", "testhost.example.com")
+	_ = os.Setenv("TEST_DB_PORT", "1433")
+	defer func() { _ = os.Unsetenv("TEST_DB_HOST") }()
+	defer func() { _ = os.Unsetenv("TEST_DB_PORT") }()
 
 	content := `
 # Variables section - ONLY place where ${VAR} syntax works
@@ -543,8 +543,8 @@ func TestValidDatabaseTypes(t *testing.T) {
 
 // TestLoad_VariablesSection verifies the variables section with values
 func TestLoad_VariablesSection(t *testing.T) {
-	os.Setenv("TEST_API_KEY", "secret-key-123")
-	defer os.Unsetenv("TEST_API_KEY")
+	_ = os.Setenv("TEST_API_KEY", "secret-key-123")
+	defer func() { _ = os.Unsetenv("TEST_API_KEY") }()
 
 	content := `
 server:
@@ -583,7 +583,7 @@ variables:
 // TestLoad_VariablesDefaultValues verifies ${VAR:default} syntax works correctly
 func TestLoad_VariablesDefaultValues(t *testing.T) {
 	// Ensure the variable is not set
-	os.Unsetenv("UNSET_VAR_FOR_TEST")
+	_ = os.Unsetenv("UNSET_VAR_FOR_TEST")
 
 	content := `
 server:
@@ -690,8 +690,8 @@ func TestLoad_VariablesEnvOverridesFile(t *testing.T) {
 	}
 
 	// Set actual environment variable to override
-	os.Setenv("OVERRIDE_TEST", "from-env")
-	defer os.Unsetenv("OVERRIDE_TEST")
+	_ = os.Setenv("OVERRIDE_TEST", "from-env")
+	defer func() { _ = os.Unsetenv("OVERRIDE_TEST") }()
 
 	content := `
 server:

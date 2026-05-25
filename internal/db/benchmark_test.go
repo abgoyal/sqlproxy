@@ -40,7 +40,7 @@ func setupBenchmarkDB(b *testing.B) (*SQLiteDriver, func()) {
 		)
 	`, nil, nil)
 	if err != nil {
-		driver.Close()
+		_ = driver.Close()
 		b.Fatalf("failed to create table: %v", err)
 	}
 
@@ -52,12 +52,12 @@ func setupBenchmarkDB(b *testing.B) (*SQLiteDriver, func()) {
 			nil,
 		)
 		if err != nil {
-			driver.Close()
+			_ = driver.Close()
 			b.Fatalf("failed to insert: %v", err)
 		}
 	}
 
-	return driver, func() { driver.Close() }
+	return driver, func() { _ = driver.Close() }
 }
 
 // BenchmarkSQLiteDriver_SimpleQuery measures minimal "SELECT 1" query performance
@@ -153,7 +153,7 @@ func BenchmarkSQLiteDriver_Insert(b *testing.B) {
 	if err != nil {
 		b.Fatalf("failed to create driver: %v", err)
 	}
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	ctx := context.Background()
 	sessCfg := config.SessionConfig{}
@@ -198,7 +198,7 @@ func BenchmarkSQLiteDriver_ConcurrentReads(b *testing.B) {
 	if err != nil {
 		b.Fatalf("failed to create driver: %v", err)
 	}
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	ctx := context.Background()
 	sessCfg := config.SessionConfig{}
@@ -272,7 +272,7 @@ func BenchmarkManager_Get(b *testing.B) {
 	if err != nil {
 		b.Fatalf("failed to create manager: %v", err)
 	}
-	defer manager.Close()
+	defer func() { _ = manager.Close() }()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -297,7 +297,7 @@ func BenchmarkManager_Get_Concurrent(b *testing.B) {
 	if err != nil {
 		b.Fatalf("failed to create manager: %v", err)
 	}
-	defer manager.Close()
+	defer func() { _ = manager.Close() }()
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -311,28 +311,6 @@ func BenchmarkManager_Get_Concurrent(b *testing.B) {
 			i++
 		}
 	})
-}
-
-// BenchmarkManager_PingAll measures ping across all 3 databases sequentially
-func BenchmarkManager_PingAll(b *testing.B) {
-	readOnly := false
-	configs := []config.DatabaseConfig{
-		{Name: "db1", Type: "sqlite", Path: ":memory:", ReadOnly: &readOnly},
-		{Name: "db2", Type: "sqlite", Path: ":memory:", ReadOnly: &readOnly},
-		{Name: "db3", Type: "sqlite", Path: ":memory:", ReadOnly: &readOnly},
-	}
-
-	manager, err := NewManager(configs)
-	if err != nil {
-		b.Fatalf("failed to create manager: %v", err)
-	}
-	defer manager.Close()
-
-	ctx := context.Background()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		manager.PingAll(ctx)
-	}
 }
 
 // BenchmarkSQLiteDriver_LargeResult_100 measures fetching 100 row result set
@@ -363,7 +341,7 @@ func benchmarkLargeResult(b *testing.B, rowCount int) {
 	if err != nil {
 		b.Fatalf("failed to create driver: %v", err)
 	}
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	ctx := context.Background()
 	sessCfg := config.SessionConfig{}
@@ -413,7 +391,7 @@ func BenchmarkSQLiteDriver_ConcurrentWrites(b *testing.B) {
 	if err != nil {
 		b.Fatalf("failed to create driver: %v", err)
 	}
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	ctx := context.Background()
 	sessCfg := config.SessionConfig{}

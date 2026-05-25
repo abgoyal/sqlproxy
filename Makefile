@@ -227,7 +227,6 @@ test-cover:
 	@rm -rf $(COVERAGE_DIR)/e2e
 	@echo "=== Running unit tests with coverage ==="
 	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/unit.out ./internal/...
-	@grep -v "internal/testutil" $(COVERAGE_DIR)/unit.out > $(COVERAGE_DIR)/unit.tmp && mv $(COVERAGE_DIR)/unit.tmp $(COVERAGE_DIR)/unit.out
 	@echo ""
 	@echo "=== Running e2e tests with coverage (all apps) ==="
 	@E2E_COVERAGE_DIR=$(COVERAGE_DIR)/e2e ./e2e/taskapp_test.sh --cover
@@ -251,7 +250,6 @@ test-cover:
 test-cover-report:
 	@mkdir -p $(COVERAGE_DIR)
 	@$(GOTEST) -coverprofile=$(COVERAGE_DIR)/coverage.out ./internal/...
-	@grep -v "internal/testutil" $(COVERAGE_DIR)/coverage.out > $(COVERAGE_DIR)/coverage.tmp && mv $(COVERAGE_DIR)/coverage.tmp $(COVERAGE_DIR)/coverage.out
 	@$(GOCMD) tool cover -func=$(COVERAGE_DIR)/coverage.out
 
 # Generate per-package coverage reports

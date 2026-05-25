@@ -22,7 +22,7 @@ func TestNewSQLiteDriver_InMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create driver: %v", err)
 	}
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	if driver.Name() != "test" {
 		t.Errorf("expected name 'test', got %s", driver.Name())
@@ -49,7 +49,7 @@ func TestNewSQLiteDriver_ReadWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create driver: %v", err)
 	}
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	if driver.IsReadOnly() {
 		t.Error("expected read-write")
@@ -88,7 +88,7 @@ func TestNewSQLiteDriver_CustomSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create driver: %v", err)
 	}
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	// Verify pragmas were applied by querying them
 	ctx := context.Background()
@@ -116,7 +116,7 @@ func TestNewSQLiteDriver_CustomSettings(t *testing.T) {
 // TestSQLiteDriver_Query_Simple executes basic SELECT and validates returned columns
 func TestSQLiteDriver_Query_Simple(t *testing.T) {
 	driver := createTestSQLiteDriver(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	ctx := context.Background()
 	sessCfg := config.SessionConfig{}
@@ -140,7 +140,7 @@ func TestSQLiteDriver_Query_Simple(t *testing.T) {
 // TestSQLiteDriver_Query_WithParams verifies @param named parameters work correctly
 func TestSQLiteDriver_Query_WithParams(t *testing.T) {
 	driver := createTestSQLiteDriver(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	createTestTable(t, driver)
 	insertTestData(t, driver)
@@ -169,7 +169,7 @@ func TestSQLiteDriver_Query_WithParams(t *testing.T) {
 // TestSQLiteDriver_Query_NullParams tests NULL parameter handling for optional filters
 func TestSQLiteDriver_Query_NullParams(t *testing.T) {
 	driver := createTestSQLiteDriver(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	createTestTable(t, driver)
 	insertTestData(t, driver)
@@ -196,7 +196,7 @@ func TestSQLiteDriver_Query_NullParams(t *testing.T) {
 // TestSQLiteDriver_Query_EmptyResult confirms empty result set returns zero-length slice
 func TestSQLiteDriver_Query_EmptyResult(t *testing.T) {
 	driver := createTestSQLiteDriver(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	createTestTable(t, driver)
 
@@ -216,7 +216,7 @@ func TestSQLiteDriver_Query_EmptyResult(t *testing.T) {
 // TestSQLiteDriver_Query_DateTimeHandling tests time.Time parameter binding and retrieval
 func TestSQLiteDriver_Query_DateTimeHandling(t *testing.T) {
 	driver := createTestSQLiteDriver(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	ctx := context.Background()
 	sessCfg := config.SessionConfig{}
@@ -253,7 +253,7 @@ func TestSQLiteDriver_Query_DateTimeHandling(t *testing.T) {
 // TestSQLiteDriver_Query_SpecialCharacters ensures SQL injection strings are safely escaped
 func TestSQLiteDriver_Query_SpecialCharacters(t *testing.T) {
 	driver := createTestSQLiteDriver(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	createTestTable(t, driver)
 
@@ -292,7 +292,7 @@ func TestSQLiteDriver_Query_SpecialCharacters(t *testing.T) {
 // TestSQLiteDriver_Query_Unicode validates CJK, Cyrillic, Arabic, and emoji preservation
 func TestSQLiteDriver_Query_Unicode(t *testing.T) {
 	driver := createTestSQLiteDriver(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	createTestTable(t, driver)
 
@@ -338,7 +338,7 @@ func TestSQLiteDriver_Query_Unicode(t *testing.T) {
 // TestSQLiteDriver_Query_LargeResult tests handling of 10000 row result sets
 func TestSQLiteDriver_Query_LargeResult(t *testing.T) {
 	driver := createTestSQLiteDriver(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	ctx := context.Background()
 	sessCfg := config.SessionConfig{}
@@ -378,7 +378,7 @@ func TestSQLiteDriver_Query_LargeResult(t *testing.T) {
 // TestSQLiteDriver_Query_Timeout verifies context deadline expiration stops query
 func TestSQLiteDriver_Query_Timeout(t *testing.T) {
 	driver := createTestSQLiteDriver(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	// Create a very short timeout context
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
@@ -411,7 +411,7 @@ func TestSQLiteDriver_Query_Concurrent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create driver: %v", err)
 	}
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	createTestTable(t, driver)
 	insertTestData(t, driver)
@@ -445,7 +445,7 @@ func TestSQLiteDriver_Query_Concurrent(t *testing.T) {
 // TestSQLiteDriver_Ping confirms Ping returns nil for healthy connection
 func TestSQLiteDriver_Ping(t *testing.T) {
 	driver := createTestSQLiteDriver(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	ctx := context.Background()
 	if err := driver.Ping(ctx); err != nil {
@@ -461,7 +461,7 @@ func TestSQLiteDriver_Reconnect(t *testing.T) {
 	if err := driver.Reconnect(); err != nil {
 		t.Fatalf("reconnect failed: %v", err)
 	}
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	// Verify connection works
 	ctx := context.Background()
@@ -482,7 +482,7 @@ func TestSQLiteDriver_Config(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create driver: %v", err)
 	}
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	gotCfg := driver.Config()
 	if gotCfg.Name != cfg.Name {
@@ -496,7 +496,7 @@ func TestSQLiteDriver_Config(t *testing.T) {
 // TestSQLiteDriver_TranslateQuery tests @param to sql.Named translation and deduplication
 func TestSQLiteDriver_TranslateQuery(t *testing.T) {
 	driver := createTestSQLiteDriver(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	tests := []struct {
 		name     string
@@ -596,7 +596,7 @@ func TestIsWriteQuery(t *testing.T) {
 // TestSQLiteDriver_WriteOperations_RowsAffected tests that write operations return correct rows affected
 func TestSQLiteDriver_WriteOperations_RowsAffected(t *testing.T) {
 	driver := createTestSQLiteDriver(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	ctx := context.Background()
 	sessCfg := config.SessionConfig{}

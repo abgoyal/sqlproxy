@@ -1,3 +1,4 @@
+[![CI](https://github.com/abgoyal/sqlproxy/actions/workflows/ci.yml/badge.svg)](https://github.com/abgoyal/sqlproxy/actions/workflows/ci.yml) [![Release](https://github.com/abgoyal/sqlproxy/actions/workflows/release.yml/badge.svg)](https://github.com/abgoyal/sqlproxy/actions/workflows/release.yml)
 # SQL Proxy Service
 
 A lightweight, production-grade Go service that exposes predefined SQL queries as HTTP endpoints. Supports **SQL Server**, **MySQL**, and **SQLite** databases. Runs as a system service on **Windows**, **Linux**, and **macOS** with **zero impact on the source database** and **zero maintenance** requirements.

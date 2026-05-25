@@ -105,16 +105,15 @@ func NewSQLiteDriver(cfg config.DatabaseConfig) (*SQLiteDriver, error) {
 	}
 
 	if err := driver.applyInitialPragmas(); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("failed to apply initial pragmas: %w", err)
 	}
 
-	// Test connection
 	ctx, cancel := context.WithTimeout(context.Background(), sqlitePingTimeout)
 	defer cancel()
 
 	if err := conn.PingContext(ctx); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("failed to ping sqlite database: %w", err)
 	}
 
@@ -231,9 +230,8 @@ func (d *SQLiteDriver) Config() config.DatabaseConfig {
 
 // Reconnect attempts to re-establish the database connection
 func (d *SQLiteDriver) Reconnect() error {
-	// Close existing connection (ignore errors)
 	if d.conn != nil {
-		d.conn.Close()
+		_ = d.conn.Close()
 		d.conn = nil
 	}
 
@@ -252,7 +250,7 @@ func (d *SQLiteDriver) Reconnect() error {
 	// Create a temporary driver to apply pragmas (using the new conn)
 	tempDriver := &SQLiteDriver{conn: conn, path: d.path, cfg: d.cfg, readOnly: d.readOnly}
 	if err := tempDriver.applyInitialPragmas(); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return fmt.Errorf("failed to apply initial pragmas: %w", err)
 	}
 
@@ -261,7 +259,7 @@ func (d *SQLiteDriver) Reconnect() error {
 	defer cancel()
 
 	if err := conn.PingContext(ctx); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return fmt.Errorf("failed to ping sqlite database: %w", err)
 	}
 
@@ -325,7 +323,7 @@ func (d *SQLiteDriver) Query(ctx context.Context, sessCfg config.SessionConfig, 
 	if err != nil {
 		return nil, fmt.Errorf("failed to get connection: %w", err)
 	}
-	defer conn.Close() // Returns to pool
+	defer func() { _ = conn.Close() }()
 
 	// Configure session with pragmas
 	if err := d.configureSession(ctx, conn, sessCfg); err != nil {
@@ -354,7 +352,7 @@ func (d *SQLiteDriver) Query(ctx context.Context, sessCfg config.SessionConfig, 
 	if err != nil {
 		return nil, fmt.Errorf("query failed: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	scannedRows, err := ScanRows(rows)
 	if err != nil {
@@ -393,7 +391,14 @@ func (d *SQLiteDriver) translateQuery(query string, params map[string]any) (stri
 	return query, args
 }
 
-// Ping checks database connectivity
 func (d *SQLiteDriver) Ping(ctx context.Context) error {
 	return d.conn.PingContext(ctx)
+}
+
+func (d *SQLiteDriver) PoolStats() PoolStats {
+	if d.conn == nil {
+		return PoolStats{}
+	}
+	s := d.conn.Stats()
+	return PoolStats{OpenConnections: s.OpenConnections, IdleConnections: s.Idle}
 }

@@ -14,37 +14,23 @@ type QueryHints struct {
 	HasReturning *bool // SQL has OUTPUT INSERTED/DELETED or RETURNING
 }
 
+// PoolStats contains connection pool statistics.
+type PoolStats struct {
+	OpenConnections int
+	IdleConnections int
+}
+
 // Driver is the interface all database implementations must satisfy.
-// Each driver handles its own parameter translation from @param syntax
-// to the native syntax of the database.
 type Driver interface {
-	// Query executes a query with named parameters.
-	// SQL uses @param syntax; driver translates to native syntax.
-	// params is a map of parameter name -> value.
-	// hints carries precomputed SQL classification; drivers fall back to parsing if nil.
-	// Returns QueryResult with Rows for SELECT, RowsAffected for writes.
 	Query(ctx context.Context, sessCfg config.SessionConfig, query string, params map[string]any, hints *QueryHints) (*QueryResult, error)
-
-	// Ping checks database connectivity
 	Ping(ctx context.Context) error
-
-	// Close closes the database connection
 	Close() error
-
-	// Reconnect re-establishes the connection
 	Reconnect() error
-
-	// Name returns the connection name
 	Name() string
-
-	// Type returns the database type (sqlserver or sqlite)
 	Type() string
-
-	// IsReadOnly returns whether this is a read-only connection
 	IsReadOnly() bool
-
-	// Config returns the database configuration
 	Config() config.DatabaseConfig
+	PoolStats() PoolStats
 }
 
 // NewDriver creates a database driver based on the config type.

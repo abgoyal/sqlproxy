@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -9,6 +10,31 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 )
+
+type contextKey struct{}
+
+// RequestAccumulator collects per-request metrics from within the handler.
+// The middleware attaches it to the request context; the handler populates it.
+type RequestAccumulator struct {
+	QueryName     string
+	Database      string
+	QueryDuration time.Duration
+	RowCount      int
+	Error         string
+	ErrorType     string
+}
+
+// NewRequestContext returns a context with an attached RequestAccumulator.
+func NewRequestContext(ctx context.Context) (context.Context, *RequestAccumulator) {
+	acc := &RequestAccumulator{}
+	return context.WithValue(ctx, contextKey{}, acc), acc
+}
+
+// GetAccumulator retrieves the RequestAccumulator from a context, or nil.
+func GetAccumulator(ctx context.Context) *RequestAccumulator {
+	acc, _ := ctx.Value(contextKey{}).(*RequestAccumulator)
+	return acc
+}
 
 // Duration unit: 100 nanoseconds (0.1 microseconds)
 // This gives us sub-microsecond precision while using int64 atomics.
@@ -64,17 +90,6 @@ type CacheSnapshotProvider func() any
 // RateLimitSnapshotProvider is a function that returns rate limit metrics
 type RateLimitSnapshotProvider func() any
 
-// DBStatsProvider is a function that returns database connection pool stats
-type DBStatsProvider func() map[string]DBPoolStats
-
-// DBPoolStats contains connection pool statistics
-type DBPoolStats struct {
-	OpenConnections int `json:"open_connections"`
-	IdleConnections int `json:"idle_connections"`
-	InUseConns      int `json:"in_use_connections"`
-	WaitCount       int `json:"wait_count"`
-}
-
 // Snapshot represents metrics at a point in time
 type Snapshot struct {
 	Timestamp     time.Time                 `json:"timestamp"`
@@ -116,7 +131,6 @@ type Collector struct {
 	dbHealthChecker           func() bool
 	cacheSnapshotProvider     CacheSnapshotProvider
 	rateLimitSnapshotProvider RateLimitSnapshotProvider
-	dbStatsProvider           DBStatsProvider
 
 	// Atomic global counters
 	totalRequests atomic.Int64
@@ -376,30 +390,6 @@ func SetRateLimitSnapshotProvider(provider RateLimitSnapshotProvider) {
 	}
 }
 
-// SetDBStatsProvider sets the function that provides database pool stats
-func SetDBStatsProvider(provider DBStatsProvider) {
-	if defaultCollector != nil {
-		defaultCollector.dbStatsProvider = provider
-	}
-}
-
-// Reset clears all metrics counters while preserving configuration.
-func Reset() {
-	if defaultCollector == nil {
-		return
-	}
-	c := defaultCollector
-
-	c.startTime = time.Now()
-	c.totalRequests.Store(0)
-	c.totalErrors.Store(0)
-	c.totalTimeouts.Store(0)
-
-	c.mu.Lock()
-	c.endpoints = make(map[string]*endpointData)
-	c.mu.Unlock()
-}
-
 // Clear removes the global collector entirely (for testing)
 func Clear() {
 	defaultCollector = nil
@@ -477,12 +467,8 @@ func Record(m RequestMetrics) {
 		c.promErrors.WithLabelValues(m.Endpoint, "unknown").Inc()
 	}
 
-	// Cache hit/miss
 	if m.CacheHit {
 		c.promCacheHits.WithLabelValues(m.Endpoint).Inc()
-	} else if m.Endpoint != "" {
-		// Only count misses for requests that could have been cached
-		// (we don't know here, but handler will set CacheHit=false for cache-enabled endpoints)
 	}
 }
 

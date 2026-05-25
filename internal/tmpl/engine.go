@@ -948,9 +948,9 @@ func (e *Engine) Validate(tmplStr string, usage Usage) error {
 	}
 
 	// Validate that all template paths use valid prefixes
-	if t.Tree != nil && t.Tree.Root != nil {
+	if t.Root != nil {
 		paths := make(map[string]bool)
-		extractFieldPaths(t.Tree.Root, paths)
+		extractFieldPaths(t.Root, paths)
 		for path := range paths {
 			if !isValidPath(path) {
 				return fmt.Errorf("invalid template path %q - must start with .trigger, .steps, .workflow, .iter, or .parent", path)

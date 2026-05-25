@@ -329,69 +329,93 @@ func New(cfg *config.Config, interactive bool) (*Server, error) {
 	return s, nil
 }
 
-// runHealthChecker periodically checks database connectivity for all connections
+// runHealthChecker periodically checks database connectivity for all connections.
+// Runs immediately on startup to populate gauges, then on each tick.
 func (s *Server) runHealthChecker(ctx context.Context) {
 	ticker := time.NewTicker(healthCheckInterval)
 	defer ticker.Stop()
 
-	// Track consecutive failures per database
 	consecutiveFailures := make(map[string]int)
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			pingCtx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
-			results := s.dbManager.Ping(pingCtx)
-			cancel()
+	for first := true; ; first = false {
+		if !first {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
 
-			wasHealthy := s.dbHealthy.Load()
-			allHealthy := true
+		pingCtx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
+		results := s.dbManager.Ping(pingCtx)
+		cancel()
 
-			for name, err := range results {
-				if err != nil {
-					allHealthy = false
-					consecutiveFailures[name]++
+		wasHealthy := s.dbHealthy.Load()
+		allHealthy := true
 
-					logging.Warn("health_check_failed", map[string]any{
-						"database":             name,
-						"error":                err.Error(),
-						"consecutive_failures": consecutiveFailures[name],
+		for name, err := range results {
+			metrics.UpdateDBHealth(name, err == nil)
+			if err != nil {
+				allHealthy = false
+				consecutiveFailures[name]++
+
+				logging.Warn("health_check_failed", map[string]any{
+					"database":             name,
+					"error":                err.Error(),
+					"consecutive_failures": consecutiveFailures[name],
+				})
+
+				if consecutiveFailures[name] >= healthCheckFailuresBeforeReconnect {
+					logging.Info("attempting_reconnect", map[string]any{
+						"database": name,
 					})
-
-					// After consecutive failures, try to reconnect
-					if consecutiveFailures[name] >= healthCheckFailuresBeforeReconnect {
-						logging.Info("attempting_reconnect", map[string]any{
+					if err := s.dbManager.Reconnect(name); err != nil {
+						logging.Error("reconnect_failed", map[string]any{
+							"database": name,
+							"error":    err.Error(),
+						})
+					} else {
+						logging.Info("reconnect_successful", map[string]any{
 							"database": name,
 						})
-						if err := s.dbManager.Reconnect(name); err != nil {
-							logging.Error("reconnect_failed", map[string]any{
-								"database": name,
-								"error":    err.Error(),
-							})
-						} else {
-							logging.Info("reconnect_successful", map[string]any{
-								"database": name,
-							})
-							consecutiveFailures[name] = 0
-						}
+						consecutiveFailures[name] = 0
 					}
-				} else {
-					if consecutiveFailures[name] > 0 {
-						logging.Info("health_restored", map[string]any{
-							"database":       name,
-							"after_failures": consecutiveFailures[name],
-						})
-					}
-					consecutiveFailures[name] = 0
 				}
+			} else {
+				if consecutiveFailures[name] > 0 {
+					logging.Info("health_restored", map[string]any{
+						"database":       name,
+						"after_failures": consecutiveFailures[name],
+					})
+				}
+				consecutiveFailures[name] = 0
 			}
+		}
 
-			s.dbHealthy.Store(allHealthy)
+		s.dbHealthy.Store(allHealthy)
 
-			if allHealthy && !wasHealthy {
-				logging.Info("all_databases_healthy", nil)
+		if allHealthy && !wasHealthy {
+			logging.Info("all_databases_healthy", nil)
+		}
+
+		for _, name := range s.dbManager.Names() {
+			if driver, err := s.dbManager.Get(name); err == nil {
+				ps := driver.PoolStats()
+				metrics.UpdateDBPoolStats(name, ps.OpenConnections, ps.IdleConnections)
+			}
+		}
+
+		if s.cache != nil {
+			snap := s.cache.GetSnapshot()
+			for endpoint, ep := range snap.Endpoints {
+				metrics.UpdateCacheStats(endpoint, ep.SizeBytes, ep.KeyCount)
+			}
+		}
+
+		if s.rateLimiter != nil {
+			snap := s.rateLimiter.Snapshot()
+			for pool, pm := range snap.Pools {
+				metrics.UpdateRateLimitBuckets(pool, pm.ActiveBuckets)
 			}
 		}
 	}
@@ -461,9 +485,8 @@ func (s *Server) setupRoutes(mux *http.ServeMux) {
 				s.config.Server.BuildTime,
 				s.config.Variables.Values,
 			)
-			// Register with method prefix for Go 1.22+ routing (e.g., "GET /api/items")
 			pattern := trigger.Config.Method + " " + trigger.Config.Path
-			mux.Handle(pattern, h)
+			mux.Handle(pattern, s.metricsMiddleware(wf.Config.Name, trigger.Config.Method, h))
 
 			logging.Info("workflow_endpoint_registered", map[string]any{
 				"workflow": wf.Config.Name,
@@ -580,7 +603,7 @@ func (s *Server) metricsPrometheusHandler(w http.ResponseWriter, r *http.Request
 	if registry == nil {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("# metrics not enabled\n"))
+		_, _ = w.Write([]byte("# metrics not enabled\n"))
 		return
 	}
 
@@ -1185,6 +1208,50 @@ func resolveDynamicValue(value string) any {
 	}
 }
 
+// metricsMiddleware wraps a workflow handler with per-request metrics recording.
+func (s *Server) metricsMiddleware(workflowName, method string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		ctx, acc := metrics.NewRequestContext(r.Context())
+		sw := &statusWriter{ResponseWriter: w}
+		next.ServeHTTP(sw, r.WithContext(ctx))
+		metrics.Record(metrics.RequestMetrics{
+			Endpoint:      workflowName,
+			QueryName:     acc.QueryName,
+			Database:      acc.Database,
+			Method:        method,
+			TotalDuration: time.Since(start),
+			QueryDuration: acc.QueryDuration,
+			RowCount:      acc.RowCount,
+			StatusCode:    sw.status,
+			Error:         acc.Error,
+			ErrorType:     acc.ErrorType,
+			CacheHit:      sw.Header().Get("X-Cache") == "HIT",
+		})
+	})
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (sw *statusWriter) WriteHeader(code int) {
+	sw.status = code
+	sw.ResponseWriter.WriteHeader(code)
+}
+
+func (sw *statusWriter) Write(b []byte) (int, error) {
+	if sw.status == 0 {
+		sw.status = http.StatusOK
+	}
+	return sw.ResponseWriter.Write(b)
+}
+
+func (sw *statusWriter) Unwrap() http.ResponseWriter {
+	return sw.ResponseWriter
+}
+
 // serverLoggerAdapter adapts the logging package to workflow.Logger interface
 type serverLoggerAdapter struct{}
 
@@ -1406,7 +1473,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	// Close logging last
 	logging.Info("server_stopped", nil)
-	logging.Close()
+	_ = logging.Close()
 
 	return nil
 }
@@ -1430,9 +1497,21 @@ func (a *workflowRateLimiterAdapter) CheckTriggerLimits(limits []*workflow.Compi
 
 	ctx := a.ctxBuilder.BuildForRateLimit(rlCtx)
 
-	allowed, retryAfter, err := a.limiter.Allow(rateLimitConfigs, ctx)
+	allowed, retryAfter, denyingPool, err := a.limiter.Allow(rateLimitConfigs, ctx)
 	if err != nil {
 		return false, 0, err
+	}
+
+	if allowed {
+		for _, rl := range limits {
+			pool := "inline"
+			if rl.Config.Pool != "" {
+				pool = rl.Config.Pool
+			}
+			metrics.RecordRateLimitAllowed(pool)
+		}
+	} else {
+		metrics.RecordRateLimitDenied(denyingPool)
 	}
 
 	retryAfterSec := int(retryAfter.Seconds())
@@ -1457,6 +1536,7 @@ func (a *triggerCacheAdapter) Get(workflowName, key string) ([]byte, int, bool) 
 
 	data, hit := a.cache.Get(workflowName, key)
 	if !hit || len(data) == 0 {
+		metrics.RecordCacheMiss(workflowName)
 		return nil, 0, false
 	}
 
@@ -1464,10 +1544,12 @@ func (a *triggerCacheAdapter) Get(workflowName, key string) ([]byte, int, bool) 
 	entry := data[0]
 	bodyStr, ok := entry["__body__"].(string)
 	if !ok {
+		metrics.RecordCacheMiss(workflowName)
 		return nil, 0, false
 	}
 	statusFloat, ok := entry["__status__"].(float64)
 	if !ok {
+		metrics.RecordCacheMiss(workflowName)
 		return nil, 0, false
 	}
 

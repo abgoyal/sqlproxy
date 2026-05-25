@@ -339,7 +339,7 @@ func testDBConnections(cfg *config.Config, r *Result) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		err = driver.Ping(ctx)
 		cancel()
-		driver.Close()
+		_ = driver.Close()
 
 		if err != nil {
 			r.addError("databases[%s]: ping failed: %v", dbCfg.Name, err)

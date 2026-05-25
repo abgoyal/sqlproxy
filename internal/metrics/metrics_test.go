@@ -422,54 +422,6 @@ func TestSnapshot_EmptyVersion(t *testing.T) {
 	}
 }
 
-// TestReset verifies metrics are cleared while preserving configuration
-func TestReset(t *testing.T) {
-	defaultCollector = nil
-	Init(func() bool { return true }, "1.0.0", "2024-01-01T00:00:00Z")
-
-	// Record some requests
-	for i := 0; i < 10; i++ {
-		Record(RequestMetrics{
-			Endpoint:      "/api/test",
-			QueryName:     "test",
-			TotalDuration: time.Millisecond * 100,
-			RowCount:      5,
-			StatusCode:    200,
-		})
-	}
-
-	snap := GetSnapshot()
-	if snap.TotalRequests != 10 {
-		t.Errorf("expected 10 requests before reset, got %d", snap.TotalRequests)
-	}
-
-	// Reset metrics
-	Reset()
-
-	snap = GetSnapshot()
-	if snap.TotalRequests != 0 {
-		t.Errorf("expected 0 requests after reset, got %d", snap.TotalRequests)
-	}
-	if len(snap.Endpoints) != 0 {
-		t.Errorf("expected 0 endpoints after reset, got %d", len(snap.Endpoints))
-	}
-	// Version should be preserved
-	if snap.Version != "1.0.0" {
-		t.Errorf("expected version to be preserved, got %s", snap.Version)
-	}
-	// Uptime should be reset (close to 0)
-	if snap.UptimeSec > 1 {
-		t.Errorf("expected uptime to be reset, got %d", snap.UptimeSec)
-	}
-}
-
-// TestReset_NoCollector verifies Reset handles nil collector
-func TestReset_NoCollector(t *testing.T) {
-	defaultCollector = nil
-	// Should not panic
-	Reset()
-}
-
 // TestSetRateLimitSnapshotProvider verifies rate limit metrics are included in snapshot
 func TestSetRateLimitSnapshotProvider(t *testing.T) {
 	defaultCollector = nil

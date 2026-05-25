@@ -63,7 +63,6 @@ Run `make test-cover` for current coverage statistics.
 - **BenchmarkSQLiteDriver_TranslateQuery**: BenchmarkSQLiteDriver_TranslateQuery measures @param to $param translation speed
 - **BenchmarkManager_Get**: BenchmarkManager_Get measures driver lookup by name across 3 databases
 - **BenchmarkManager_Get_Concurrent**: BenchmarkManager_Get_Concurrent measures parallel driver lookups across 3 databases
-- **BenchmarkManager_PingAll**: BenchmarkManager_PingAll measures ping across all 3 databases sequentially
 - **BenchmarkSQLiteDriver_LargeResult_100**: BenchmarkSQLiteDriver_LargeResult_100 measures fetching 100 row result set
 - **BenchmarkSQLiteDriver_LargeResult_1000**: BenchmarkSQLiteDriver_LargeResult_1000 measures fetching 1000 row result set
 - **BenchmarkSQLiteDriver_LargeResult_10000**: BenchmarkSQLiteDriver_LargeResult_10000 measures fetching 10000 row result set
@@ -89,15 +88,11 @@ Run `make test-cover` for current coverage statistics.
 - **TestNewManager_EmptyConfig**: TestNewManager_EmptyConfig confirms manager handles zero databases gracefully
 - **TestNewManager_InvalidConfig**: TestNewManager_InvalidConfig ensures manager rejects invalid database config
 - **TestManager_Get**: TestManager_Get tests retrieving connections by name and error for unknown names
-- **TestManager_IsReadOnly**: TestManager_IsReadOnly validates readonly status lookup for each connection
 - **TestManager_Ping**: TestManager_Ping checks connectivity to all managed databases individually
-- **TestManager_PingAll**: TestManager_PingAll verifies all connections are healthy in single call
 - **TestManager_Reconnect**: TestManager_Reconnect tests single connection re-establishment by name
-- **TestManager_ReconnectAll**: TestManager_ReconnectAll reconnects all databases and verifies connectivity
-- **TestManager_Close**: TestManager_Close ensures all connections are released and count returns 0
+- **TestManager_Close**: TestManager_Close ensures all connections are released
 - **TestManager_ConcurrentAccess**: TestManager_ConcurrentAccess runs 100 concurrent Get and Ping operations
 - **TestManager_ConcurrentReconnect**: TestManager_ConcurrentReconnect tests concurrent Reconnect calls to prevent race conditions
-- **TestManager_ConcurrentReconnectAll**: TestManager_ConcurrentReconnectAll tests concurrent ReconnectAll calls
 - **TestManager_MixedDatabaseTypes**: TestManager_MixedDatabaseTypes manages SQLite connections with different readonly/settings
 
 ### mysql_test.go
@@ -231,6 +226,8 @@ Run `make test-cover` for current coverage statistics.
 - **TestServer_CronWorkflowSetup**: TestServer_CronWorkflowSetup verifies cron workflow jobs are registered correctly
 - **TestServer_CronWorkflowExecution**: TestServer_CronWorkflowExecution verifies cron workflow execution path works
 - **TestServer_NoCronWorkflow**: TestServer_NoCronWorkflow verifies server works without cron triggers
+- **TestStatusWriter_CapturesStatus**: StatusWriter CapturesStatus
+- **TestStatusWriter_DefaultsTo200OnWrite**: StatusWriter DefaultsTo200OnWrite
 
 
 ---
@@ -291,8 +288,6 @@ Run `make test-cover` for current coverage statistics.
 - **TestSnapshot_Timestamp**: TestSnapshot_Timestamp verifies snapshot timestamp is set correctly
 - **TestSnapshot_Version**: TestSnapshot_Version verifies version and buildTime are included in snapshot
 - **TestSnapshot_EmptyVersion**: TestSnapshot_EmptyVersion verifies empty version/buildTime are handled correctly
-- **TestReset**: TestReset verifies metrics are cleared while preserving configuration
-- **TestReset_NoCollector**: TestReset_NoCollector verifies Reset handles nil collector
 - **TestSetRateLimitSnapshotProvider**: TestSetRateLimitSnapshotProvider verifies rate limit metrics are included in snapshot
 - **TestSetRateLimitSnapshotProvider_NoCollector**: TestSetRateLimitSnapshotProvider_NoCollector verifies nil collector handling
 - **TestSnapshot_BothCacheAndRateLimits**: TestSnapshot_BothCacheAndRateLimits verifies both cache and rate limit metrics work together
@@ -352,7 +347,6 @@ Run `make test-cover` for current coverage statistics.
 - **TestCache_TTL**: TestCache_TTL tests TTL expiration
 - **TestCache_GetSnapshot**: TestCache_GetSnapshot tests metrics snapshot
 - **TestCache_GetTTLRemaining**: TestCache_GetTTLRemaining tests remaining TTL calculation
-- **TestBuildKey**: TestBuildKey tests cache key template execution
 - **TestCache_NilSafe**: TestCache_NilSafe tests that nil cache is handled safely
 - **TestCache_MultipleEndpoints**: TestCache_MultipleEndpoints tests independent tracking per endpoint
 - **TestCache_PerEndpointSizeLimit**: TestCache_PerEndpointSizeLimit tests per-endpoint size limits trigger eviction
@@ -394,7 +388,6 @@ Run `make test-cover` for current coverage statistics.
 - **BenchmarkContextBuilder_WithHeaders**: BenchmarkContextBuilder_WithHeaders benchmarks context with many headers
 - **BenchmarkExtractParamRefs_Simple**: BenchmarkExtractParamRefs_Simple benchmarks simple param extraction
 - **BenchmarkExtractParamRefs_Complex**: BenchmarkExtractParamRefs_Complex benchmarks complex param extraction
-- **BenchmarkExtractHeaderRefs**: BenchmarkExtractHeaderRefs benchmarks header reference extraction
 - **BenchmarkFunc_RequireFunc**: BenchmarkFunc_RequireFunc benchmarks require function
 - **BenchmarkFunc_GetOrFunc**: BenchmarkFunc_GetOrFunc benchmarks getOr function
 - **BenchmarkFunc_HasFunc**: BenchmarkFunc_HasFunc benchmarks has function
@@ -414,8 +407,6 @@ Run `make test-cover` for current coverage statistics.
 - **TestContextBuilder_GetRequestID**: TestContextBuilder_GetRequestID tests request ID extraction
 - **TestContext_ToMap**: TestContext_ToMap tests context conversion to map
 - **TestExtractParamRefs**: TestExtractParamRefs tests param reference extraction
-- **TestExtractHeaderRefs**: TestExtractHeaderRefs tests header reference extraction
-- **TestExtractQueryRefs**: TestExtractQueryRefs tests query reference extraction
 - **TestContext_Integration**: TestContext_Integration tests full context usage with engine
 - **BenchmarkContextBuilder_Build**: BenchmarkContextBuilder_Build benchmarks context creation
 - **BenchmarkExtractParamRefs**: BenchmarkExtractParamRefs benchmarks param extraction
@@ -606,8 +597,7 @@ Run `make test-cover` for current coverage statistics.
 ### context_test.go
 
 - **TestNewContext**: NewContext
-- **TestContext_Context**: Context Context
-- **TestContext_SetGetStepResult**: Context SetGetStepResult
+- **TestContext_SetStepResult**: Context SetStepResult
 - **TestContext_BuildExprEnv_HTTPTrigger**: Context BuildExprEnv HTTPTrigger
 - **TestContext_BuildExprEnv_CronTrigger**: Context BuildExprEnv CronTrigger
 - **TestContext_BuildExprEnv_WithVariables**: Context BuildExprEnv WithVariables
@@ -617,12 +607,49 @@ Run `make test-cover` for current coverage statistics.
 - **TestStepResultToMap**: StepResultToMap
 - **TestHeaderToMap**: HeaderToMap
 - **TestBlockContext**: BlockContext
-- **TestBlockContext_SetGetStepResult**: BlockContext SetGetStepResult
+- **TestBlockContext_SetStepResult**: BlockContext SetStepResult
 - **TestBlockContext_BuildExprEnv**: BlockContext BuildExprEnv
 - **TestBlockContext_BuildTemplateData**: BlockContext BuildTemplateData
 - **TestContext_BuildExprEnv_ContainsExprFuncs**: Context BuildExprEnv ContainsExprFuncs
 - **TestContext_BuildExprEnv_CookieAccess**: Context BuildExprEnv CookieAccess
 - **TestContext_BuildExprEnv_CookiesInExpr**: Context BuildExprEnv CookiesInExpr
+
+### execute_helpers_test.go
+
+- **TestExtractSQLParams**: ExtractSQLParams
+- **TestNormalizeJSONResponse**: NormalizeJSONResponse
+
+### execute_steps_test.go
+
+- **TestExecuteQueryStep_TemplateError**: ExecuteQueryStep TemplateError
+- **TestExecuteQueryStep_DBError**: ExecuteQueryStep DBError
+- **TestExecuteQueryStep_Success**: ExecuteQueryStep Success
+- **TestExecuteHTTPCallStep_URLTemplateError**: ExecuteHTTPCallStep URLTemplateError
+- **TestExecuteHTTPCallStep_BodyTemplateError**: ExecuteHTTPCallStep BodyTemplateError
+- **TestExecuteHTTPCallStep_HeaderTemplateError**: ExecuteHTTPCallStep HeaderTemplateError
+- **TestExecuteHTTPCallStep_ConnectionError**: ExecuteHTTPCallStep ConnectionError
+- **TestExecuteHTTPCallStep_Non2xxResponse**: ExecuteHTTPCallStep Non2xxResponse
+- **TestExecuteHTTPCallStep_JSONParse**: ExecuteHTTPCallStep JSONParse
+- **TestExecuteHTTPCallStep_TextParse**: ExecuteHTTPCallStep TextParse
+- **TestExecuteHTTPCallStep_FormParse**: ExecuteHTTPCallStep FormParse
+- **TestExecuteHTTPCallStep_InvalidJSON**: ExecuteHTTPCallStep InvalidJSON
+- **TestExecuteHTTPCallStep_DefaultContentType**: ExecuteHTTPCallStep DefaultContentType
+- **TestExecuteHTTPCallStep_CustomHeaders**: ExecuteHTTPCallStep CustomHeaders
+- **TestExecuteHTTPCallStep_RetryOn500**: ExecuteHTTPCallStep RetryOn500
+- **TestExecuteHTTPCallStep_RetryExhausted**: ExecuteHTTPCallStep RetryExhausted
+- **TestExecuteHTTPCallStep_NoRetryOn4xx**: ExecuteHTTPCallStep NoRetryOn4xx
+- **TestExecuteResponseStep_Success**: ExecuteResponseStep Success
+- **TestExecuteResponseStep_NoResponseWriter**: ExecuteResponseStep NoResponseWriter
+- **TestExecuteResponseStep_TemplateError**: ExecuteResponseStep TemplateError
+- **TestExecuteResponseStep_WriteError**: ExecuteResponseStep WriteError
+- **TestExecuteResponseStep_DefaultStatusCode**: ExecuteResponseStep DefaultStatusCode
+- **TestExecuteHTTPCallStep_ContextCancelledDuringRetry**: ExecuteHTTPCallStep ContextCancelledDuringRetry
+- **TestExecuteHTTPCallStep_RetryWithBodyAndHeaders**: ExecuteHTTPCallStep RetryWithBodyAndHeaders
+- **TestExecuteHTTPCallStep_RetryConnectionError**: ExecuteHTTPCallStep RetryConnectionError
+- **TestExecuteHTTPCallStep_StepTimeout**: ExecuteHTTPCallStep StepTimeout
+- **TestExecuteResponseStep_HeaderTemplateError**: ExecuteResponseStep HeaderTemplateError
+- **TestExecuteResponseStep_CustomHeaders**: ExecuteResponseStep CustomHeaders
+- **TestExecuteQueryStep_PassesQueryOptions**: ExecuteQueryStep PassesQueryOptions
 
 ### executor_test.go
 
@@ -678,7 +705,6 @@ Run `make test-cover` for current coverage statistics.
 - **TestSanitizeHeaderValue**: SanitizeHeaderValue
 - **TestResolveClientIP**: ResolveClientIP
 - **TestDBManagerAdapter**: DBManagerAdapter
-- **TestLoggerAdapter**: LoggerAdapter
 - **TestHTTPHandler_ParseParameters_NestedObject**: HTTPHandler ParseParameters NestedObject
 - **TestHTTPHandler_ParseParameters_JSONType**: HTTPHandler ParseParameters JSONType
 - **TestHTTPHandler_ParseParameters_ArrayType**: HTTPHandler ParseParameters ArrayType
@@ -689,18 +715,6 @@ Run `make test-cover` for current coverage statistics.
 - **TestFlattenQuery**: FlattenQuery
 - **TestEvaluateCacheKey_ExpandedContext**: EvaluateCacheKey ExpandedContext
 - **TestParseCookies**: ParseCookies
-
-### step_test.go
-
-- **TestQueryStep**: TestQueryStep tests the QueryStep implementation.
-- **TestExtractSQLParams**: TestExtractSQLParams tests the extractSQLParams function.
-- **TestHTTPCallStep**: TestHTTPCallStep tests the HTTPCallStep implementation.
-- **TestNormalizeJSONResponse**: TestNormalizeJSONResponse tests the normalizeJSONResponse function.
-- **TestResponseStep**: TestResponseStep tests the ResponseStep implementation.
-- **TestResponseStepWriteError**: TestResponseStepWriteError tests the ResponseStep with a failing ResponseWriter.
-- **TestHTTPCallRetry**: TestHTTPCallRetry tests the retry logic in HTTPCallStep.
-- **TestHTTPCallWithBody**: TestHTTPCallWithBody tests POST requests with body.
-- **TestHTTPCallWithHeaders**: TestHTTPCallWithHeaders tests requests with custom headers.
 
 ### validate_test.go
 
@@ -733,25 +747,6 @@ Run `make test-cover` for current coverage statistics.
 
 ---
 
-## Workflow Steps
-
-**Package**: `internal/workflow/step`
-
-### step_test.go
-
-- **TestQueryStep**: TestQueryStep tests the QueryStep implementation.
-- **TestExtractSQLParams**: TestExtractSQLParams tests the extractSQLParams function.
-- **TestHTTPCallStep**: TestHTTPCallStep tests the HTTPCallStep implementation.
-- **TestNormalizeJSONResponse**: TestNormalizeJSONResponse tests the normalizeJSONResponse function.
-- **TestResponseStep**: TestResponseStep tests the ResponseStep implementation.
-- **TestResponseStepWriteError**: TestResponseStepWriteError tests the ResponseStep with a failing ResponseWriter.
-- **TestHTTPCallRetry**: TestHTTPCallRetry tests the retry logic in HTTPCallStep.
-- **TestHTTPCallWithBody**: TestHTTPCallWithBody tests POST requests with body.
-- **TestHTTPCallWithHeaders**: TestHTTPCallWithHeaders tests requests with custom headers.
-
-
----
-
 ## End-to-End
 
 **Package**: `e2e`
@@ -761,6 +756,7 @@ Run `make test-cover` for current coverage statistics.
 - **TestE2E_ServerStartupAndShutdown**: TestE2E_ServerStartupAndShutdown tests the server starts and stops cleanly
 - **TestE2E_HealthEndpoint**: TestE2E_HealthEndpoint tests /health returns database status
 - **TestE2E_MetricsEndpoint**: TestE2E_MetricsEndpoint tests /_/metrics.json returns runtime stats
+- **TestE2E_PrometheusMetrics**: TestE2E_PrometheusMetrics tests that per-request and gauge metrics are recorded
 - **TestE2E_OpenAPIEndpoint**: TestE2E_OpenAPIEndpoint tests /_/openapi.json returns valid spec
 - **TestE2E_RootEndpoint**: TestE2E_RootEndpoint tests / returns endpoint listing
 - **TestE2E_WorkflowEndpoint**: TestE2E_WorkflowEndpoint tests workflow execution returns data

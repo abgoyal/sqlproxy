@@ -102,7 +102,7 @@ func TestServer_New(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	if srv.dbManager == nil {
 		t.Error("expected dbManager to be set")
@@ -120,7 +120,7 @@ func TestServer_HealthHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	req := httptest.NewRequest("GET", "/_/health", nil)
 	w := httptest.NewRecorder()
@@ -162,7 +162,7 @@ func TestServer_MetricsHandler_Disabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	req := httptest.NewRequest("GET", "/_/metrics.json", nil)
 	w := httptest.NewRecorder()
@@ -191,7 +191,7 @@ func TestServer_MetricsJSONHandler_Enabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	req := httptest.NewRequest("GET", "/_/metrics.json", nil)
 	w := httptest.NewRecorder()
@@ -245,7 +245,7 @@ func TestServer_MetricsPrometheusHandler_Enabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	// Build test server with the server's HTTP handler
 	ts := httptest.NewServer(srv.httpServer.Handler)
@@ -256,21 +256,21 @@ func TestServer_MetricsPrometheusHandler_Enabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	// Make another request with params (different endpoint)
 	resp2, err := http.Get(ts.URL + "/api/params?name=test")
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	resp2.Body.Close()
+	_ = resp2.Body.Close()
 
 	// Now get Prometheus metrics
 	resp3, err := http.Get(ts.URL + "/_/metrics")
 	if err != nil {
 		t.Fatalf("metrics request failed: %v", err)
 	}
-	defer resp3.Body.Close()
+	defer func() { _ = resp3.Body.Close() }()
 
 	if resp3.StatusCode != http.StatusOK {
 		t.Errorf("expected status 200, got %d", resp3.StatusCode)
@@ -305,6 +305,11 @@ func TestServer_MetricsPrometheusHandler_Enabled(t *testing.T) {
 	if !strings.Contains(body, `sqlproxy_info{`) {
 		t.Error("expected sqlproxy_info with labels")
 	}
+
+	// Verify per-request metrics were recorded by the middleware
+	if !strings.Contains(body, "sqlproxy_requests_total") {
+		t.Error("expected sqlproxy_requests_total in Prometheus output")
+	}
 }
 
 // TestServer_MetricsPrometheusHandler_Disabled tests /_/metrics returns error when disabled
@@ -319,7 +324,7 @@ func TestServer_MetricsPrometheusHandler_Disabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	req := httptest.NewRequest("GET", "/_/metrics", nil)
 	w := httptest.NewRecorder()
@@ -344,7 +349,7 @@ func TestServer_LogLevelHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	// GET current level
 	req := httptest.NewRequest("GET", "/_/config/loglevel", nil)
@@ -382,7 +387,7 @@ func TestServer_ListEndpointsHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	req := httptest.NewRequest("GET", "/", nil)
 	w := httptest.NewRecorder()
@@ -419,7 +424,7 @@ func TestServer_ListEndpointsHandler_NotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	req := httptest.NewRequest("GET", "/nonexistent", nil)
 	w := httptest.NewRecorder()
@@ -438,7 +443,7 @@ func TestServer_OpenAPIHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	req := httptest.NewRequest("GET", "/_/openapi.json", nil)
 	w := httptest.NewRecorder()
@@ -475,7 +480,7 @@ func TestServer_RecoveryMiddleware(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	// Create a handler that panics
 	panicHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -513,11 +518,11 @@ func TestServer_GzipMiddleware(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	// Create a handler that returns content
 	contentHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"message": "hello world"}`))
+		_, _ = w.Write([]byte(`{"message": "hello world"}`))
 	})
 
 	handler := srv.gzipMiddleware(contentHandler)
@@ -538,7 +543,7 @@ func TestServer_GzipMiddleware(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create gzip reader: %v", err)
 	}
-	defer gr.Close()
+	defer func() { _ = gr.Close() }()
 
 	body, err := io.ReadAll(gr)
 	if err != nil {
@@ -558,10 +563,10 @@ func TestServer_GzipMiddleware_NoGzip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	contentHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"message": "hello"}`))
+		_, _ = w.Write([]byte(`{"message": "hello"}`))
 	})
 
 	handler := srv.gzipMiddleware(contentHandler)
@@ -627,7 +632,7 @@ func TestServer_Integration_WorkflowEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	// Create a test server using the server's HTTP handler
 	ts := httptest.NewServer(srv.httpServer.Handler)
@@ -638,7 +643,7 @@ func TestServer_Integration_WorkflowEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected status 200, got %d", resp.StatusCode)
@@ -666,7 +671,7 @@ func TestServer_Integration_ParameterizedWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	ts := httptest.NewServer(srv.httpServer.Handler)
 	defer ts.Close()
@@ -676,7 +681,7 @@ func TestServer_Integration_ParameterizedWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected status 200, got %d", resp.StatusCode)
@@ -687,7 +692,7 @@ func TestServer_Integration_ParameterizedWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 
 	if resp2.StatusCode != http.StatusBadRequest {
 		t.Errorf("expected status 400, got %d", resp2.StatusCode)
@@ -702,7 +707,7 @@ func TestServer_Integration_WithGzip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	ts := httptest.NewServer(srv.httpServer.Handler)
 	defer ts.Close()
@@ -715,7 +720,7 @@ func TestServer_Integration_WithGzip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.Header.Get("Content-Encoding") != "gzip" {
 		t.Error("expected gzip content encoding")
@@ -725,7 +730,7 @@ func TestServer_Integration_WithGzip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create gzip reader: %v", err)
 	}
-	defer gr.Close()
+	defer func() { _ = gr.Close() }()
 
 	var result map[string]any
 	if err := json.NewDecoder(gr).Decode(&result); err != nil {
@@ -745,14 +750,14 @@ func TestServer_HealthHandler_Degraded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	// Close the database connection to simulate failure
 	driver, err := srv.dbManager.Get("test")
 	if err != nil {
 		t.Fatalf("failed to get database: %v", err)
 	}
-	driver.Close()
+	_ = driver.Close()
 
 	// Now health check should show degraded/unhealthy status
 	req := httptest.NewRequest("GET", "/_/health", nil)
@@ -835,7 +840,7 @@ func TestServer_HealthHandler_MultipleDatabases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	req := httptest.NewRequest("GET", "/_/health", nil)
 	w := httptest.NewRecorder()
@@ -868,7 +873,7 @@ func TestServer_DBHealthHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	tests := []struct {
 		name           string
@@ -946,14 +951,14 @@ func TestServer_DBHealthHandler_Disconnected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	// Close the database to simulate disconnection
 	driver, err := srv.dbManager.Get("test")
 	if err != nil {
 		t.Fatalf("failed to get database: %v", err)
 	}
-	driver.Close()
+	_ = driver.Close()
 
 	req := httptest.NewRequest("GET", "/_/health/test", nil)
 	w := httptest.NewRecorder()
@@ -1039,7 +1044,7 @@ func TestServer_CacheClearHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	t.Run("method not allowed", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/_/cache/clear", nil)
@@ -1107,7 +1112,7 @@ func TestServer_CacheClearHandler_NoCacheConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	req := httptest.NewRequest("POST", "/_/cache/clear", nil)
 	w := httptest.NewRecorder()
@@ -1196,7 +1201,7 @@ func TestServer_RateLimitsHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	// Create httptest server
 	mux := http.NewServeMux()
@@ -1210,7 +1215,7 @@ func TestServer_RateLimitsHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected status 200, got %d", resp.StatusCode)
@@ -1314,7 +1319,7 @@ func TestServer_RateLimitsHandler_NotConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	// Create httptest server
 	mux := http.NewServeMux()
@@ -1328,7 +1333,7 @@ func TestServer_RateLimitsHandler_NotConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -1403,7 +1408,7 @@ func TestServer_RateLimitsResetHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/_/ratelimits/reset", srv.rateLimitsResetHandler)
@@ -1416,7 +1421,7 @@ func TestServer_RateLimitsResetHandler(t *testing.T) {
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusMethodNotAllowed {
 			t.Errorf("expected 405, got %d", resp.StatusCode)
@@ -1429,7 +1434,7 @@ func TestServer_RateLimitsResetHandler(t *testing.T) {
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("expected 200, got %d", resp.StatusCode)
@@ -1454,7 +1459,7 @@ func TestServer_RateLimitsResetHandler(t *testing.T) {
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("expected 200, got %d", resp.StatusCode)
@@ -1476,7 +1481,7 @@ func TestServer_RateLimitsResetHandler(t *testing.T) {
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusNotFound {
 			t.Errorf("expected 404, got %d", resp.StatusCode)
@@ -1489,7 +1494,7 @@ func TestServer_RateLimitsResetHandler(t *testing.T) {
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("expected 400, got %d", resp.StatusCode)
@@ -1502,7 +1507,7 @@ func TestServer_RateLimitsResetHandler(t *testing.T) {
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("expected 200, got %d", resp.StatusCode)
@@ -1575,7 +1580,7 @@ func TestServer_RateLimitResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	ts := httptest.NewServer(srv.httpServer.Handler)
 	defer ts.Close()
@@ -1585,7 +1590,7 @@ func TestServer_RateLimitResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first request failed: %v", err)
 	}
-	resp1.Body.Close()
+	_ = resp1.Body.Close()
 
 	if resp1.StatusCode != http.StatusOK {
 		t.Errorf("expected first request to succeed with 200, got %d", resp1.StatusCode)
@@ -1596,7 +1601,7 @@ func TestServer_RateLimitResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second request failed: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 
 	if resp2.StatusCode != http.StatusTooManyRequests {
 		t.Errorf("expected 429, got %d", resp2.StatusCode)
@@ -1694,7 +1699,7 @@ func TestServer_CronWorkflowSetup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	// Verify cron scheduler was created
 	if srv.cron == nil {
@@ -1710,7 +1715,7 @@ func TestServer_CronWorkflowExecution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	// Find the compiled workflow and trigger
 	if len(srv.workflows) == 0 {
@@ -1742,10 +1747,30 @@ func TestServer_NoCronWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	// Verify cron scheduler was NOT created for HTTP-only workflows
 	if srv.cron != nil {
 		t.Error("expected no cron scheduler for HTTP-only workflows")
+	}
+}
+
+func TestStatusWriter_CapturesStatus(t *testing.T) {
+	rec := httptest.NewRecorder()
+	sw := &statusWriter{ResponseWriter: rec}
+
+	sw.WriteHeader(http.StatusCreated)
+	if sw.status != 201 {
+		t.Errorf("status = %d, want 201", sw.status)
+	}
+}
+
+func TestStatusWriter_DefaultsTo200OnWrite(t *testing.T) {
+	rec := httptest.NewRecorder()
+	sw := &statusWriter{ResponseWriter: rec}
+
+	_, _ = sw.Write([]byte("hello"))
+	if sw.status != 200 {
+		t.Errorf("status = %d, want 200 (default on Write)", sw.status)
 	}
 }

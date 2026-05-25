@@ -93,23 +93,11 @@ func NewContext(ctx context.Context, wf *CompiledWorkflow, trigger *TriggerData,
 	}
 }
 
-// Context returns the underlying context.Context for cancellation.
-func (c *Context) Context() context.Context {
-	return c.ctx
-}
-
 // SetStepResult records the result of a step execution.
 func (c *Context) SetStepResult(name string, result *StepResult) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.Steps[name] = result
-}
-
-// GetStepResult retrieves a step result by name.
-func (c *Context) GetStepResult(name string) *StepResult {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.Steps[name]
 }
 
 // BuildExprEnv builds the environment map for expr evaluation.
@@ -299,16 +287,6 @@ func (b *BlockContext) SetStepResult(name string, result *StepResult) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.Steps[name] = result
-}
-
-// GetStepResult retrieves a step result from this block or parent.
-func (b *BlockContext) GetStepResult(name string) *StepResult {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	if result, ok := b.Steps[name]; ok {
-		return result
-	}
-	return nil
 }
 
 // BuildExprEnv builds the environment for block-level expr evaluation.

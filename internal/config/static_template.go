@@ -91,8 +91,8 @@ func ExtractTemplatePaths(tmplStr string) ([]string, error) {
 	}
 
 	paths := make(map[string]bool)
-	if t.Tree != nil && t.Tree.Root != nil {
-		extractPathsFromNode(t.Tree.Root, paths)
+	if t.Root != nil {
+		extractPathsFromNode(t.Root, paths)
 	}
 
 	result := make([]string, 0, len(paths))

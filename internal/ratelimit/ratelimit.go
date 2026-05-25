@@ -43,8 +43,6 @@ type bucket struct {
 
 // Metrics tracks rate limiting statistics
 type Metrics struct {
-	mu sync.RWMutex
-
 	TotalAllowed int64
 	TotalDenied  int64
 
@@ -114,26 +112,27 @@ func New(pools []config.RateLimitPoolConfig, engine *tmpl.Engine) (*Limiter, err
 }
 
 // Allow checks if a request should be allowed based on the configured rate limits.
-// Returns (allowed, retryAfter, error). If any pool denies, the request is denied.
+// Returns (allowed, retryAfter, denyingPool, error). If any pool denies, the request is denied.
 // retryAfter indicates how long the client should wait before retrying (only set when denied).
+// denyingPool is the name of the pool that denied the request (empty when allowed).
 // An error indicates a template evaluation failure (config bug, should not happen at runtime).
-func (l *Limiter) Allow(limits []config.RateLimitConfig, ctx *tmpl.Context) (bool, time.Duration, error) {
+func (l *Limiter) Allow(limits []config.RateLimitConfig, ctx *tmpl.Context) (bool, time.Duration, string, error) {
 	if len(limits) == 0 {
-		return true, 0, nil
+		return true, 0, "", nil
 	}
 
 	// All limits must pass
 	for _, limit := range limits {
-		allowed, retryAfter, err := l.allowOne(limit, ctx)
+		allowed, retryAfter, poolName, err := l.allowOne(limit, ctx)
 		if err != nil {
-			return false, 0, err
+			return false, 0, "", err
 		}
 		if !allowed {
-			return false, retryAfter, nil
+			return false, retryAfter, poolName, nil
 		}
 	}
 
-	return true, 0, nil
+	return true, 0, "", nil
 }
 
 // inlinePoolKey generates a unique key for an inline rate limit config
@@ -145,9 +144,9 @@ func inlinePoolKey(limit config.RateLimitConfig) string {
 	return fmt.Sprintf("%d:%d:%s", limit.RequestsPerSecond, limit.Burst, key)
 }
 
-// allowOne checks a single rate limit configuration
-// Returns (allowed, retryAfter, error) where retryAfter is set when denied
-func (l *Limiter) allowOne(limit config.RateLimitConfig, ctx *tmpl.Context) (bool, time.Duration, error) {
+// allowOne checks a single rate limit configuration.
+// Returns (allowed, retryAfter, poolName, error) where retryAfter is set when denied.
+func (l *Limiter) allowOne(limit config.RateLimitConfig, ctx *tmpl.Context) (bool, time.Duration, string, error) {
 	var pool *Pool
 	var keyTemplate string
 
@@ -158,7 +157,7 @@ func (l *Limiter) allowOne(limit config.RateLimitConfig, ctx *tmpl.Context) (boo
 		l.mu.RUnlock()
 
 		if pool == nil {
-			return false, 0, fmt.Errorf("rate limit pool %q not found", limit.Pool)
+			return false, 0, "", fmt.Errorf("rate limit pool %q not found", limit.Pool)
 		}
 		keyTemplate = pool.keyTemplate
 	} else if limit.IsInline() {
@@ -195,13 +194,13 @@ func (l *Limiter) allowOne(limit config.RateLimitConfig, ctx *tmpl.Context) (boo
 		}
 	} else {
 		// Empty config - no rate limiting
-		return true, 0, nil
+		return true, 0, "", nil
 	}
 
 	// Evaluate key template
 	key, err := l.engine.ExecuteInline(keyTemplate, ctx, tmpl.UsagePreQuery)
 	if err != nil {
-		return false, 0, fmt.Errorf("failed to evaluate rate limit key: %w", err)
+		return false, 0, "", fmt.Errorf("failed to evaluate rate limit key: %w", err)
 	}
 
 	// Get or create bucket
@@ -244,7 +243,7 @@ func (l *Limiter) allowOne(limit config.RateLimitConfig, ctx *tmpl.Context) (boo
 	// Periodic cleanup
 	pool.maybeCleanup()
 
-	return allowed, retryAfter, nil
+	return allowed, retryAfter, pool.name, nil
 }
 
 // RequestsPerSecond returns the configured rate limit

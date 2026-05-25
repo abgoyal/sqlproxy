@@ -53,14 +53,15 @@ func Validate(cfg *WorkflowConfig, ctx *ValidationContext) *ValidationResult {
 		trigPrefix := fmt.Sprintf("%s.triggers[%d]", prefix, i)
 		validateTrigger(&trig, trigPrefix, ctx, r)
 
-		if trig.Type == "http" {
+		switch trig.Type {
+		case "http":
 			hasHTTPTrigger = true
 			route := trig.Method + " " + trig.Path
 			if httpRoutes[route] {
 				r.addError("%s: duplicate route '%s'", trigPrefix, route)
 			}
 			httpRoutes[route] = true
-		} else if trig.Type == "cron" {
+		case "cron":
 			hasCronTrigger = true
 		}
 	}

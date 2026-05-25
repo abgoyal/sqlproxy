@@ -1,7 +1,6 @@
 package cache
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -522,25 +521,6 @@ func (c *Cache) evictFromEndpoint(endpoint string, needed int64) {
 		c.Delete(endpoint, ka.key)
 		freed += ka.size
 	}
-}
-
-// BuildKey creates a cache key from a template and parameters
-func BuildKey(tmpl string, params map[string]any) (string, error) {
-	if tmpl == "" {
-		return "", fmt.Errorf("cache key template is empty")
-	}
-
-	t, err := template.New("key").Funcs(KeyFuncMap).Parse(tmpl)
-	if err != nil {
-		return "", fmt.Errorf("parsing cache key template: %w", err)
-	}
-
-	var buf bytes.Buffer
-	if err := t.Execute(&buf, params); err != nil {
-		return "", fmt.Errorf("executing cache key template: %w", err)
-	}
-
-	return buf.String(), nil
 }
 
 // KeyFuncMap provides template functions for cache keys.

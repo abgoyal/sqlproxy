@@ -93,7 +93,7 @@ func (e *Executor) executeHTTPCallStep(ctx context.Context, cs *CompiledStep, ex
 		}
 
 		if resp != nil && resp.Body != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 
 		if attempt < maxAttempts {
@@ -123,7 +123,7 @@ func (e *Executor) executeHTTPCallStep(ctx context.Context, cs *CompiledStep, ex
 		result.DurationMs = time.Since(start).Milliseconds()
 		return result, nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

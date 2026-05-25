@@ -22,10 +22,10 @@ func TestNewManager_SingleDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create manager: %v", err)
 	}
-	defer manager.Close()
+	defer func() { _ = manager.Close() }()
 
-	if manager.Count() != 1 {
-		t.Errorf("expected 1 connection, got %d", manager.Count())
+	if len(manager.Names()) != 1 {
+		t.Errorf("expected 1 connection, got %d", len(manager.Names()))
 	}
 }
 
@@ -55,10 +55,10 @@ func TestNewManager_MultipleDatabases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create manager: %v", err)
 	}
-	defer manager.Close()
+	defer func() { _ = manager.Close() }()
 
-	if manager.Count() != 3 {
-		t.Errorf("expected 3 connections, got %d", manager.Count())
+	if len(manager.Names()) != 3 {
+		t.Errorf("expected 3 connections, got %d", len(manager.Names()))
 	}
 
 	names := manager.Names()
@@ -86,10 +86,10 @@ func TestNewManager_EmptyConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	defer manager.Close()
+	defer func() { _ = manager.Close() }()
 
-	if manager.Count() != 0 {
-		t.Errorf("expected 0 connections, got %d", manager.Count())
+	if len(manager.Names()) != 0 {
+		t.Errorf("expected 0 connections, got %d", len(manager.Names()))
 	}
 }
 
@@ -123,7 +123,7 @@ func TestManager_Get(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create manager: %v", err)
 	}
-	defer manager.Close()
+	defer func() { _ = manager.Close() }()
 
 	// Get existing connection
 	driver, err := manager.Get("test")
@@ -136,57 +136,6 @@ func TestManager_Get(t *testing.T) {
 
 	// Get non-existent connection
 	_, err = manager.Get("nonexistent")
-	if err == nil {
-		t.Error("expected error for non-existent connection")
-	}
-}
-
-// TestManager_IsReadOnly validates readonly status lookup for each connection
-func TestManager_IsReadOnly(t *testing.T) {
-	readOnly := true
-	readWrite := false
-
-	cfg := []config.DatabaseConfig{
-		{
-			Name:     "readonly",
-			Type:     "sqlite",
-			Path:     ":memory:",
-			ReadOnly: &readOnly,
-		},
-		{
-			Name:     "readwrite",
-			Type:     "sqlite",
-			Path:     ":memory:",
-			ReadOnly: &readWrite,
-		},
-	}
-
-	manager, err := NewManager(cfg)
-	if err != nil {
-		t.Fatalf("failed to create manager: %v", err)
-	}
-	defer manager.Close()
-
-	// Check readonly
-	isRO, err := manager.IsReadOnly("readonly")
-	if err != nil {
-		t.Errorf("failed to check readonly: %v", err)
-	}
-	if !isRO {
-		t.Error("expected readonly to be true")
-	}
-
-	// Check readwrite
-	isRO, err = manager.IsReadOnly("readwrite")
-	if err != nil {
-		t.Errorf("failed to check readwrite: %v", err)
-	}
-	if isRO {
-		t.Error("expected readwrite to be false")
-	}
-
-	// Check non-existent
-	_, err = manager.IsReadOnly("nonexistent")
 	if err == nil {
 		t.Error("expected error for non-existent connection")
 	}
@@ -211,7 +160,7 @@ func TestManager_Ping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create manager: %v", err)
 	}
-	defer manager.Close()
+	defer func() { _ = manager.Close() }()
 
 	ctx := context.Background()
 	results := manager.Ping(ctx)
@@ -224,33 +173,6 @@ func TestManager_Ping(t *testing.T) {
 		if err != nil {
 			t.Errorf("ping failed for %s: %v", name, err)
 		}
-	}
-}
-
-// TestManager_PingAll verifies all connections are healthy in single call
-func TestManager_PingAll(t *testing.T) {
-	cfg := []config.DatabaseConfig{
-		{
-			Name: "db1",
-			Type: "sqlite",
-			Path: ":memory:",
-		},
-		{
-			Name: "db2",
-			Type: "sqlite",
-			Path: ":memory:",
-		},
-	}
-
-	manager, err := NewManager(cfg)
-	if err != nil {
-		t.Fatalf("failed to create manager: %v", err)
-	}
-	defer manager.Close()
-
-	ctx := context.Background()
-	if !manager.PingAll(ctx) {
-		t.Error("expected PingAll to return true")
 	}
 }
 
@@ -273,7 +195,7 @@ func TestManager_Reconnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create manager: %v", err)
 	}
-	defer manager.Close()
+	defer func() { _ = manager.Close() }()
 
 	// Test successful reconnect
 	err = manager.Reconnect("test")
@@ -283,8 +205,11 @@ func TestManager_Reconnect(t *testing.T) {
 
 	// Verify connection works after reconnect
 	ctx := context.Background()
-	if !manager.PingAll(ctx) {
-		t.Error("ping failed after reconnect")
+	results := manager.Ping(ctx)
+	for name, err := range results {
+		if err != nil {
+			t.Errorf("ping failed for %s after reconnect: %v", name, err)
+		}
 	}
 
 	// Test reconnect for non-existent
@@ -294,48 +219,7 @@ func TestManager_Reconnect(t *testing.T) {
 	}
 }
 
-// TestManager_ReconnectAll reconnects all databases and verifies connectivity
-func TestManager_ReconnectAll(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	readOnly := false
-	cfg := []config.DatabaseConfig{
-		{
-			Name:     "db1",
-			Type:     "sqlite",
-			Path:     tmpDir + "/db1.db",
-			ReadOnly: &readOnly,
-		},
-		{
-			Name:     "db2",
-			Type:     "sqlite",
-			Path:     tmpDir + "/db2.db",
-			ReadOnly: &readOnly,
-		},
-	}
-
-	manager, err := NewManager(cfg)
-	if err != nil {
-		t.Fatalf("failed to create manager: %v", err)
-	}
-	defer manager.Close()
-
-	results := manager.ReconnectAll()
-
-	for name, err := range results {
-		if err != nil {
-			t.Errorf("reconnect failed for %s: %v", name, err)
-		}
-	}
-
-	// Verify connections work after reconnect
-	ctx := context.Background()
-	if !manager.PingAll(ctx) {
-		t.Error("ping failed after reconnect all")
-	}
-}
-
-// TestManager_Close ensures all connections are released and count returns 0
+// TestManager_Close ensures all connections are released
 func TestManager_Close(t *testing.T) {
 	cfg := []config.DatabaseConfig{
 		{
@@ -355,8 +239,8 @@ func TestManager_Close(t *testing.T) {
 		t.Errorf("close failed: %v", err)
 	}
 
-	if manager.Count() != 0 {
-		t.Errorf("expected 0 connections after close, got %d", manager.Count())
+	if len(manager.Names()) != 0 {
+		t.Errorf("expected 0 connections after close, got %d", len(manager.Names()))
 	}
 }
 
@@ -374,7 +258,7 @@ func TestManager_ConcurrentAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create manager: %v", err)
 	}
-	defer manager.Close()
+	defer func() { _ = manager.Close() }()
 
 	ctx := context.Background()
 	var wg sync.WaitGroup
@@ -427,7 +311,7 @@ func TestManager_ConcurrentReconnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create manager: %v", err)
 	}
-	defer manager.Close()
+	defer func() { _ = manager.Close() }()
 
 	ctx := context.Background()
 	var wg sync.WaitGroup
@@ -469,59 +353,10 @@ func TestManager_ConcurrentReconnect(t *testing.T) {
 	}
 
 	// Verify connection is still functional after all reconnects
-	if !manager.PingAll(ctx) {
-		t.Error("connection unhealthy after concurrent reconnects")
-	}
-}
-
-// TestManager_ConcurrentReconnectAll tests concurrent ReconnectAll calls
-func TestManager_ConcurrentReconnectAll(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	readOnly := false
-	cfg := []config.DatabaseConfig{
-		{
-			Name:     "db1",
-			Type:     "sqlite",
-			Path:     tmpDir + "/db1.db",
-			ReadOnly: &readOnly,
-		},
-		{
-			Name:     "db2",
-			Type:     "sqlite",
-			Path:     tmpDir + "/db2.db",
-			ReadOnly: &readOnly,
-		},
-	}
-
-	manager, err := NewManager(cfg)
-	if err != nil {
-		t.Fatalf("failed to create manager: %v", err)
-	}
-	defer manager.Close()
-
-	ctx := context.Background()
-	var wg sync.WaitGroup
-
-	// Launch concurrent ReconnectAll calls
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			results := manager.ReconnectAll()
-			for name, err := range results {
-				if err != nil {
-					t.Errorf("reconnect failed for %s: %v", name, err)
-				}
-			}
-		}()
-	}
-
-	wg.Wait()
-
-	// Verify all connections are healthy
-	if !manager.PingAll(ctx) {
-		t.Error("connections unhealthy after concurrent ReconnectAll")
+	for name, err := range manager.Ping(ctx) {
+		if err != nil {
+			t.Errorf("connection %s unhealthy after concurrent reconnects: %v", name, err)
+		}
 	}
 }
 
@@ -554,7 +389,7 @@ func TestManager_MixedDatabaseTypes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create manager: %v", err)
 	}
-	defer manager.Close()
+	defer func() { _ = manager.Close() }()
 
 	// Verify readonly
 	driver1, err := manager.Get("readonly_memory")

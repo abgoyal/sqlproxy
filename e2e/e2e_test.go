@@ -22,7 +22,6 @@ import (
 type testServer struct {
 	cmd        *exec.Cmd
 	configPath string
-	dbPath     string
 	baseURL    string
 	port       int
 }
@@ -33,7 +32,7 @@ func findFreePort() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	return listener.Addr().(*net.TCPAddr).Port, nil
 }
 
@@ -194,19 +193,6 @@ workflows:
 	return configPath
 }
 
-// setupTestDatabase creates the test SQLite database with schema
-func setupTestDatabase(t *testing.T, dbPath string) {
-	t.Helper()
-
-	// Create database directory if needed
-	if dir := filepath.Dir(dbPath); dir != "." {
-		os.MkdirAll(dir, 0755)
-	}
-
-	// Use sqlite3 CLI or create via the binary's first run
-	// For simplicity, we'll let the server create it and use raw SQL
-}
-
 // startServer starts the sql-proxy server and waits for it to be ready.
 // If E2E_COVERAGE_DIR is set, passes GOCOVERDIR to collect coverage data.
 func startServer(t *testing.T, binaryPath, configPath string, port int) *testServer {
@@ -241,7 +227,7 @@ func startServer(t *testing.T, binaryPath, configPath string, port int) *testSer
 
 	// Wait for server to be ready
 	if err := ts.waitReady(10 * time.Second); err != nil {
-		cmd.Process.Kill()
+		_ = cmd.Process.Kill()
 		t.Fatalf("server failed to become ready: %v", err)
 	}
 
@@ -256,7 +242,7 @@ func (ts *testServer) waitReady(timeout time.Duration) error {
 	for time.Now().Before(deadline) {
 		resp, err := client.Get(ts.baseURL + "/_/health")
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				return nil
 			}
@@ -278,7 +264,7 @@ func (ts *testServer) stop() error {
 		return ts.cmd.Process.Kill()
 	}
 
-	ts.cmd.Process.Signal(syscall.SIGTERM)
+	_ = ts.cmd.Process.Signal(syscall.SIGTERM)
 
 	// Wait for process to exit with timeout
 	done := make(chan error, 1)
@@ -290,7 +276,7 @@ func (ts *testServer) stop() error {
 	case err := <-done:
 		return err
 	case <-time.After(5 * time.Second):
-		ts.cmd.Process.Kill()
+		_ = ts.cmd.Process.Kill()
 		return fmt.Errorf("server did not shutdown gracefully, killed")
 	}
 }
@@ -306,7 +292,7 @@ func (ts *testServer) getJSON(path string, v any) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -346,14 +332,14 @@ func TestE2E_ServerStartupAndShutdown(t *testing.T) {
 	configPath := createTestConfig(t, port, dbPath)
 
 	ts := startServer(t, binaryPath, configPath, port)
-	defer ts.stop()
+	defer func() { _ = ts.stop() }()
 
 	// Verify server is running
 	resp, err := ts.get("/_/health")
 	if err != nil {
 		t.Fatalf("health check failed: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected status 200, got %d", resp.StatusCode)
@@ -385,7 +371,7 @@ func TestE2E_HealthEndpoint(t *testing.T) {
 	configPath := createTestConfig(t, port, dbPath)
 
 	ts := startServer(t, binaryPath, configPath, port)
-	defer ts.stop()
+	defer func() { _ = ts.stop() }()
 
 	var result map[string]any
 	resp, err := ts.getJSON("/_/health", &result)
@@ -428,7 +414,7 @@ func TestE2E_MetricsEndpoint(t *testing.T) {
 	configPath := createTestConfig(t, port, dbPath)
 
 	ts := startServer(t, binaryPath, configPath, port)
-	defer ts.stop()
+	defer func() { _ = ts.stop() }()
 
 	var result map[string]any
 	resp, err := ts.getJSON("/_/metrics.json", &result)
@@ -459,6 +445,63 @@ func TestE2E_MetricsEndpoint(t *testing.T) {
 	}
 }
 
+// TestE2E_PrometheusMetrics tests that per-request and gauge metrics are recorded
+func TestE2E_PrometheusMetrics(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test in short mode")
+	}
+
+	binaryPath := buildBinary(t)
+
+	port, err := findFreePort()
+	if err != nil {
+		t.Fatalf("failed to find free port: %v", err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	configPath := createTestConfig(t, port, dbPath)
+
+	ts := startServer(t, binaryPath, configPath, port)
+	defer func() { _ = ts.stop() }()
+
+	// Make a few requests to generate metrics
+	for i := 0; i < 3; i++ {
+		resp, err := ts.get("/api/ping")
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		_ = resp.Body.Close()
+	}
+
+	// Allow health checker goroutine to complete its first iteration and populate gauges
+	time.Sleep(100 * time.Millisecond)
+
+	// Fetch Prometheus metrics
+	resp, err := ts.get("/_/metrics")
+	if err != nil {
+		t.Fatalf("metrics request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, _ := io.ReadAll(resp.Body)
+	promOutput := string(body)
+
+	// Verify per-request counter was incremented
+	if !strings.Contains(promOutput, `sqlproxy_requests_total{endpoint="health_check"`) {
+		t.Error("expected sqlproxy_requests_total with endpoint=health_check label")
+	}
+
+	// Verify DB health gauge (set by health checker on startup ping)
+	if !strings.Contains(promOutput, `sqlproxy_db_healthy{database="test"}`) {
+		t.Error("expected sqlproxy_db_healthy with database=test label")
+	}
+
+	// Verify DB pool stats gauge
+	if !strings.Contains(promOutput, `sqlproxy_db_connections_open{database="test"}`) {
+		t.Error("expected sqlproxy_db_connections_open with database=test label")
+	}
+}
+
 // TestE2E_OpenAPIEndpoint tests /_/openapi.json returns valid spec
 func TestE2E_OpenAPIEndpoint(t *testing.T) {
 	if testing.Short() {
@@ -476,7 +519,7 @@ func TestE2E_OpenAPIEndpoint(t *testing.T) {
 	configPath := createTestConfig(t, port, dbPath)
 
 	ts := startServer(t, binaryPath, configPath, port)
-	defer ts.stop()
+	defer func() { _ = ts.stop() }()
 
 	var spec map[string]any
 	resp, err := ts.getJSON("/_/openapi.json", &spec)
@@ -519,7 +562,7 @@ func TestE2E_RootEndpoint(t *testing.T) {
 	configPath := createTestConfig(t, port, dbPath)
 
 	ts := startServer(t, binaryPath, configPath, port)
-	defer ts.stop()
+	defer func() { _ = ts.stop() }()
 
 	var result map[string]any
 	resp, err := ts.getJSON("/", &result)
@@ -562,7 +605,7 @@ func TestE2E_WorkflowEndpoint(t *testing.T) {
 	configPath := createTestConfig(t, port, dbPath)
 
 	ts := startServer(t, binaryPath, configPath, port)
-	defer ts.stop()
+	defer func() { _ = ts.stop() }()
 
 	// Test simple workflow that doesn't need a table
 	var result map[string]any
@@ -610,13 +653,13 @@ func TestE2E_ErrorHandling_MissingRequiredParameter(t *testing.T) {
 	configPath := createTestConfig(t, port, dbPath)
 
 	ts := startServer(t, binaryPath, configPath, port)
-	defer ts.stop()
+	defer func() { _ = ts.stop() }()
 
 	resp, err := ts.get("/api/item")
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("expected status 400 for missing required param, got %d", resp.StatusCode)
@@ -645,14 +688,14 @@ func TestE2E_ErrorHandling_InvalidParameterType(t *testing.T) {
 	configPath := createTestConfig(t, port, dbPath)
 
 	ts := startServer(t, binaryPath, configPath, port)
-	defer ts.stop()
+	defer func() { _ = ts.stop() }()
 
 	// id parameter expects int, send string
 	resp, err := ts.get("/api/item?id=notanumber")
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("expected status 400 for invalid param type, got %d", resp.StatusCode)
@@ -675,14 +718,14 @@ func TestE2E_ErrorHandling_DatabaseError(t *testing.T) {
 	configPath := createTestConfig(t, port, dbPath)
 
 	ts := startServer(t, binaryPath, configPath, port)
-	defer ts.stop()
+	defer func() { _ = ts.stop() }()
 
 	// Query against non-existent table should return 500
 	resp, err := ts.get("/api/item?id=1")
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Errorf("expected status 500 for database error, got %d", resp.StatusCode)
@@ -711,13 +754,13 @@ func TestE2E_ErrorHandling_NotFound(t *testing.T) {
 	configPath := createTestConfig(t, port, dbPath)
 
 	ts := startServer(t, binaryPath, configPath, port)
-	defer ts.stop()
+	defer func() { _ = ts.stop() }()
 
 	resp, err := ts.get("/api/nonexistent/endpoint")
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("expected status 404 for non-existent endpoint, got %d", resp.StatusCode)
@@ -740,14 +783,14 @@ func TestE2E_ErrorHandling_MethodNotAllowed(t *testing.T) {
 	configPath := createTestConfig(t, port, dbPath)
 
 	ts := startServer(t, binaryPath, configPath, port)
-	defer ts.stop()
+	defer func() { _ = ts.stop() }()
 
 	// /_/cache/clear only accepts POST/DELETE, try GET
 	resp, err := ts.get("/_/cache/clear")
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("expected status 405 for wrong method, got %d", resp.StatusCode)
@@ -777,7 +820,7 @@ func TestE2E_LogLevelEndpoint(t *testing.T) {
 	configPath := createTestConfig(t, port, dbPath)
 
 	ts := startServer(t, binaryPath, configPath, port)
-	defer ts.stop()
+	defer func() { _ = ts.stop() }()
 
 	// GET current level
 	var result map[string]any
@@ -795,14 +838,14 @@ func TestE2E_LogLevelEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("post loglevel failed: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected status 200, got %d", resp.StatusCode)
 	}
 
 	// Verify level changed
-	resp, err = ts.getJSON("/_/config/loglevel", &result)
+	_, err = ts.getJSON("/_/config/loglevel", &result)
 	if err != nil {
 		t.Fatalf("get loglevel failed: %v", err)
 	}
@@ -829,7 +872,7 @@ func TestE2E_GzipCompression(t *testing.T) {
 	configPath := createTestConfig(t, port, dbPath)
 
 	ts := startServer(t, binaryPath, configPath, port)
-	defer ts.stop()
+	defer func() { _ = ts.stop() }()
 
 	// Request with Accept-Encoding: gzip
 	req, _ := http.NewRequest("GET", ts.baseURL+"/api/ping", nil)
@@ -840,7 +883,7 @@ func TestE2E_GzipCompression(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.Header.Get("Content-Encoding") != "gzip" {
 		t.Error("expected gzip content encoding")
@@ -851,7 +894,7 @@ func TestE2E_GzipCompression(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create gzip reader: %v", err)
 	}
-	defer gr.Close()
+	defer func() { _ = gr.Close() }()
 
 	var result map[string]any
 	if err := json.NewDecoder(gr).Decode(&result); err != nil {
@@ -880,7 +923,7 @@ func TestE2E_RequestID(t *testing.T) {
 	configPath := createTestConfig(t, port, dbPath)
 
 	ts := startServer(t, binaryPath, configPath, port)
-	defer ts.stop()
+	defer func() { _ = ts.stop() }()
 
 	// Send request with custom request ID
 	customID := "test-request-id-12345"
@@ -892,7 +935,7 @@ func TestE2E_RequestID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Check response header
 	if resp.Header.Get("X-Request-ID") != customID {
@@ -901,7 +944,7 @@ func TestE2E_RequestID(t *testing.T) {
 
 	// Check response body
 	var result map[string]any
-	json.NewDecoder(resp.Body).Decode(&result)
+	_ = json.NewDecoder(resp.Body).Decode(&result)
 
 	if result["request_id"] != customID {
 		t.Errorf("expected request_id=%s in body, got %v", customID, result["request_id"])
@@ -925,13 +968,13 @@ func TestE2E_NotFound(t *testing.T) {
 	configPath := createTestConfig(t, port, dbPath)
 
 	ts := startServer(t, binaryPath, configPath, port)
-	defer ts.stop()
+	defer func() { _ = ts.stop() }()
 
 	resp, err := ts.get("/nonexistent/path")
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("expected status 404, got %d", resp.StatusCode)
@@ -965,10 +1008,10 @@ func TestE2E_GracefulShutdown(t *testing.T) {
 	defer cancel()
 
 	req, _ := http.NewRequestWithContext(ctx, "GET", ts.baseURL+"/api/ping", nil)
-	http.DefaultClient.Do(req)
+	_, _ = http.DefaultClient.Do(req)
 
 	// Send SIGTERM
-	ts.cmd.Process.Signal(syscall.SIGTERM)
+	_ = ts.cmd.Process.Signal(syscall.SIGTERM)
 
 	// Wait for process to exit
 	done := make(chan error, 1)
@@ -980,7 +1023,7 @@ func TestE2E_GracefulShutdown(t *testing.T) {
 	case <-done:
 		// Process exited, good
 	case <-time.After(5 * time.Second):
-		ts.cmd.Process.Kill()
+		_ = ts.cmd.Process.Kill()
 		t.Error("server did not shutdown within 5 seconds")
 	}
 
@@ -1064,7 +1107,7 @@ func TestE2E_ErrorHandling_RateLimited(t *testing.T) {
 	configPath := createRateLimitedConfig(t, port, dbPath)
 
 	ts := startServer(t, binaryPath, configPath, port)
-	defer ts.stop()
+	defer func() { _ = ts.stop() }()
 
 	// Make rapid requests to exceed rate limit (1 req/sec, burst 1)
 	var got429 bool
@@ -1086,10 +1129,10 @@ func TestE2E_ErrorHandling_RateLimited(t *testing.T) {
 			if !strings.Contains(string(body), "retry") {
 				t.Errorf("expected retry info in 429 response body, got: %s", body)
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			break
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 
 	if !got429 {
@@ -1141,7 +1184,9 @@ func TestE2E_InvalidConfig(t *testing.T) {
   port: 0
 `
 	configPath := filepath.Join(t.TempDir(), "invalid.yaml")
-	os.WriteFile(configPath, []byte(invalidConfig), 0644)
+	if err := os.WriteFile(configPath, []byte(invalidConfig), 0644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
 
 	// Run with invalid config
 	cmd := exec.Command(binaryPath, "-validate", "-config", configPath)

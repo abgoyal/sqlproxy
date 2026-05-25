@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"text/template"
 	"time"
 
+	"sql-proxy/internal/metrics"
 	"sql-proxy/internal/tmpl"
 	"sql-proxy/internal/types"
 	"sql-proxy/internal/workflow/step"
@@ -135,7 +137,7 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if body, statusCode, hit := h.cache.Get(h.workflow.Config.Name, cacheKey); hit {
 				w.Header().Set("X-Cache", "HIT")
 				w.WriteHeader(statusCode)
-				w.Write(body)
+				_, _ = w.Write(body)
 				return
 			}
 			w.Header().Set("X-Cache", "MISS")
@@ -164,6 +166,11 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Execute workflow
 	result := h.executor.Execute(r.Context(), h.workflow, triggerData, requestID, responseWriter, h.variables)
 
+	// Populate metrics accumulator with execution details
+	if acc := metrics.GetAccumulator(r.Context()); acc != nil {
+		h.populateMetrics(acc, result)
+	}
+
 	// If workflow didn't send a response (no response step executed), send a default response
 	if !result.ResponseSent {
 		if result.Error != nil {
@@ -181,6 +188,40 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			ttl = time.Duration(h.trigger.Config.Cache.TTLSec) * time.Second
 		}
 		h.cache.Set(h.workflow.Config.Name, cacheKey, capture.body.Bytes(), capture.statusCode, ttl)
+	}
+}
+
+func (h *HTTPHandler) populateMetrics(acc *metrics.RequestAccumulator, result *ExecuteResult) {
+	if result.Error != nil {
+		acc.Error = result.Error.Error()
+		if errors.Is(result.Error, context.DeadlineExceeded) {
+			acc.ErrorType = "timeout"
+		} else {
+			acc.ErrorType = "execution_failed"
+		}
+	}
+
+	// Aggregate metrics across all query steps
+	for _, cs := range h.workflow.Steps {
+		if !cs.Config.IsQuery() {
+			continue
+		}
+		sr, ok := result.Steps[cs.Config.Name]
+		if !ok {
+			continue
+		}
+		acc.QueryName = cs.Config.Name
+		acc.Database = cs.Config.Database
+		acc.QueryDuration += time.Duration(sr.DurationMs) * time.Millisecond
+		if sr.RowsAffected > 0 {
+			acc.RowCount += int(sr.RowsAffected)
+		} else {
+			acc.RowCount += sr.Count
+		}
+		if sr.Error != nil && acc.Error == "" {
+			acc.Error = sr.Error.Error()
+			acc.ErrorType = "query_failed"
+		}
 	}
 }
 
@@ -366,7 +407,7 @@ func (h *HTTPHandler) writeSuccess(w http.ResponseWriter, data any, requestID st
 		RequestID: requestID,
 	}
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (h *HTTPHandler) writeError(w http.ResponseWriter, status int, message string, requestID string) {
@@ -376,7 +417,7 @@ func (h *HTTPHandler) writeError(w http.ResponseWriter, status int, message stri
 		RequestID: requestID,
 	}
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (h *HTTPHandler) writeRateLimitError(w http.ResponseWriter, retryAfterSec int, requestID string) {
@@ -388,7 +429,7 @@ func (h *HTTPHandler) writeRateLimitError(w http.ResponseWriter, retryAfterSec i
 		RetryAfterSec: retryAfterSec,
 	}
 	w.WriteHeader(http.StatusTooManyRequests)
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 type rateLimitResponse struct {

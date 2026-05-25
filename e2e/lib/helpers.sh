@@ -376,13 +376,13 @@ expect_contains() {
     local test_name="$2"
 
     TESTS_RUN=$((TESTS_RUN + 1))
-    if echo "$_response" | grep -q "$expected"; then
+    if [[ "$_response" == *"$expected"* ]]; then
         success "$test_name"
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else
         fail "$test_name"
         echo "  Expected to contain: $expected"
-        echo "  Got: $_response"
+        echo "  Got: ${_response:0:200}"
         TESTS_FAILED=$((TESTS_FAILED + 1))
     fi
 }

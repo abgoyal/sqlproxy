@@ -252,16 +252,6 @@ func BenchmarkExtractParamRefs_Complex(b *testing.B) {
 	}
 }
 
-// BenchmarkExtractHeaderRefs benchmarks header reference extraction
-func BenchmarkExtractHeaderRefs(b *testing.B) {
-	tmpl := `{{.trigger.headers.Authorization}}:{{require .trigger.headers "X-API-Key"}}:{{getOr .trigger.headers "X-Tenant" "default"}}`
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = ExtractHeaderRefs(tmpl)
-	}
-}
-
 // ============================================================================
 // Helper Function Benchmarks
 // ============================================================================

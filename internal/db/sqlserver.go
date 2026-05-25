@@ -77,7 +77,7 @@ func NewSQLServerDriver(cfg config.DatabaseConfig) (*SQLServerDriver, error) {
 	defer cancel()
 
 	if err := conn.PingContext(ctx); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
@@ -130,9 +130,8 @@ func (d *SQLServerDriver) Config() config.DatabaseConfig {
 
 // Reconnect attempts to re-establish the database connection
 func (d *SQLServerDriver) Reconnect() error {
-	// Close existing connection (ignore errors)
 	if d.conn != nil {
-		d.conn.Close()
+		_ = d.conn.Close()
 		d.conn = nil
 	}
 
@@ -148,7 +147,7 @@ func (d *SQLServerDriver) Reconnect() error {
 	defer cancel()
 
 	if err := conn.PingContext(ctx); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return fmt.Errorf("failed to ping database: %w", err)
 	}
 
@@ -222,7 +221,7 @@ func (d *SQLServerDriver) Query(ctx context.Context, sessCfg config.SessionConfi
 	if err != nil {
 		return nil, fmt.Errorf("failed to get connection: %w", err)
 	}
-	defer conn.Close() // Returns to pool
+	defer func() { _ = conn.Close() }()
 
 	// Configure session with the provided settings
 	if err := d.configureSession(ctx, conn, sessCfg); err != nil {
@@ -252,7 +251,7 @@ func (d *SQLServerDriver) Query(ctx context.Context, sessCfg config.SessionConfi
 	if err != nil {
 		return nil, fmt.Errorf("query failed: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	scannedRows, err := ScanRows(rows)
 	if err != nil {
@@ -291,4 +290,12 @@ func (d *SQLServerDriver) buildArgs(query string, params map[string]any) []any {
 // Ping checks database connectivity
 func (d *SQLServerDriver) Ping(ctx context.Context) error {
 	return d.conn.PingContext(ctx)
+}
+
+func (d *SQLServerDriver) PoolStats() PoolStats {
+	if d.conn == nil {
+		return PoolStats{}
+	}
+	s := d.conn.Stats()
+	return PoolStats{OpenConnections: s.OpenConnections, IdleConnections: s.Idle}
 }

@@ -287,7 +287,7 @@ func TestMySQLDriver_ConfigurePool(t *testing.T) {
 			if err != nil {
 				t.Fatalf("sql.Open failed: %v", err)
 			}
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 
 			configureMySQLPool(db, tt.cfg)
 
@@ -341,7 +341,7 @@ func TestMySQLDriver_ConfigValidation(t *testing.T) {
 // TestNewMySQLDriver_Integration verifies driver creation against a real MySQL instance
 func TestNewMySQLDriver_Integration(t *testing.T) {
 	driver := createTestMySQLDriver(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	if driver.Name() != "test" {
 		t.Errorf("expected name 'test', got %s", driver.Name())
@@ -364,7 +364,7 @@ func TestNewMySQLDriver_ReadWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create driver: %v", err)
 	}
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	if driver.IsReadOnly() {
 		t.Error("expected read-write")
@@ -374,7 +374,7 @@ func TestNewMySQLDriver_ReadWrite(t *testing.T) {
 // TestMySQLDriver_Ping confirms Ping returns nil for healthy connection
 func TestMySQLDriver_Ping(t *testing.T) {
 	driver := createTestMySQLDriver(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	ctx := context.Background()
 	if err := driver.Ping(ctx); err != nil {
@@ -390,7 +390,7 @@ func TestMySQLDriver_Reconnect(t *testing.T) {
 	if err := driver.Reconnect(); err != nil {
 		t.Fatalf("reconnect failed: %v", err)
 	}
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	// Verify connection works
 	ctx := context.Background()
@@ -402,7 +402,7 @@ func TestMySQLDriver_Reconnect(t *testing.T) {
 // TestMySQLDriver_Config verifies Config() returns original configuration
 func TestMySQLDriver_Config(t *testing.T) {
 	driver := createTestMySQLDriver(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	gotCfg := driver.Config()
 	if gotCfg.Name != "test" {
@@ -416,7 +416,7 @@ func TestMySQLDriver_Config(t *testing.T) {
 // TestMySQLDriver_Query_Simple executes basic SELECT and validates returned columns
 func TestMySQLDriver_Query_Simple(t *testing.T) {
 	driver := createTestMySQLDriverRW(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	ctx := context.Background()
 	sessCfg := config.SessionConfig{
@@ -443,7 +443,7 @@ func TestMySQLDriver_Query_Simple(t *testing.T) {
 // TestMySQLDriver_Query_WithParams verifies @param named parameters work correctly
 func TestMySQLDriver_Query_WithParams(t *testing.T) {
 	driver := createTestMySQLDriverRW(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	createMySQLTestTable(t, driver)
 	insertMySQLTestData(t, driver)
@@ -475,7 +475,7 @@ func TestMySQLDriver_Query_WithParams(t *testing.T) {
 // TestMySQLDriver_Query_NullParams tests NULL parameter handling for optional filters
 func TestMySQLDriver_Query_NullParams(t *testing.T) {
 	driver := createTestMySQLDriverRW(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	createMySQLTestTable(t, driver)
 	insertMySQLTestData(t, driver)
@@ -505,7 +505,7 @@ func TestMySQLDriver_Query_NullParams(t *testing.T) {
 // TestMySQLDriver_Query_EmptyResult confirms empty result set returns zero-length slice
 func TestMySQLDriver_Query_EmptyResult(t *testing.T) {
 	driver := createTestMySQLDriverRW(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	createMySQLTestTable(t, driver)
 
@@ -528,7 +528,7 @@ func TestMySQLDriver_Query_EmptyResult(t *testing.T) {
 // TestMySQLDriver_Query_Timeout verifies context deadline expiration stops query
 func TestMySQLDriver_Query_Timeout(t *testing.T) {
 	driver := createTestMySQLDriverRW(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	// Create a very short timeout context
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
@@ -550,7 +550,7 @@ func TestMySQLDriver_Query_Timeout(t *testing.T) {
 // TestMySQLDriver_Query_SpecialCharacters ensures SQL injection strings are safely escaped
 func TestMySQLDriver_Query_SpecialCharacters(t *testing.T) {
 	driver := createTestMySQLDriverRW(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	createMySQLTestTable(t, driver)
 
@@ -592,7 +592,7 @@ func TestMySQLDriver_Query_SpecialCharacters(t *testing.T) {
 // TestMySQLDriver_Query_Unicode validates CJK, Cyrillic, Arabic, and emoji preservation
 func TestMySQLDriver_Query_Unicode(t *testing.T) {
 	driver := createTestMySQLDriverRW(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	createMySQLTestTable(t, driver)
 
@@ -640,7 +640,7 @@ func TestMySQLDriver_Query_Unicode(t *testing.T) {
 // TestMySQLDriver_WriteOperations_RowsAffected tests that write operations return correct rows affected
 func TestMySQLDriver_WriteOperations_RowsAffected(t *testing.T) {
 	driver := createTestMySQLDriverRW(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	ctx := context.Background()
 	sessCfg := config.SessionConfig{
@@ -714,7 +714,7 @@ func TestMySQLDriver_WriteOperations_RowsAffected(t *testing.T) {
 // TestMySQLDriver_Query_Concurrent runs parallel queries against MySQL
 func TestMySQLDriver_Query_Concurrent(t *testing.T) {
 	driver := createTestMySQLDriverRW(t)
-	defer driver.Close()
+	defer func() { _ = driver.Close() }()
 
 	createMySQLTestTable(t, driver)
 	insertMySQLTestData(t, driver)
@@ -764,7 +764,7 @@ func mysqlTestConfig(t *testing.T) config.DatabaseConfig {
 
 	port := 3306
 	if p := os.Getenv("MYSQL_PORT"); p != "" {
-		fmt.Sscanf(p, "%d", &port)
+		_, _ = fmt.Sscanf(p, "%d", &port)
 	}
 
 	return config.DatabaseConfig{
@@ -808,8 +808,8 @@ func createTestMySQLDriverRW(t *testing.T) *MySQLDriver {
 		Isolation:     "read_committed",
 		LockTimeoutMs: 5000,
 	}
-	driver.Query(ctx, sessCfg, "DROP TABLE IF EXISTS test_users", nil, nil)
-	driver.Query(ctx, sessCfg, "DROP TABLE IF EXISTS test_rows", nil, nil)
+	_, _ = driver.Query(ctx, sessCfg, "DROP TABLE IF EXISTS test_users", nil, nil)
+	_, _ = driver.Query(ctx, sessCfg, "DROP TABLE IF EXISTS test_rows", nil, nil)
 
 	return driver
 }

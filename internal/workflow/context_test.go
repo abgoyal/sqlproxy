@@ -40,19 +40,7 @@ func TestNewContext(t *testing.T) {
 	}
 }
 
-func TestContext_Context(t *testing.T) {
-	bgCtx := context.Background()
-	wf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "test"}}
-	trigger := &TriggerData{Type: "http"}
-
-	ctx := NewContext(bgCtx, wf, trigger, "req-1", &testLogger{}, nil)
-
-	if ctx.Context() != bgCtx {
-		t.Error("Context() should return the underlying context")
-	}
-}
-
-func TestContext_SetGetStepResult(t *testing.T) {
+func TestContext_SetStepResult(t *testing.T) {
 	wf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "test"}}
 	trigger := &TriggerData{Type: "http"}
 	ctx := NewContext(context.Background(), wf, trigger, "req-1", &testLogger{}, nil)
@@ -66,14 +54,8 @@ func TestContext_SetGetStepResult(t *testing.T) {
 
 	ctx.SetStepResult("fetch_users", result)
 
-	got := ctx.GetStepResult("fetch_users")
-	if got != result {
-		t.Error("GetStepResult did not return the set result")
-	}
-
-	notFound := ctx.GetStepResult("nonexistent")
-	if notFound != nil {
-		t.Error("GetStepResult should return nil for nonexistent step")
+	if ctx.Steps["fetch_users"] != result {
+		t.Error("SetStepResult did not store the result")
 	}
 }
 
@@ -710,7 +692,7 @@ func TestBlockContext(t *testing.T) {
 	}
 }
 
-func TestBlockContext_SetGetStepResult(t *testing.T) {
+func TestBlockContext_SetStepResult(t *testing.T) {
 	parentWf := &CompiledWorkflow{Config: &WorkflowConfig{Name: "parent"}}
 	trigger := &TriggerData{Type: "http"}
 	parentCtx := NewContext(context.Background(), parentWf, trigger, "req-1", &testLogger{}, nil)
@@ -725,16 +707,8 @@ func TestBlockContext_SetGetStepResult(t *testing.T) {
 
 	blockCtx.SetStepResult("block_step", result)
 
-	got := blockCtx.GetStepResult("block_step")
-	if got != result {
-		t.Error("GetStepResult did not return the set result")
-	}
-
-	// Getting a parent step from block context should return nil
-	// (GetStepResult only looks in current block)
-	notFound := blockCtx.GetStepResult("nonexistent")
-	if notFound != nil {
-		t.Error("GetStepResult should return nil for nonexistent step")
+	if blockCtx.Steps["block_step"] != result {
+		t.Error("SetStepResult did not store the result")
 	}
 }
 

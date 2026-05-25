@@ -1527,7 +1527,7 @@ func TestUUIDShortFunc(t *testing.T) {
 	}
 	// Should only contain hex characters
 	for _, c := range id {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			t.Errorf("uuidShort() = %q, contains non-hex character %c", id, c)
 			break
 		}

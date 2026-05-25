@@ -100,7 +100,7 @@ func NewMySQLDriver(cfg config.DatabaseConfig) (*MySQLDriver, error) {
 	defer cancel()
 
 	if err := conn.PingContext(ctx); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("failed to ping mysql database: %w", err)
 	}
 
@@ -153,9 +153,8 @@ func (d *MySQLDriver) Config() config.DatabaseConfig {
 
 // Reconnect attempts to re-establish the database connection
 func (d *MySQLDriver) Reconnect() error {
-	// Close existing connection (ignore errors)
 	if d.conn != nil {
-		d.conn.Close()
+		_ = d.conn.Close()
 		d.conn = nil
 	}
 
@@ -166,12 +165,11 @@ func (d *MySQLDriver) Reconnect() error {
 
 	configureMySQLPool(conn, d.cfg)
 
-	// Test connection
 	ctx, cancel := context.WithTimeout(context.Background(), mysqlPingTimeout)
 	defer cancel()
 
 	if err := conn.PingContext(ctx); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return fmt.Errorf("failed to ping mysql database: %w", err)
 	}
 
@@ -241,7 +239,7 @@ func (d *MySQLDriver) Query(ctx context.Context, sessCfg config.SessionConfig, q
 	if err != nil {
 		return nil, fmt.Errorf("failed to get connection: %w", err)
 	}
-	defer conn.Close() // Returns to pool
+	defer func() { _ = conn.Close() }()
 
 	// Configure session with the provided settings
 	if err := d.configureSession(ctx, conn, sessCfg); err != nil {
@@ -270,7 +268,7 @@ func (d *MySQLDriver) Query(ctx context.Context, sessCfg config.SessionConfig, q
 	if err != nil {
 		return nil, fmt.Errorf("query failed: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	scannedRows, err := ScanRows(rows)
 	if err != nil {
@@ -322,4 +320,12 @@ func (d *MySQLDriver) translateQuery(query string, params map[string]any) (strin
 // Ping checks database connectivity
 func (d *MySQLDriver) Ping(ctx context.Context) error {
 	return d.conn.PingContext(ctx)
+}
+
+func (d *MySQLDriver) PoolStats() PoolStats {
+	if d.conn == nil {
+		return PoolStats{}
+	}
+	s := d.conn.Stats()
+	return PoolStats{OpenConnections: s.OpenConnections, IdleConnections: s.Idle}
 }

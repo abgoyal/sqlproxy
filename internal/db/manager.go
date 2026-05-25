@@ -24,7 +24,7 @@ func NewManager(configs []config.DatabaseConfig) (*Manager, error) {
 		driver, err := NewDriver(cfg)
 		if err != nil {
 			// Clean up any connections we've already made
-			m.Close()
+			_ = m.Close()
 			return nil, fmt.Errorf("failed to connect to database %s: %w", cfg.Name, err)
 		}
 
@@ -58,15 +58,6 @@ func (m *Manager) Names() []string {
 	return names
 }
 
-// IsReadOnly returns whether the named connection is read-only
-func (m *Manager) IsReadOnly(name string) (bool, error) {
-	driver, err := m.Get(name)
-	if err != nil {
-		return false, err
-	}
-	return driver.IsReadOnly(), nil
-}
-
 // Close closes all database connections
 func (m *Manager) Close() error {
 	m.mu.Lock()
@@ -95,19 +86,6 @@ func (m *Manager) Ping(ctx context.Context) map[string]error {
 	return results
 }
 
-// PingAll returns true if all connections are healthy.
-// Useful for strict health checks that require all databases to be available
-// before reporting healthy status. For detailed per-database status, use Ping.
-func (m *Manager) PingAll(ctx context.Context) bool {
-	results := m.Ping(ctx)
-	for _, err := range results {
-		if err != nil {
-			return false
-		}
-	}
-	return true
-}
-
 // Reconnect attempts to reconnect a specific database.
 // Uses full lock to prevent concurrent reconnect attempts to the same database.
 func (m *Manager) Reconnect(name string) error {
@@ -119,26 +97,4 @@ func (m *Manager) Reconnect(name string) error {
 		return fmt.Errorf("unknown database connection: %s", name)
 	}
 	return driver.Reconnect()
-}
-
-// ReconnectAll attempts to reconnect all databases.
-// Useful for administrative operations like recovering from network outages.
-// Returns a map of connection name -> error (nil if reconnection succeeded).
-// Uses full lock to prevent concurrent reconnect attempts.
-func (m *Manager) ReconnectAll() map[string]error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	results := make(map[string]error)
-	for name, driver := range m.connections {
-		results[name] = driver.Reconnect()
-	}
-	return results
-}
-
-// Count returns the number of configured connections
-func (m *Manager) Count() int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return len(m.connections)
 }

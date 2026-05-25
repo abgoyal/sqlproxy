@@ -15,7 +15,7 @@ func TestInit_Stdout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
-	defer Close()
+	defer func() { _ = Close() }()
 
 	// Verify level is set
 	if GetLevel() != "info" {
@@ -32,7 +32,7 @@ func TestInit_FileOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
-	defer Close()
+	defer func() { _ = Close() }()
 
 	// Verify log directory was created
 	if _, err := os.Stat(filepath.Dir(logPath)); os.IsNotExist(err) {
@@ -46,7 +46,7 @@ func TestSetLevel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
-	defer Close()
+	defer func() { _ = Close() }()
 
 	tests := []struct {
 		set  string
@@ -79,7 +79,7 @@ func TestGetLevel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
-	defer Close()
+	defer func() { _ = Close() }()
 
 	// Set each level via levelVar directly and test GetLevel
 	levelVar.Set(slog.LevelDebug)
@@ -237,5 +237,5 @@ func TestInit_InvalidDirectory(t *testing.T) {
 	// Try to create log in non-existent parent with no permission
 	// This test might not fail on all systems, so we just check it doesn't panic
 	_ = Init("info", "/root/cannot/create/test.log", 10, 3, 7)
-	Close()
+	_ = Close()
 }
