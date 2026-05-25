@@ -963,10 +963,7 @@ func (s *Server) initWorkflows(cfg *config.Config) error {
 			}
 		}
 
-		return &step.QueryResult{
-			Rows:         dbResult.Rows,
-			RowsAffected: dbResult.RowsAffected,
-		}, nil
+		return dbResult, nil
 	})
 
 	// Create logger adapter
@@ -1426,26 +1423,12 @@ func (a *workflowRateLimiterAdapter) CheckTriggerLimits(limits []*workflow.Compi
 		return true, 0, nil
 	}
 
-	// Convert workflow rate limit configs to ratelimit.Limiter format
 	rateLimitConfigs := make([]config.RateLimitConfig, 0, len(limits))
 	for _, rl := range limits {
-		cfg := config.RateLimitConfig{
-			Pool:              rl.Config.Pool,
-			RequestsPerSecond: rl.Config.RequestsPerSecond,
-			Burst:             rl.Config.Burst,
-			Key:               rl.Config.Key,
-		}
-		rateLimitConfigs = append(rateLimitConfigs, cfg)
+		rateLimitConfigs = append(rateLimitConfigs, *rl.Config)
 	}
 
-	// Build tmpl.Context for key template evaluation
-	ctx := a.ctxBuilder.BuildForRateLimit(&tmpl.RateLimitData{
-		ClientIP: rlCtx.ClientIP,
-		Params:   rlCtx.Params,
-		Headers:  rlCtx.Headers,
-		Query:    rlCtx.Query,
-		Cookies:  rlCtx.Cookies,
-	})
+	ctx := a.ctxBuilder.BuildForRateLimit(rlCtx)
 
 	allowed, retryAfter, err := a.limiter.Allow(rateLimitConfigs, ctx)
 	if err != nil {

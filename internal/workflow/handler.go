@@ -13,6 +13,7 @@ import (
 	"text/template"
 	"time"
 
+	"sql-proxy/internal/tmpl"
 	"sql-proxy/internal/types"
 	"sql-proxy/internal/workflow/step"
 )
@@ -39,13 +40,7 @@ type HTTPHandler struct {
 }
 
 // RateLimitContext contains all data available for rate limit key evaluation.
-type RateLimitContext struct {
-	ClientIP string
-	Params   map[string]any
-	Headers  map[string]string
-	Query    map[string]string
-	Cookies  map[string]string
-}
+type RateLimitContext = tmpl.RateLimitData
 
 // RateLimiter checks rate limits for workflow triggers.
 type RateLimiter interface {
@@ -484,38 +479,4 @@ func NewDBManagerAdapter(queryFunc func(ctx context.Context, database, sql strin
 // ExecuteQuery implements step.DBManager.
 func (a *DBManagerAdapter) ExecuteQuery(ctx context.Context, database, sql string, params map[string]any, opts step.QueryOptions) (*step.QueryResult, error) {
 	return a.queryFunc(ctx, database, sql, params, opts)
-}
-
-// LoggerAdapter adapts to the workflow.Logger interface.
-type LoggerAdapter struct {
-	logger LoggerInterface
-}
-
-// LoggerInterface defines the interface that logging package implements.
-type LoggerInterface interface {
-	Debug(msg string, fields map[string]any)
-	Info(msg string, fields map[string]any)
-	Warn(msg string, fields map[string]any)
-	Error(msg string, fields map[string]any)
-}
-
-// NewLoggerAdapter creates a new logger adapter.
-func NewLoggerAdapter(logger LoggerInterface) *LoggerAdapter {
-	return &LoggerAdapter{logger: logger}
-}
-
-func (a *LoggerAdapter) Debug(msg string, fields map[string]any) {
-	a.logger.Debug(msg, fields)
-}
-
-func (a *LoggerAdapter) Info(msg string, fields map[string]any) {
-	a.logger.Info(msg, fields)
-}
-
-func (a *LoggerAdapter) Warn(msg string, fields map[string]any) {
-	a.logger.Warn(msg, fields)
-}
-
-func (a *LoggerAdapter) Error(msg string, fields map[string]any) {
-	a.logger.Error(msg, fields)
 }

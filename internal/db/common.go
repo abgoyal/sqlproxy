@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"sql-proxy/internal/sqlutil"
+	"sql-proxy/internal/workflow/step"
 )
 
 // ParamRegex matches @param style named parameters in SQL queries.
@@ -15,10 +16,7 @@ var ParamRegex = sqlutil.ParamRegex
 // QueryResult contains the results of a database query execution.
 // For SELECT queries, Rows contains the returned data.
 // For INSERT/UPDATE/DELETE, RowsAffected contains the number of affected rows.
-type QueryResult struct {
-	Rows         []map[string]any
-	RowsAffected int64
-}
+type QueryResult = step.QueryResult
 
 // IsWriteQuery returns true if the SQL is a write operation.
 var IsWriteQuery = sqlutil.IsWriteQuery

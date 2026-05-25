@@ -16,9 +16,7 @@ import (
 
 // StepCache provides caching for workflow step results.
 type StepCache interface {
-	// Get retrieves cached step data. Returns data and hit status.
 	Get(workflow, key string) ([]map[string]any, bool)
-	// Set stores step data in the cache with the given TTL.
 	Set(workflow, key string, data []map[string]any, ttl time.Duration) bool
 }
 
@@ -61,14 +59,12 @@ func (e *Executor) Execute(ctx context.Context, wf *CompiledWorkflow, trigger *T
 		Steps: make(map[string]*StepResult),
 	}
 
-	// Apply workflow timeout if set (must be done before creating wfCtx)
 	if wf.Config.TimeoutSec > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(wf.Config.TimeoutSec)*time.Second)
 		defer cancel()
 	}
 
-	// Create workflow context with the (potentially timeout-wrapped) context
 	wfCtx := NewContext(ctx, wf, trigger, requestID, e.logger, variables)
 
 	e.logger.Info("workflow_started", map[string]any{
@@ -77,13 +73,11 @@ func (e *Executor) Execute(ctx context.Context, wf *CompiledWorkflow, trigger *T
 		"trigger":    trigger.Type,
 	})
 
-	// Execute steps
 	for i, compiledStep := range wf.Steps {
 		if compiledStep.Config.Disabled {
 			continue
 		}
 
-		// Check context cancellation
 		select {
 		case <-ctx.Done():
 			result.Error = ctx.Err()
@@ -92,7 +86,6 @@ func (e *Executor) Execute(ctx context.Context, wf *CompiledWorkflow, trigger *T
 		default:
 		}
 
-		// Evaluate condition if present
 		if compiledStep.Condition != nil {
 			env := wfCtx.BuildExprEnv()
 			shouldRun, err := EvalCondition(compiledStep.Condition, env)
@@ -103,7 +96,6 @@ func (e *Executor) Execute(ctx context.Context, wf *CompiledWorkflow, trigger *T
 					"step_index": i,
 					"error":      err.Error(),
 				})
-				// Treat condition error as false
 				continue
 			}
 			if !shouldRun {
@@ -116,7 +108,6 @@ func (e *Executor) Execute(ctx context.Context, wf *CompiledWorkflow, trigger *T
 			}
 		}
 
-		// Execute the step
 		stepResult, err := e.executeStep(ctx, compiledStep, wfCtx, w)
 		if err != nil {
 			result.Error = err
@@ -124,7 +115,6 @@ func (e *Executor) Execute(ctx context.Context, wf *CompiledWorkflow, trigger *T
 			return result
 		}
 
-		// Record result
 		stepName := compiledStep.Config.Name
 		if stepName == "" {
 			stepName = fmt.Sprintf("step_%d", i)
@@ -134,16 +124,14 @@ func (e *Executor) Execute(ctx context.Context, wf *CompiledWorkflow, trigger *T
 		wfCtx.SetStepResult(stepName, stepResult)
 		result.Steps[stepName] = stepResult
 
-		// Check if response was sent
 		if compiledStep.Config.IsResponse() && stepResult.Success {
 			result.ResponseSent = true
 		}
 
-		// Handle step failure
 		if !stepResult.Success {
 			onError := compiledStep.Config.OnError
 			if onError == "" {
-				onError = "abort" // Default
+				onError = "abort"
 			}
 
 			errMsg := "unknown error"
@@ -162,7 +150,6 @@ func (e *Executor) Execute(ctx context.Context, wf *CompiledWorkflow, trigger *T
 				})
 				return result
 			}
-			// on_error: continue - log and proceed
 			e.logger.Warn("workflow_step_failed_continue", map[string]any{
 				"workflow": wf.Config.Name,
 				"step":     stepName,
@@ -174,7 +161,6 @@ func (e *Executor) Execute(ctx context.Context, wf *CompiledWorkflow, trigger *T
 	result.Success = true
 	result.DurationMs = time.Since(start).Milliseconds()
 
-	// Warn if HTTP trigger but no response sent
 	if trigger.Type == "http" && !result.ResponseSent {
 		e.logger.Warn("workflow_no_response", map[string]any{
 			"workflow":   wf.Config.Name,
@@ -195,24 +181,18 @@ func (e *Executor) Execute(ctx context.Context, wf *CompiledWorkflow, trigger *T
 func (e *Executor) executeStep(ctx context.Context, cs *CompiledStep, wfCtx *Context, w http.ResponseWriter) (*StepResult, error) {
 	stepType := cs.Config.StepType()
 
-	// Build execution data
 	execData := step.ExecutionData{
 		TemplateData:   wfCtx.BuildTemplateData(),
 		ExprEnv:        wfCtx.BuildExprEnv(),
-		DBManager:      e.dbManager,
-		HTTPClient:     e.httpClient,
 		ResponseWriter: w,
-		Logger:         e.logger,
 	}
 
-	// Evaluate computed params if present (for query steps)
 	if len(cs.ParamTmpls) > 0 {
 		if err := e.evaluateStepParams(cs, execData.TemplateData); err != nil {
 			return nil, fmt.Errorf("evaluating params: %w", err)
 		}
 	}
 
-	// Check cache for cacheable steps (query, httpcall)
 	if (stepType == "query" || stepType == "httpcall") && cs.CacheKeyTmpl != nil && e.cache != nil {
 		cacheKey, err := e.evaluateCacheKey(cs.CacheKeyTmpl, execData.TemplateData)
 		if err != nil {
@@ -221,9 +201,7 @@ func (e *Executor) executeStep(ctx context.Context, cs *CompiledStep, wfCtx *Con
 				"step":     cs.Config.Name,
 				"error":    err.Error(),
 			})
-			// Continue without caching on key evaluation error
 		} else {
-			// Check cache
 			workflowName := wfCtx.Workflow.Config.Name
 			if data, hit := e.cache.Get(workflowName, cacheKey); hit {
 				e.logger.Debug("step_cache_hit", map[string]any{
@@ -239,13 +217,11 @@ func (e *Executor) executeStep(ctx context.Context, cs *CompiledStep, wfCtx *Con
 				}, nil
 			}
 
-			// Cache miss - execute and cache result
 			result, err := e.executeStepByType(ctx, stepType, cs, execData, wfCtx, w)
 			if err != nil {
 				return nil, err
 			}
 
-			// Cache successful results with data
 			if result.Success && result.Data != nil {
 				ttl := time.Duration(0)
 				if cs.Config.Cache != nil && cs.Config.Cache.TTLSec > 0 {
@@ -290,30 +266,21 @@ func (e *Executor) evaluateCacheKey(tmpl *template.Template, data map[string]any
 	return buf.String(), nil
 }
 
-// evaluateStepParams evaluates computed params templates and adds them to the data map.
-// This allows steps to define derived parameters computed from templates, e.g.:
-//
-//	params:
-//	  internal_id: '{{privateID "task" .trigger.params.public_id}}'
-//
-// The computed values are added to data["params"] and can be referenced in SQL via @param.
-// SQL parameter extraction checks this namespace BEFORE trigger.params, allowing step-level
-// params to override request params when needed (e.g., decoded internal IDs).
+// evaluateStepParams evaluates computed param templates and adds results to data["params"].
+// Computed values can be referenced in SQL via @param. The params namespace is checked
+// BEFORE trigger.params, allowing step-level params to override request params.
 func (e *Executor) evaluateStepParams(cs *CompiledStep, data map[string]any) error {
-	// Get or create params map at top level
 	params, ok := data["params"].(map[string]any)
 	if !ok {
 		params = make(map[string]any)
 		data["params"] = params
 	}
 
-	// Evaluate each param template and add to params
 	for name, tmpl := range cs.ParamTmpls {
 		var buf bytes.Buffer
 		if err := tmpl.Execute(&buf, data); err != nil {
 			return fmt.Errorf("param %s: %w", name, err)
 		}
-		// Parse the result - try int first, then use string
 		result := buf.String()
 		if intVal, err := parseInt64(result); err == nil {
 			params[name] = intVal
@@ -329,120 +296,23 @@ func (e *Executor) evaluateStepParams(cs *CompiledStep, data map[string]any) err
 // Handles both "123" and "123.0" formats (the latter from template float arithmetic).
 func parseInt64(s string) (int64, error) {
 	s = strings.TrimSpace(s)
-	// Try direct int parsing first (most common case)
 	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 		return i, nil
 	}
-	// Only try float parsing if the string contains a decimal point.
-	// This handles cases like "123.0" from template arithmetic while rejecting
-	// integer overflow values that would get silently rounded by float parsing.
 	if !strings.Contains(s, ".") {
 		return 0, fmt.Errorf("not a valid integer: %s", s)
 	}
 	if f, err := strconv.ParseFloat(s, 64); err == nil {
-		// Check bounds before conversion to avoid silent overflow.
-		// Use 2^63 which is exactly representable as float64.
-		// int64 range is [-2^63, 2^63-1], so reject f >= 2^63 or f < -2^63.
+		// 2^63 is exactly representable as float64; int64 range is [-2^63, 2^63-1]
 		const maxFloat = float64(1 << 63)
 		if f >= maxFloat || f < -maxFloat {
 			return 0, fmt.Errorf("value %s out of int64 range", s)
 		}
-		// Only accept if it's a whole number (no fractional part)
 		if f == math.Trunc(f) {
 			return int64(f), nil
 		}
 	}
 	return 0, fmt.Errorf("not a valid integer: %s", s)
-}
-
-func (e *Executor) executeQueryStep(ctx context.Context, cs *CompiledStep, execData step.ExecutionData) (*StepResult, error) {
-	qs := step.NewQueryStep(
-		cs.Config.Name,
-		cs.Config.Database,
-		cs.SQLTmpl,
-		cs.Config.Isolation,
-		cs.Config.LockTimeoutMs,
-		cs.Config.DeadlockPriority,
-		cs.Config.JSONColumns,
-	)
-	qs.IsWrite = &cs.IsWrite
-	qs.HasReturning = &cs.HasReturning
-
-	result, err := qs.Execute(ctx, execData)
-	if err != nil {
-		return nil, err
-	}
-
-	return &StepResult{
-		Success:      result.Success,
-		Error:        result.Error,
-		DurationMs:   result.DurationMs,
-		Data:         result.Data,
-		Count:        result.Count,
-		RowsAffected: result.RowsAffected,
-	}, nil
-}
-
-func (e *Executor) executeHTTPCallStep(ctx context.Context, cs *CompiledStep, execData step.ExecutionData) (*StepResult, error) {
-	var retry *step.RetryConfig
-	if cs.Config.Retry != nil {
-		retry = &step.RetryConfig{
-			Enabled:           cs.Config.Retry.Enabled,
-			MaxAttempts:       cs.Config.Retry.MaxAttempts,
-			InitialBackoffSec: cs.Config.Retry.InitialBackoffSec,
-			MaxBackoffSec:     cs.Config.Retry.MaxBackoffSec,
-		}
-	}
-
-	hs := step.NewHTTPCallStep(
-		cs.Config.Name,
-		cs.URLTmpl,
-		cs.Config.HTTPMethod,
-		cs.HeaderTmpls,
-		cs.BodyTmpl,
-		cs.Config.Parse,
-		cs.Config.TimeoutSec,
-		retry,
-	)
-
-	result, err := hs.Execute(ctx, execData)
-	if err != nil {
-		return nil, err
-	}
-
-	return &StepResult{
-		Success:      result.Success,
-		Error:        result.Error,
-		DurationMs:   result.DurationMs,
-		Data:         result.Data,
-		Count:        result.Count,
-		StatusCode:   result.StatusCode,
-		Headers:      result.Headers,
-		ResponseBody: result.ResponseBody,
-	}, nil
-}
-
-func (e *Executor) executeResponseStep(ctx context.Context, cs *CompiledStep, execData step.ExecutionData) (*StepResult, error) {
-	rs := step.NewResponseStep(
-		cs.Config.Name,
-		cs.Config.StatusCode,
-		cs.TemplateTmpl,
-		cs.HeaderTmpls,
-		"application/json",
-	)
-
-	result, err := rs.Execute(ctx, execData)
-	if err != nil {
-		return nil, err
-	}
-
-	return &StepResult{
-		Success:      result.Success,
-		Error:        result.Error,
-		DurationMs:   result.DurationMs,
-		StatusCode:   result.StatusCode,
-		ResponseBody: result.ResponseBody,
-	}, nil
 }
 
 func (e *Executor) executeBlockStep(ctx context.Context, cs *CompiledStep, wfCtx *Context, w http.ResponseWriter) (*StepResult, error) {
@@ -452,7 +322,6 @@ func (e *Executor) executeBlockStep(ctx context.Context, cs *CompiledStep, wfCtx
 	}
 	start := time.Now()
 
-	// Get collection to iterate over
 	var items []any
 	if cs.Iterate != nil && cs.Iterate.OverExpr != nil {
 		env := wfCtx.BuildExprEnv()
@@ -463,7 +332,6 @@ func (e *Executor) executeBlockStep(ctx context.Context, cs *CompiledStep, wfCtx
 			return result, nil
 		}
 
-		// Convert to slice
 		switch v := val.(type) {
 		case []any:
 			items = v
@@ -478,7 +346,6 @@ func (e *Executor) executeBlockStep(ctx context.Context, cs *CompiledStep, wfCtx
 			return result, nil
 		}
 	} else {
-		// No iteration - execute block steps once
 		items = []any{nil}
 	}
 
@@ -491,7 +358,6 @@ func (e *Executor) executeBlockStep(ctx context.Context, cs *CompiledStep, wfCtx
 		}
 	}
 
-	// Execute for each item
 	for i, item := range items {
 		select {
 		case <-ctx.Done():
@@ -508,16 +374,13 @@ func (e *Executor) executeBlockStep(ctx context.Context, cs *CompiledStep, wfCtx
 			Success: true,
 		}
 
-		// Create block context
 		blockCtx := NewBlockContext(wfCtx, cs.Config.Name, item, i, len(items))
 
-		// Execute nested steps
 		for j, nestedStep := range cs.BlockSteps {
 			if nestedStep.Config.Disabled {
 				continue
 			}
 
-			// Evaluate condition
 			if nestedStep.Condition != nil {
 				env := blockCtx.BuildExprEnv(iterateAs)
 				shouldRun, err := EvalCondition(nestedStep.Condition, env)
@@ -535,14 +398,10 @@ func (e *Executor) executeBlockStep(ctx context.Context, cs *CompiledStep, wfCtx
 				}
 			}
 
-			// Build execution data for block step
 			execData := step.ExecutionData{
 				TemplateData:   blockCtx.BuildTemplateData(iterateAs),
 				ExprEnv:        blockCtx.BuildExprEnv(iterateAs),
-				DBManager:      e.dbManager,
-				HTTPClient:     e.httpClient,
 				ResponseWriter: w,
-				Logger:         e.logger,
 			}
 
 			var stepResult *StepResult
@@ -583,7 +442,7 @@ func (e *Executor) executeBlockStep(ctx context.Context, cs *CompiledStep, wfCtx
 				}
 
 				if stepOnError == "abort" {
-					break // Stop this iteration's steps
+					break
 				}
 			}
 		}
@@ -597,9 +456,8 @@ func (e *Executor) executeBlockStep(ctx context.Context, cs *CompiledStep, wfCtx
 
 			if onError == "abort" {
 				result.Error = iterResult.Error
-				break // Stop all iterations
+				break
 			}
-			// continue or skip - proceed to next iteration
 		}
 	}
 

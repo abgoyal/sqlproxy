@@ -56,9 +56,9 @@ type CompiledStep struct {
 	ParamTmpls map[string]*template.Template
 
 	// Query step templates and classification
-	SQLTmpl        *template.Template
-	IsWrite        bool // Precomputed: SQL is INSERT/UPDATE/DELETE/etc.
-	HasReturning   bool // Precomputed: SQL has OUTPUT INSERTED/DELETED or RETURNING
+	SQLTmpl      *template.Template
+	IsWrite      bool // Precomputed: SQL is INSERT/UPDATE/DELETE/etc.
+	HasReturning bool // Precomputed: SQL has OUTPUT INSERTED/DELETED or RETURNING
 
 	// HTTPCall step templates
 	URLTmpl     *template.Template

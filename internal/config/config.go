@@ -101,27 +101,7 @@ type RateLimitPoolConfig struct {
 
 // RateLimitConfig is a rate limit configuration that can reference a named pool
 // or define an inline limit. Used by workflows and the rate limiter.
-type RateLimitConfig struct {
-	// Reference a named pool (mutually exclusive with inline settings)
-	Pool string `yaml:"pool"`
-
-	// Inline rate limit settings (mutually exclusive with pool reference)
-	RequestsPerSecond int    `yaml:"requests_per_second"`
-	Burst             int    `yaml:"burst"`
-	Key               string `yaml:"key"`
-}
-
-// IsPoolReference returns true if this config references a named pool
-func (r *RateLimitConfig) IsPoolReference() bool {
-	return r.Pool != ""
-}
-
-// IsInline returns true if this config defines valid inline rate limit settings.
-// An inline config requires both RequestsPerSecond and Burst to be positive.
-// Key is optional (defaults to ClientIP).
-func (r *RateLimitConfig) IsInline() bool {
-	return r.RequestsPerSecond > 0 && r.Burst > 0
-}
+type RateLimitConfig = workflow.RateLimitRefConfig
 
 type DatabaseConfig struct {
 	Name string `yaml:"name"` // Connection name (required)

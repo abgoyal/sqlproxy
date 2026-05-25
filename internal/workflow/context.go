@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"sql-proxy/internal/workflow/step"
 )
 
 // Context holds the execution state for a workflow run.
@@ -21,13 +23,8 @@ type Context struct {
 	ctx context.Context
 }
 
-// Logger interface for workflow execution logging
-type Logger interface {
-	Debug(msg string, fields map[string]any)
-	Info(msg string, fields map[string]any)
-	Warn(msg string, fields map[string]any)
-	Error(msg string, fields map[string]any)
-}
+// Logger interface for workflow execution logging.
+type Logger = step.Logger
 
 // TriggerData contains input data from the trigger.
 type TriggerData struct {

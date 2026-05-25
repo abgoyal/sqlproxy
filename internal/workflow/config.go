@@ -53,6 +53,17 @@ type RateLimitRefConfig struct {
 	Key               string `yaml:"key,omitempty"`
 }
 
+// IsPoolReference returns true if this config references a named pool.
+func (r *RateLimitRefConfig) IsPoolReference() bool {
+	return r.Pool != ""
+}
+
+// IsInline returns true if this config defines valid inline rate limit settings.
+// Requires both RequestsPerSecond and Burst to be positive. Key is optional (defaults to ClientIP).
+func (r *RateLimitRefConfig) IsInline() bool {
+	return r.RequestsPerSecond > 0 && r.Burst > 0
+}
+
 // CacheConfig defines caching for HTTP triggers.
 type CacheConfig struct {
 	Enabled   bool   `yaml:"enabled"`
