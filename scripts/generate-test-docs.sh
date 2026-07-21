@@ -9,6 +9,17 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 cd "$PROJECT_ROOT"
 
+# Fail before touching TESTS.md if a package with tests is not registered below,
+# so the generated docs cannot silently omit one.
+missing=""
+for dir in $(find internal e2e -name "*_test.go" -exec dirname {} \; | sort -u); do
+    grep -q "^process_package \"$dir\"" "$0" || missing="$missing $dir"
+done
+if [ -n "$missing" ]; then
+    echo "Error: packages with tests are not registered in $0:$missing" >&2
+    exit 1
+fi
+
 echo "Generating test documentation..."
 
 cat > "$OUTPUT_FILE" << 'HEADER'
@@ -91,19 +102,18 @@ process_package() {
 # Process all test packages
 process_package "internal/config" "Config"
 process_package "internal/db" "Database"
-process_package "internal/handler" "Handler"
-process_package "internal/scheduler" "Scheduler"
 process_package "internal/validate" "Validation"
 process_package "internal/server" "Server"
 process_package "internal/logging" "Logging"
 process_package "internal/metrics" "Metrics"
 process_package "internal/openapi" "OpenAPI"
 process_package "internal/service" "Service"
-process_package "internal/webhook" "Webhook"
 process_package "internal/cache" "Cache"
 process_package "internal/tmpl" "Template Engine"
 process_package "internal/ratelimit" "Rate Limiting"
 process_package "internal/types" "Types"
+process_package "internal/publicid" "Public IDs"
+process_package "internal/sqlutil" "SQL Utilities"
 process_package "internal/workflow" "Workflow"
 process_package "internal/workflow/step" "Workflow Steps"
 process_package "e2e" "End-to-End"

@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/robfig/cron/v3"
+
+	"sql-proxy/internal/sqlutil"
 )
 
 // ValidationResult holds workflow validation results.
@@ -350,7 +352,7 @@ func validateQueryStep(cfg *StepConfig, prefix string, ctx *ValidationContext, r
 		isReadOnly, exists := ctx.Databases[cfg.Database]
 		if !exists {
 			r.addError("%s: unknown database '%s'", prefix, cfg.Database)
-		} else if isReadOnly && containsWriteKeyword(cfg.SQL) {
+		} else if isReadOnly && sqlutil.RequiresWriteAccess(cfg.SQL) {
 			r.addError("%s: SQL contains write operation but database '%s' is read-only", prefix, cfg.Database)
 		}
 	}
@@ -542,17 +544,6 @@ func validateStepRefs(exprStr, prefix string, currentStepIndex int, stepNames ma
 
 // pathParamRegex matches path parameters like {id} or {user_id}
 var pathParamRegex = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
-
-func containsWriteKeyword(sql string) bool {
-	upper := strings.ToUpper(sql)
-	writeKeywords := []string{"INSERT ", "UPDATE ", "DELETE ", "DROP ", "TRUNCATE ", "ALTER ", "CREATE ", "EXEC "}
-	for _, kw := range writeKeywords {
-		if strings.Contains(upper, kw) {
-			return true
-		}
-	}
-	return false
-}
 
 // templateInterpolationRegex matches Go template interpolation patterns {{...}}
 var templateInterpolationRegex = regexp.MustCompile(`\{\{[^}]*\}\}`)

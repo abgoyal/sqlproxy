@@ -2,6 +2,7 @@ package sqlutil
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -33,8 +34,8 @@ func stripLiterals(sql string) string {
 		if ch == '/' && i+1 < len(sql) && sql[i+1] == '*' {
 			buf.WriteByte(' ')
 			i += 2
-			for i+1 < len(sql) {
-				if sql[i] == '*' && sql[i+1] == '/' {
+			for i < len(sql) {
+				if i+1 < len(sql) && sql[i] == '*' && sql[i+1] == '/' {
 					i += 2
 					break
 				}
@@ -71,6 +72,25 @@ func stripLiterals(sql string) string {
 					i++
 					if i < len(sql) && sql[i] == '"' {
 						i++ // escaped ""
+					} else {
+						break
+					}
+				} else {
+					i++
+				}
+			}
+			continue
+		}
+
+		// Backtick-quoted identifier: `...` with `` escape (MySQL, SQLite)
+		if ch == '`' {
+			buf.WriteByte(' ')
+			i++
+			for i < len(sql) {
+				if sql[i] == '`' {
+					i++
+					if i < len(sql) && sql[i] == '`' {
+						i++ // escaped ``
 					} else {
 						break
 					}
@@ -128,10 +148,47 @@ func IsWriteQuery(sql string) bool {
 		return false
 	}
 
-	for _, kw := range writeKeywords {
-		if fields[0] == kw {
+	return slices.Contains(writeKeywords, fields[0])
+}
+
+// procedureKeywords invoke stored procedures or user code, which may write.
+var procedureKeywords = []string{"EXEC", "EXECUTE", "CALL"}
+
+// mutatingKeywords are every keyword that can modify the database. Permission
+// checking is a superset of execution routing: routing asks whether a statement
+// returns rows and therefore excludes procedure calls, which may do either.
+var mutatingKeywords = slices.Concat(writeKeywords, procedureKeywords)
+
+// RequiresWriteAccess reports whether the SQL could modify the database.
+//
+// This is a different question from IsWriteQuery, which classifies a statement for
+// execution routing. Routing must know whether rows come back; permission must know
+// whether anything can change. A procedure call needs write access but may still
+// return rows, so the two questions must not share an answer.
+//
+// The check is deliberately conservative, and answers "is this provably a read"
+// rather than "where is the write". Locating the operative keyword by position is
+// not reliable across CTEs, T-SQL control flow, and multi-statement batches, and
+// every construct missed silently grants write access to a read-only connection.
+// So a mutating keyword appearing anywhere outside a string literal, comment, or
+// quoted identifier requires write access. All of these words are reserved in SQL,
+// so a genuine read-only statement has no legitimate reason to contain one.
+func RequiresWriteAccess(sql string) bool {
+	upper := strings.ToUpper(stripLiterals(sql))
+
+	for i := 0; i < len(upper); {
+		if !isIdentChar(upper[i]) {
+			i++
+			continue
+		}
+		end := i
+		for end < len(upper) && isIdentChar(upper[end]) {
+			end++
+		}
+		if slices.Contains(mutatingKeywords, upper[i:end]) {
 			return true
 		}
+		i = end
 	}
 	return false
 }

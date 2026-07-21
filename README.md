@@ -184,7 +184,7 @@ The validator checks:
 - Workflow definitions (triggers, steps, SQL syntax)
 - Parameter definitions (types, duplicates, reserved names)
 - SQL/parameter consistency (unused params, missing definitions)
-- Warnings for write operations in SQL (INSERT, UPDATE, DELETE)
+- Write operations against read-only connections (see Validation under Session Configuration)
 
 ## Installation
 
@@ -701,10 +701,59 @@ workflows:
 
 Config validation enforces:
 - All required fields present (no defaults)
-- Steps with INSERT/UPDATE/DELETE on read-only connections -> **error**
+- Steps that could write to a read-only connection -> **error**
 - Unknown database references -> **error**
 - Invalid isolation level or deadlock priority -> **error**
 - Unused database connections -> **warning**
+
+**Write detection on read-only connections**
+
+A step is rejected at startup if its SQL could modify a connection declared
+`readonly: true` (the default when `readonly` is omitted). Detected statements:
+
+| Category | Statements |
+|----------|------------|
+| Data | `INSERT`, `UPDATE`, `DELETE`, `MERGE` |
+| Schema | `CREATE`, `DROP`, `ALTER`, `TRUNCATE` |
+| Procedures | `EXEC`, `EXECUTE`, `CALL` |
+
+The check is deliberately conservative: it answers "is this provably a read"
+rather than "where is the write". Any of the keywords above appearing anywhere in
+the statement requires a read-write connection, regardless of position. Position
+is not used, because a write can sit almost anywhere:
+
+```sql
+SELECT 1; DROP TABLE users                                     -- rejected
+;WITH c AS (SELECT 1) INSERT INTO t SELECT * FROM c            -- rejected
+IF EXISTS (SELECT 1 FROM t) BEGIN INSERT INTO t VALUES (1) END -- rejected
+```
+
+Detection is literal-aware and matches whole words. String literals, comments,
+and quoted identifiers are removed before matching, and a keyword that is merely
+part of a longer identifier is not a keyword. All of the following are valid
+against a read-only connection:
+
+```sql
+SELECT * FROM notes WHERE body = 'DELETE ME'  -- CREATE a report
+SELECT create_date, executed_at FROM jobs
+SELECT * FROM call_log
+SELECT [insert] FROM t
+SELECT `update` FROM `orders`
+```
+
+Because the check is conservative, a read-only query that genuinely needs one of
+these words as a bare identifier will be rejected. Quote the identifier using any
+style your database supports -- `[insert]` (SQL Server), `` `insert` `` (MySQL,
+SQLite), or `"insert"` (ANSI) -- or use a read-write connection.
+
+Escape quotes inside string literals by doubling them (`'it''s'`), which every
+supported database accepts. MySQL also allows a backslash escape (`'it\'s'`), but
+that form is not portable and is not recognised here: the literal is treated as
+ending at the backslashed quote, so the rest of the string is read as SQL and a
+keyword inside it will be rejected.
+
+Stored procedure calls are rejected because a procedure can write regardless of
+its name. Use a read-write connection for workflows that call procedures.
 
 ### Timeout Configuration
 

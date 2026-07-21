@@ -240,6 +240,66 @@ func TestValidate_QueryStep(t *testing.T) {
 	}
 }
 
+// TestValidate_ReadOnlyWriteDetection verifies the read-only check is literal-aware in both directions
+func TestValidate_ReadOnlyWriteDetection(t *testing.T) {
+	tests := []struct {
+		name      string
+		sql       string
+		wantValid bool
+	}{
+		// Must be REJECTED: these can mutate a read-only database
+		{"insert", "INSERT INTO t VALUES (1)", false},
+		{"merge", "MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET t.x = s.x", false},
+		{"exec procedure", "EXEC sp_rebuild_index", false},
+		{"execute procedure", "EXECUTE sp_rebuild_index", false},
+		{"call procedure", "CALL rebuild_index()", false},
+		{"cte with insert", "WITH c AS (SELECT 1) INSERT INTO t SELECT * FROM c", false},
+		{"leading semicolon cte", ";WITH c AS (SELECT 1) INSERT INTO t SELECT * FROM c", false},
+		{"cte inside batch", "SELECT 1; WITH c AS (SELECT 1) INSERT INTO t SELECT * FROM c", false},
+		{"write hidden after leading read", "SELECT 1; DROP TABLE users", false},
+		{"write inside if block", "IF EXISTS (SELECT 1 FROM t) BEGIN INSERT INTO t VALUES (1) END", false},
+		{"write inside while block", "WHILE (1=1) BEGIN DELETE FROM t END", false},
+		{"procedure call inside if", "IF (1=1) EXEC sp_rebuild", false},
+
+		// Must be ACCEPTED: a write keyword appearing in a literal or comment is not a write.
+		// Rejecting these would refuse to start the server on a valid config.
+		{"delete inside string literal", "SELECT * FROM notes WHERE body = 'DELETE ME'", true},
+		{"create inside line comment", "SELECT id FROM t -- CREATE a report", true},
+		{"update inside block comment", "SELECT /* UPDATE users SET x = 1 */ id FROM t", true},
+		{"exec inside string literal", "SELECT * FROM audit WHERE cmd = 'EXEC sp_evil'", true},
+		{"write keyword as column name", "SELECT executed_at, created_at FROM jobs", true},
+		{"semicolon inside string literal", "SELECT * FROM t WHERE s = 'a; DROP TABLE users'", true},
+		{"quoted identifier", "SELECT [insert] FROM t", true},
+		{"read only cte", "WITH c AS (SELECT 1) SELECT * FROM c", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &WorkflowConfig{
+				Name:     "test",
+				Triggers: []TriggerConfig{{Type: "http", Path: "/test", Method: "GET"}},
+				Steps: []StepConfig{
+					{Name: "q", Type: "query", Database: "db", SQL: tt.sql},
+					{Type: "response", Template: "{}"},
+				},
+			}
+			ctx := &ValidationContext{Databases: map[string]bool{"db": true}} // true = read-only
+			result := Validate(cfg, ctx)
+
+			if tt.wantValid && !result.Valid {
+				t.Errorf("expected valid, got errors: %v", result.Errors)
+			}
+			if !tt.wantValid {
+				if result.Valid {
+					t.Error("expected validation to fail")
+				} else if !containsError(result.Errors, "write operation but database 'db' is read-only") {
+					t.Errorf("expected read-only error, got: %v", result.Errors)
+				}
+			}
+		})
+	}
+}
+
 func TestValidate_HTTPCallStep(t *testing.T) {
 	tests := []struct {
 		name        string

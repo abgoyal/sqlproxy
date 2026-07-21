@@ -558,6 +558,46 @@ Run `make test-cover` for current coverage statistics.
 
 ---
 
+## Public IDs
+
+**Package**: `internal/publicid`
+
+### publicid_test.go
+
+- **TestNewEncoder**: NewEncoder
+- **TestEncodeDecode**: EncodeDecode
+- **TestDifferentIDsProduceDifferentOutput**: DifferentIDsProduceDifferentOutput
+- **TestSameIDDifferentNamespaceProducesDifferentOutput**: SameIDDifferentNamespaceProducesDifferentOutput
+- **TestPrefixHandling**: PrefixHandling
+- **TestDecodeInvalidPrefix**: DecodeInvalidPrefix
+- **TestDecodeUnknownNamespace**: DecodeUnknownNamespace
+- **TestEncodeUnknownNamespace**: EncodeUnknownNamespace
+- **TestDecodeInvalidCharacters**: DecodeInvalidCharacters
+- **TestDecodeInvalidLength**: DecodeInvalidLength
+- **TestHasNamespace**: HasNamespace
+- **TestXTEARoundTrip**: XTEARoundTrip
+- **TestBase62RoundTrip**: Base62RoundTrip
+- **TestConsistentEncoding**: ConsistentEncoding
+- **TestDifferentSecretsProduceDifferentOutput**: DifferentSecretsProduceDifferentOutput
+
+
+---
+
+## SQL Utilities
+
+**Package**: `internal/sqlutil`
+
+### sqlutil_test.go
+
+- **TestStripLiterals**: TestStripLiterals verifies comment and string removal for safe keyword detection
+- **TestIsWriteQuery**: TestIsWriteQuery verifies statement type detection with literal-aware parsing
+- **TestRequiresWriteAccess**: TestRequiresWriteAccess verifies write-permission detection including stored procedure calls
+- **TestHasReturningClause**: TestHasReturningClause verifies OUTPUT/RETURNING detection with literal-awareness
+- **TestParamRegex**: TestParamRegex verifies @param matching
+
+
+---
+
 ## Workflow
 
 **Package**: `internal/workflow`
@@ -725,6 +765,7 @@ Run `make test-cover` for current coverage statistics.
 - **TestValidate_HTTPTrigger**: Validate HTTPTrigger
 - **TestValidate_CronTrigger**: Validate CronTrigger
 - **TestValidate_QueryStep**: Validate QueryStep
+- **TestValidate_ReadOnlyWriteDetection**: TestValidate_ReadOnlyWriteDetection verifies the read-only check is literal-aware in both directions
 - **TestValidate_HTTPCallStep**: Validate HTTPCallStep
 - **TestValidate_ResponseStep**: Validate ResponseStep
 - **TestValidate_BlockStep**: Validate BlockStep
