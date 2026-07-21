@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/robfig/cron/v3"
 
@@ -467,10 +468,73 @@ func validateBlockStep(cfg *StepConfig, prefix string, parentStepNames map[strin
 	}
 }
 
+// minEveryInterval is the shortest interval an @every descriptor can express.
+const minEveryInterval = time.Second
+
+// tzPrefixes are the timezone prefixes that may precede a schedule.
+var tzPrefixes = []string{"TZ=", "CRON_TZ="}
+
+// validateCronExpr accepts the standard five-field format plus the named
+// descriptors (@hourly, @daily, @every 30m, and so on), either of which may carry
+// a TZ= or CRON_TZ= prefix. Six-field expressions with a seconds column are
+// rejected: the scheduler is minute-granular.
 func validateCronExpr(expr string) error {
-	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-	_, err := parser.Parse(expr)
-	return err
+	schedule, err := splitTZPrefix(expr)
+	if err != nil {
+		return err
+	}
+	if _, err := cron.ParseStandard(expr); err != nil {
+		return err
+	}
+	return validateEveryInterval(schedule)
+}
+
+// splitTZPrefix returns the schedule with any timezone prefix removed, mirroring
+// how cron.ParseStandard consumes it. The prefix has to be removed here so the
+// @every rules below see the schedule rather than the prefix.
+//
+// A prefix with no schedule after it is rejected rather than passed on: the
+// upstream parser slices on the index of the first space and panics when there is
+// none, which would crash the process on a config typo.
+func splitTZPrefix(expr string) (string, error) {
+	for _, prefix := range tzPrefixes {
+		if !strings.HasPrefix(expr, prefix) {
+			continue
+		}
+		i := strings.Index(expr, " ")
+		if i < 0 {
+			return "", fmt.Errorf("timezone prefix %q must be followed by a schedule", expr)
+		}
+		return strings.TrimSpace(expr[i:]), nil
+	}
+	return expr, nil
+}
+
+// validateEveryInterval rejects @every durations that the scheduler would
+// silently alter. cron.Every clamps anything below one second up to one second
+// and truncates sub-second remainders, so "@every 100ms" and "@every -1h" both
+// run once a second. Accepting those would let the schedule in the config differ
+// from the schedule that actually runs.
+func validateEveryInterval(expr string) error {
+	const every = "@every "
+	if !strings.HasPrefix(expr, every) {
+		return nil
+	}
+
+	// Unreachable: ParseStandard has already rejected an @every whose duration
+	// does not parse. Guarded rather than ignored so a future reordering of the
+	// two checks cannot turn this into a silent panic.
+	d, err := time.ParseDuration(expr[len(every):])
+	if err != nil {
+		return nil
+	}
+	if d < minEveryInterval {
+		return fmt.Errorf("interval %s is below the %s minimum", d, minEveryInterval)
+	}
+	if d%time.Second != 0 {
+		return fmt.Errorf("interval %s must be a whole number of seconds", d)
+	}
+	return nil
 }
 
 func validateExprSyntax(exprStr string) error {

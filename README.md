@@ -1423,6 +1423,39 @@ Standard 5-field cron format: `minute hour day-of-month month day-of-week`
 | `0 8 * * 1` | Mondays at 8 AM |
 | `0 0 1 * *` | First day of month at midnight |
 
+Named descriptors are also accepted:
+
+| Descriptor | Equivalent |
+|------------|------------|
+| `@hourly` | `0 * * * *` |
+| `@daily`, `@midnight` | `0 0 * * *` |
+| `@weekly` | `0 0 * * 0` |
+| `@monthly` | `0 0 1 * *` |
+| `@yearly`, `@annually` | `0 0 1 1 *` |
+| `@every <duration>` | Fixed interval, e.g. `@every 90s`, `@every 1h30m` |
+
+Descriptors are lowercase only. A six-field expression with a seconds column is
+rejected: the scheduler is minute-granular, and `@every` is the way to ask for a
+sub-minute interval.
+
+`@every` intervals must be at least one second and a whole number of seconds.
+`@every 100ms` and `@every 1500ms` are rejected rather than silently rounded to
+one second, so the schedule in the config is always the schedule that runs.
+
+**Timezones:**
+
+Schedules run in the server's local timezone. Prefix the expression with `TZ=` or
+`CRON_TZ=` to pin it to a specific zone:
+
+```yaml
+schedule: "TZ=America/New_York 0 8 * * *"   # 8 AM New York time
+schedule: "CRON_TZ=UTC @daily"              # midnight UTC
+```
+
+The zone name must be one the host's timezone database recognises, and a prefix
+must be followed by a schedule -- `TZ=UTC` on its own is rejected. The prefix
+does not exempt `@every` from the rules above.
+
 **Dynamic Date Values:**
 
 The following special values are resolved at execution time:
@@ -1434,12 +1467,15 @@ The following special values are resolved at execution time:
 | `yesterday` | Start of yesterday |
 | `tomorrow` | Start of tomorrow |
 
-**Retry Behavior:**
+**Failure Behavior:**
 
-Scheduled workflows automatically retry on failure:
-- 3 attempts total
-- Exponential backoff: 1s, 5s, 25s between retries
-- Logs error after all retries exhausted
+A scheduled run executes once; there is no automatic retry. A failing step follows
+its own `on_error` setting, and the outcome is logged with the workflow name,
+request ID, and duration. A panic is recovered so one bad run cannot stop the
+scheduler, and is counted in the `sqlproxy_cron_panics_total` metric.
+
+For retries, use the `retry:` block on an `httpcall` step, or schedule more
+frequently and make the workflow idempotent.
 
 ### Multiple Triggers
 

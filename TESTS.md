@@ -764,6 +764,9 @@ Run `make test-cover` for current coverage statistics.
 - **TestValidate_MissingSteps**: Validate MissingSteps
 - **TestValidate_HTTPTrigger**: Validate HTTPTrigger
 - **TestValidate_CronTrigger**: Validate CronTrigger
+- **TestValidateCronExpr**: TestValidateCronExpr verifies the accepted schedule dialect: five fields plus descriptors
+- **TestValidateCronExpr_MatchesScheduler**: TestValidateCronExpr_MatchesScheduler verifies validation never accepts a schedule the scheduler cannot run
+- **TestValidate_EvictCronSchedule**: TestValidate_EvictCronSchedule verifies cache evict_cron accepts the same dialect as triggers
 - **TestValidate_QueryStep**: Validate QueryStep
 - **TestValidate_ReadOnlyWriteDetection**: TestValidate_ReadOnlyWriteDetection verifies the read-only check is literal-aware in both directions
 - **TestValidate_HTTPCallStep**: Validate HTTPCallStep

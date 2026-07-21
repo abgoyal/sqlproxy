@@ -3,6 +3,8 @@ package workflow
 import (
 	"strings"
 	"testing"
+
+	"github.com/robfig/cron/v3"
 )
 
 func TestValidate_BasicWorkflow(t *testing.T) {
@@ -188,6 +190,191 @@ func TestValidate_CronTrigger(t *testing.T) {
 			t.Errorf("expected valid, got errors: %v", result.Errors)
 		}
 	})
+}
+
+// TestValidateCronExpr verifies the accepted schedule dialect: five fields plus descriptors
+func TestValidateCronExpr(t *testing.T) {
+	tests := []struct {
+		name        string
+		expr        string
+		expectError string // empty means the expression must be accepted
+	}{
+		// Five-field expressions
+		{"daily at 8", "0 8 * * *", ""},
+		{"every five minutes", "*/5 * * * *", ""},
+		{"mondays", "0 8 * * 1", ""},
+
+		// Named descriptors
+		{"hourly", "@hourly", ""},
+		{"daily", "@daily", ""},
+		{"midnight", "@midnight", ""},
+		{"weekly", "@weekly", ""},
+		{"monthly", "@monthly", ""},
+		{"yearly", "@yearly", ""},
+		{"annually", "@annually", ""},
+
+		// @every with intervals the scheduler runs exactly as written
+		{"every hour", "@every 1h", ""},
+		{"every 30 minutes", "@every 30m", ""},
+		{"every 90 seconds", "@every 90s", ""},
+		{"compound duration", "@every 1h30m", ""},
+
+		// @every intervals the scheduler would silently alter
+		{"sub-second interval", "@every 100ms", "below the 1s minimum"},
+		{"zero interval", "@every 0s", "below the 1s minimum"},
+		{"negative interval", "@every -1h", "below the 1s minimum"},
+		{"fractional seconds", "@every 1500ms", "whole number of seconds"},
+
+		// Timezone prefixes, which the parser consumes before the schedule
+		{"tz with descriptor", "TZ=UTC @daily", ""},
+		{"tz with five fields", "TZ=UTC 0 8 * * *", ""},
+		{"cron_tz with five fields", "CRON_TZ=America/New_York 0 8 * * *", ""},
+		{"tz with valid every", "TZ=UTC @every 1h", ""},
+		{"tz does not bypass every minimum", "TZ=UTC @every 100ms", "below the 1s minimum"},
+		{"cron_tz does not bypass whole seconds", "CRON_TZ=America/New_York @every 1500ms", "whole number of seconds"},
+		{"tz without schedule", "TZ=UTC", "must be followed by a schedule"},
+		{"cron_tz without schedule", "CRON_TZ=UTC", "must be followed by a schedule"},
+		{"unknown timezone", "TZ=Bad/Zone 0 8 * * *", "unknown time zone"},
+
+		// Rejected forms
+		{"six fields", "0 0 8 * * *", "expected exactly 5 fields"},
+		{"seconds column", "*/30 * * * * *", "expected exactly 5 fields"},
+		{"unknown descriptor", "@reboot", "unrecognized descriptor"},
+		{"uppercase descriptor", "@DAILY", "unrecognized descriptor"},
+		{"gibberish", "invalid", "expected exactly 5 fields"},
+		{"empty", "", "empty spec string"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateCronExpr(tt.expr)
+			if tt.expectError == "" {
+				if err != nil {
+					t.Errorf("validateCronExpr(%q) = %v, want accepted", tt.expr, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("validateCronExpr(%q) = nil, want error containing %q", tt.expr, tt.expectError)
+			}
+			if !strings.Contains(err.Error(), tt.expectError) {
+				t.Errorf("validateCronExpr(%q) = %q, want error containing %q", tt.expr, err, tt.expectError)
+			}
+		})
+	}
+}
+
+// TestValidateCronExpr_MatchesScheduler verifies validation never accepts a schedule the scheduler cannot run
+func TestValidateCronExpr_MatchesScheduler(t *testing.T) {
+	// Expressions the validator rejects that the scheduler would otherwise accept.
+	// Each is a deliberate rule; anything else showing up here is accidental
+	// strictness that would reject a config the service could actually run.
+	intentionallyStricter := map[string]string{
+		"@every 100ms":        "clamped up to 1s by cron.Every",
+		"@every 1500ms":       "truncated to 1s by cron.Every",
+		"@every -1h":          "clamped up to 1s by cron.Every",
+		"@every 0s":           "clamped up to 1s by cron.Every",
+		"TZ=UTC @every 100ms": "clamped up to 1s by cron.Every",
+	}
+
+	corpus := []string{
+		// Five-field, including range, list and step forms
+		"0 8 * * *", "*/5 * * * *", "0 0 1 1 *", "0 9 * * 1-5", "*/30 9-17 * * 1-5",
+		"0 0 1,15 * *", "5 4 * * sun", "0 8 * * *  ", "  0 8 * * *",
+		// Descriptors
+		"@hourly", "@daily", "@midnight", "@weekly", "@monthly", "@yearly", "@annually",
+		"@every 1s", "@every 1h", "@every 90s", "@every 1h30m", "@every 24h",
+		"@every 100ms", "@every 1500ms", "@every -1h", "@every 0s", "@every abc", "@every",
+		// Timezone prefixes, including the forms that make the upstream parser panic
+		"TZ=UTC 0 8 * * *", "TZ=America/New_York @daily", "CRON_TZ=UTC @every 1h",
+		"TZ=UTC", "CRON_TZ=UTC", "TZ= 0 8 * * *", "TZ=Bad/Zone 0 8 * * *",
+		"TZ=UTC @every 100ms", "TZ=UTC TZ=UTC @daily", "TZ=UTC\t@daily",
+		" TZ=UTC @daily", "tz=UTC @daily",
+		// Malformed
+		"@reboot", "@DAILY", "@Every 1h", "", " ", "0 0 8 * * *", "*/30 * * * * *",
+		"invalid", "* * * * * * *",
+	}
+
+	for _, expr := range corpus {
+		t.Run(expr, func(t *testing.T) {
+			validatorErr := validateCronExpr(expr)
+
+			var schedulerErr error
+			var panicked any
+			func() {
+				defer func() { panicked = recover() }()
+				_, schedulerErr = cron.New().AddFunc(expr, func() {})
+			}()
+
+			if validatorErr == nil {
+				if panicked != nil {
+					t.Errorf("validation accepted %q but the scheduler panics: %v", expr, panicked)
+				}
+				if schedulerErr != nil {
+					t.Errorf("validation accepted %q but the scheduler rejects it: %v", expr, schedulerErr)
+				}
+				return
+			}
+
+			// Rejected by validation. That is only expected when the scheduler also
+			// refuses it, or when it is one of the documented stricter rules.
+			if schedulerErr == nil && panicked == nil {
+				if _, ok := intentionallyStricter[expr]; !ok {
+					t.Errorf("validation rejected %q (%v) but the scheduler accepts it; "+
+						"if this strictness is intended, add it to intentionallyStricter",
+						expr, validatorErr)
+				}
+			}
+		})
+	}
+}
+
+// TestValidate_EvictCronSchedule verifies cache evict_cron accepts the same dialect as triggers
+func TestValidate_EvictCronSchedule(t *testing.T) {
+	tests := []struct {
+		name        string
+		evictCron   string
+		expectError string // empty means the config must validate
+	}{
+		{"five fields", "0 3 * * *", ""},
+		{"descriptor", "@daily", ""},
+		{"every", "@every 30m", ""},
+		{"timezone prefix", "TZ=UTC @daily", ""},
+		{"sub-second every", "@every 100ms", "invalid evict_cron"},
+		{"timezone without schedule", "TZ=UTC", "invalid evict_cron"},
+		{"gibberish", "not-a-schedule", "invalid evict_cron"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &WorkflowConfig{
+				Name: "test",
+				Triggers: []TriggerConfig{{
+					Type: "http", Path: "/test", Method: "GET",
+					Cache: &CacheConfig{Enabled: true, Key: "k", EvictCron: tt.evictCron},
+				}},
+				Steps: []StepConfig{
+					{Name: "run", Type: "query", Database: "db", SQL: "SELECT 1"},
+					{Type: "response", Template: "{}"},
+				},
+			}
+			ctx := &ValidationContext{Databases: map[string]bool{"db": false}}
+			result := Validate(cfg, ctx)
+
+			if tt.expectError == "" {
+				if !result.Valid {
+					t.Errorf("expected valid, got errors: %v", result.Errors)
+				}
+				return
+			}
+			if result.Valid {
+				t.Fatal("expected validation to fail")
+			}
+			if !containsError(result.Errors, tt.expectError) {
+				t.Errorf("expected error containing %q, got: %v", tt.expectError, result.Errors)
+			}
+		})
+	}
 }
 
 func TestValidate_QueryStep(t *testing.T) {

@@ -105,6 +105,56 @@ workflows:
         sql: "SELECT datetime('now') AS executed_at, 'monthly first' AS type"
 
   # ============================================================================
+  # NAMED DESCRIPTORS
+  # ============================================================================
+  # Equivalent to the five-field expressions above, but easier to read.
+
+  # Same as "0 * * * *"
+  - name: "descriptor_hourly"
+    triggers:
+      - type: cron
+        schedule: "@hourly"
+    steps:
+      - name: run
+        type: query
+        database: "main"
+        sql: "SELECT datetime('now') AS executed_at, 'hourly' AS type"
+
+  # Same as "0 0 * * *"
+  - name: "descriptor_daily"
+    triggers:
+      - type: cron
+        schedule: "@daily"
+    steps:
+      - name: run
+        type: query
+        database: "main"
+        sql: "SELECT datetime('now') AS executed_at, 'daily' AS type"
+
+  # Fixed interval rather than a wall-clock time. Must be at least one second
+  # and a whole number of seconds.
+  - name: "descriptor_every_90s"
+    triggers:
+      - type: cron
+        schedule: "@every 90s"
+    steps:
+      - name: run
+        type: query
+        database: "main"
+        sql: "SELECT datetime('now') AS executed_at, 'every 90s' AS type"
+
+  # Compound durations work too
+  - name: "descriptor_every_90m"
+    triggers:
+      - type: cron
+        schedule: "@every 1h30m"
+    steps:
+      - name: run
+        type: query
+        database: "main"
+        sql: "SELECT datetime('now') AS executed_at, 'every 1h30m' AS type"
+
+  # ============================================================================
   # COMPLEX CRON EXPRESSIONS
   # ============================================================================
 
